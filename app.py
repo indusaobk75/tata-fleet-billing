@@ -16,25 +16,42 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ----------------- 0. SECURITY & VIEWER RESTRICTION -----------------
+# ----------------- 0. SECURITY & ACCESS CONTROL -----------------
 def check_access():
   if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
   if not st.session_state.authenticated:
-    st.title("🔒 Restricted Access - Tata Steel Fleet System")
-    st.info("Yeh application sirf authorized users ke liye hai. Kripya access PIN / Password darj karein.")
+    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
+    with col_l2:
+      st.markdown("### 🔐 Tata Steel Fleet Operations Portal")
+      st.caption("M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
+      st.markdown("---")
 
-    entered_pass = st.text_input("Enter Access Password", type="password")
-    master_password = st.secrets.get("app_password", "TataSteel@2026")
+      st.info(
+          "**Confidential Internal Workspace**\n\n"
+          "This portal contains proprietary commercial data and contract ledger records. "
+          "Access is strictly restricted to authorized site supervisors and billing personnel. "
+          "Please verify your credentials to proceed."
+      )
 
-    if st.button("Unlock Dashboard"):
-      if entered_pass == master_password:
-        st.session_state.authenticated = True
-        st.success("Access Granted! Loading system...")
-        st.rerun()
-      else:
-        st.error("Galat Password! Access Denied.")
+      with st.form("secure_login_gate"):
+        entered_pass = st.text_input(
+            "Security Passkey",
+            type="password",
+            placeholder="Enter authorized passkey...",
+        )
+        submit_auth = st.form_submit_button("Authenticate & Enter System")
+
+        if submit_auth:
+          master_password = st.secrets.get("app_password", "TataSteel@2026")
+          if entered_pass == master_password:
+            st.session_state.authenticated = True
+            st.success("Authentication successful. Loading workspace...")
+            st.rerun()
+          else:
+            st.error("Authentication failed: Invalid security passkey. Access denied.")
+
     st.stop()
 
 check_access()
