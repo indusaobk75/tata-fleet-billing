@@ -8,6 +8,10 @@ import gspread
 from num2words import num2words
 import pandas as pd
 import pdfplumber
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
 
 st.set_page_config(
@@ -24,7 +28,7 @@ def check_access():
   if not st.session_state.authenticated:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-      st.markdown("### 🔐 Indusao Fleet Operations Portal")
+      st.markdown("### 🔐 Tata Steel Fleet Operations Portal")
       st.caption("M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
       st.markdown("---")
 
@@ -56,7 +60,7 @@ def check_access():
 
 check_access()
 
-# Developer menu, header aur watermark ko users se chhupayein
+# Watermark & Developer menu hide
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -65,9 +69,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+
 # ----------------- 1. GOOGLE SHEETS CONNECTION -----------------
 SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
-
 
 @st.cache_resource
 def get_gspread_client():
@@ -110,7 +114,13 @@ def save_sheet_df(worksheet_name, df):
     st.error(f"Error saving {worksheet_name}: {e}")
 
 
-# ----------------- 2. CALCULATION & TEMPLATE ENGINE -----------------
+# ----------------- 2. CALCULATION & ENGINE -----------------
+def normalize_do(do_str):
+  if not do_str:
+    return ""
+  return str(do_str).split("/")[0].strip()
+
+
 def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remarks):
   rem_upper = str(remarks).upper() if pd.notna(remarks) else ""
 
@@ -152,84 +162,9 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   return disp_shift, ot_hours, run_km, billable_shift
 
 
-def create_statement_template(vehicle_no, year, month):
-  num_days = calendar.monthrange(year, month)[1]
-  rows = []
-  for day in range(1, num_days + 1):
-    d_str = "{:02d}-{:02d}-{}".format(day, month, year)
-    d_obj = datetime.date(year, month, day)
-    is_sun = d_obj.weekday() == 6
-    rows.append({
-        "SL_NO": day,
-        "DATE": d_str,
-        "START_TIME": "" if is_sun else "08:00 AM",
-        "END_TIME": "" if is_sun else "06:00 PM",
-        "METER_START": 0,
-        "METER_END": 0,
-        "BREAKDOWN_TIME_HRS": 0.0,
-        "INVOLVEMENT": "",
-        "REMARKS": "SUNDAY" if is_sun else "",
-    })
-  df_tpl = pd.DataFrame(rows)
-  buf = io.BytesIO()
-  with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-    df_tpl.to_excel(writer, sheet_name="Statement_Template", index=False)
-  return buf.getvalue()
-
-
-def process_uploaded_statement_excel(uploaded_file, vehicle_no):
-  df_up = pd.read_excel(uploaded_file)
-  required_cols = [
-      "DATE",
-      "START_TIME",
-      "END_TIME",
-      "METER_START",
-      "METER_END",
-      "BREAKDOWN_TIME_HRS",
-      "INVOLVEMENT",
-      "REMARKS",
-  ]
-  if not all(col in df_up.columns for col in required_cols):
-    return None, "Invalid Format: Excel column headers match nahi kar rahe hain."
-
-  parsed_entries = []
-  for _, r in df_up.iterrows():
-    d_str = str(r["DATE"]).strip()
-    if len(d_str) > 10 and " " in d_str:
-      d_str = d_str.split(" ")[0]
-    s_time = str(r["START_TIME"]).strip() if (pd.notna(r["START_TIME"]) and str(r["START_TIME"]).strip() != "nan") else ""
-    e_time = str(r["END_TIME"]).strip() if (pd.notna(r["END_TIME"]) and str(r["END_TIME"]).strip() != "nan") else ""
-    bd_hrs = float(r["BREAKDOWN_TIME_HRS"]) if pd.notna(r["BREAKDOWN_TIME_HRS"]) else 0.0
-    m_start = float(r["METER_START"]) if pd.notna(r["METER_START"]) else 0.0
-    m_end = float(r["METER_END"]) if pd.notna(r["METER_END"]) else 0.0
-    invol = str(r["INVOLVEMENT"]).strip() if (pd.notna(r["INVOLVEMENT"]) and str(r["INVOLVEMENT"]).strip() != "nan") else ""
-    rem = str(r["REMARKS"]).strip() if (pd.notna(r["REMARKS"]) and str(r["REMARKS"]).strip() != "nan") else ""
-
-    disp_s, ot, r_km, _ = compute_shift_and_ot(d_str, s_time, e_time, m_start, m_end, bd_hrs, rem)
-    day_val = d_str.split("-")[0] if "-" in d_str else "1"
-
-    parsed_entries.append({
-        "Vehicle_No": vehicle_no,
-        "SL_NO": str(int(float(day_val))),
-        "DATE": d_str,
-        "START_TIME": s_time,
-        "END_TIME": e_time,
-        "NO_OF_SHIFTS": disp_s,
-        "OVERTIME_HRS": str(ot) if ot > 0 else "0",
-        "METER_START": str(int(m_start)),
-        "METER_END": str(int(m_end)),
-        "TOTAL_RUNNING_KM": str(r_km),
-        "BREAKDOWN_TIME_HRS": str(bd_hrs),
-        "INVOLVEMENT": invol,
-        "REMARKS": rem,
-    })
-
-  return pd.DataFrame(parsed_entries), "Success"
-
-
 def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
   num_days = calendar.monthrange(year, month)[1]
-  veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"] == vehicle_no].copy()
+  veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str) == str(vehicle_no)].copy()
 
   full_rows = []
   for day in range(1, num_days + 1):
@@ -286,7 +221,8 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
 
 
 def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
-  do_items = df_master[df_master["DO_No"] == do_no].copy()
+  norm_target = normalize_do(do_no)
+  do_items = df_master[df_master["DO_No"].astype(str).apply(normalize_do) == norm_target].copy()
   positions = []
 
   for _, row in do_items.iterrows():
@@ -299,14 +235,12 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
     prior_amt = 0.0
     if not df_ledger.empty:
       prior_bills = df_ledger[
-          (df_ledger["DO_No"] == do_no)
+          (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_target)
           & (df_ledger["SrvLnNo"].astype(str) == str(srv_ln))
           & (df_ledger["Status"] == "Approved")
       ]
       if target_ra_bill_no:
-        prior_bills = prior_bills[
-            prior_bills["RA_Bill_No"].astype(str) != str(target_ra_bill_no)
-        ]
+        prior_bills = prior_bills[prior_bills["RA_Bill_No"].astype(str) != str(target_ra_bill_no)]
 
       prior_qty = prior_bills["Billed_Qty"].astype(float).sum()
       prior_amt = prior_bills["Billed_Amt"].astype(float).sum()
@@ -335,20 +269,9 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
 
 def apply_do_amendment(existing_master_df, new_extracted_items):
   required_cols = [
-      "DO_No",
-      "SrvLnNo",
-      "Equipment_Family",
-      "Description",
-      "Unit",
-      "BOQ_Qty",
-      "Rate",
-      "OT_Rate",
-      "Fuel_Rate_KM",
-      "Initial_Baseline_Qty",
-      "Initial_Baseline_Amt",
+      "DO_No", "SrvLnNo", "Equipment_Family", "Description", "Unit",
+      "BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"
   ]
-
-  # Agar master sheet pehle se khali hai
   if existing_master_df.empty or "DO_No" not in existing_master_df.columns:
     df = pd.DataFrame(columns=required_cols)
   else:
@@ -361,9 +284,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
     new_rate = float(item["Rate"])
 
     if not df.empty and "DO_No" in df.columns:
-      match_idx = df[
-          (df["DO_No"] == do_no) & (df["SrvLnNo"].astype(str) == str(srv_ln))
-      ].index
+      match_idx = df[(df["DO_No"].astype(str).apply(normalize_do) == normalize_do(do_no)) & (df["SrvLnNo"].astype(str) == str(srv_ln))].index
     else:
       match_idx = pd.Index([])
 
@@ -392,60 +313,99 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
       df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
   return df
 
-def extract_data_from_tata_do(pdf_file):
-  extracted_items = []
-  wo_no = None
 
-  with pdfplumber.open(pdf_file) as pdf:
-    first_page_text = pdf.pages[0].extract_text() or ""
+# ----------------- PDF GENERATOR FUNCTION -----------------
+def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements):
+  pdf_buffer = io.BytesIO()
+  doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+  elements = []
+  styles = getSampleStyleSheet()
 
-  wo_match = re.search(
-      r"Order\s*No[.:\s]*-*(\d{10}/\d{2,3})", first_page_text, re.IGNORECASE
-  )
-  if wo_match:
-    wo_no = wo_match.group(1).strip()
-  else:
-    sec_match = re.search(r"\b(\d{10}/\d{2,3})\b", first_page_text)
-    wo_no = sec_match.group(1).strip() if sec_match else None
+  title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, alignment=1, spaceAfter=4)
+  sub_style = ParagraphStyle('SubStyle', parent=styles['Normal'], fontSize=9, alignment=1, spaceAfter=10)
+  cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10)
+  bold_cell = ParagraphStyle('BoldCell', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold')
 
-  pattern = (
-      r"(\d+)\s+(\d{2})\s+([A-Za-z0-9/\s,.\-#]+?)\s+([\d,]+\.?\d*)\s*(Months?|Hours?|LUMPSUM|KM)\s+([\d,]+\.?\d*)\s*INR"
-  )
-  matches = re.findall(pattern, first_page_text, re.IGNORECASE)
+  # 1. Billing Abstract Header
+  elements.append(Paragraph("<b>M/S INDU SAO (VENDOR CODE: ID47)</b>", title_style))
+  elements.append(Paragraph(f"TATA STEEL FLEET BILLING ABSTRACT | <b>RA BILL NO: {ra_bill_no}</b> | WORK ORDER: <b>{do_no}</b>", sub_style))
+  elements.append(Paragraph(f"Billing Period: <b>{bill_period}</b> | Site: Coal Projects, West Bokaro", sub_style))
+  elements.append(Spacer(1, 6))
 
-  for m in matches:
-    _, srv_ln, desc, qty_str, unit, rate_str = m
-    desc_clean = desc.strip().replace("\n", " ")
-    qty = float(qty_str.replace(",", ""))
-    rate = float(rate_str.replace(",", ""))
+  # Abstract Table Data
+  headers = ["W.O SrL", "Description", "Unit", "Rate (₹)", "BOQ Qty", "Prev Qty", "Prev Amt (₹)", "This Qty", "This Amt (₹)", "Cumul Amt (₹)"]
+  table_data = [[Paragraph(f"<b>{h}</b>", bold_cell) for h in headers]]
 
-    if "BACKHOE" in desc_clean.upper() or "JCB" in desc_clean.upper():
-      family = "Backhoe / JCB"
-    elif "CAMPER" in desc_clean.upper():
-      family = "Camper"
-    elif "TRAILOR" in desc_clean.upper():
-      family = "Trailor-40MT"
-    else:
-      family = desc_clean[:20]
+  for _, r in abs_df.iterrows():
+    row_data = [
+        Paragraph(str(r["W.O SrL No"]), cell_style),
+        Paragraph(str(r["Description"]), cell_style),
+        Paragraph(str(r["Unit"]), cell_style),
+        Paragraph(f"{float(r['BOQ Rate']):,.2f}", cell_style),
+        Paragraph(f"{float(r['BOQ Qty']):,.2f}", cell_style),
+        Paragraph(f"{float(r['Prev Qty']):,.2f}", cell_style),
+        Paragraph(f"{float(r['Prev Amount']):,.2f}", cell_style),
+        Paragraph(f"{float(r['This Bill Qty']):,.2f}", cell_style),
+        Paragraph(f"{float(r['This Bill Amount']):,.2f}", bold_cell),
+        Paragraph(f"{float(r['Cumulative Amount']):,.2f}", bold_cell),
+    ]
+    table_data.append(row_data)
 
-    ot_rate = rate if unit.lower() in ["hours", "hour"] else 0.0
-    fuel_rate = 40.0 if "TRAILOR" in family.upper() else 12.0
+  abs_table = Table(table_data, colWidths=[45, 170, 45, 60, 55, 55, 75, 55, 80, 85])
+  abs_table.setStyle(TableStyle([
+      ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+      ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+      ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+      ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+      ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+      ('TOPPADDING', (0, 0), (-1, -1), 4),
+      ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+  ]))
+  elements.append(abs_table)
+  elements.append(Spacer(1, 10))
 
-    extracted_items.append({
-        "DO_No": wo_no,
-        "SrvLnNo": int(srv_ln),
-        "Equipment_Family": family,
-        "Description": desc_clean,
-        "Unit": unit.strip(),
-        "BOQ_Qty": qty,
-        "Rate": rate,
-        "OT_Rate": ot_rate,
-        "Fuel_Rate_KM": fuel_rate,
-        "Initial_Baseline_Qty": 0.0,
-        "Initial_Baseline_Amt": 0.0,
-    })
+  in_words = num2words(int(total_bill_amt), lang="en_IN").upper()
+  summary_p = f"<b>Total Invoice Amount: ₹{total_bill_amt:,.2f}</b> (INR {in_words} RUPEES ONLY)"
+  elements.append(Paragraph(summary_p, ParagraphStyle('Summ', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor("#1A5276"))))
+  elements.append(Spacer(1, 15))
 
-  return wo_no, extracted_items
+  # 2. Daily Duty Statements per Vehicle
+  for veh, s_df in veh_statements.items():
+    elements.append(Paragraph(f"<b>EQUIPMENT DUTY LOG STATEMENT - {veh}</b>", ParagraphStyle('VehHead', parent=styles['Heading2'], fontSize=11, spaceAfter=4)))
+    stmt_headers = ["SL", "Date", "In", "Out", "Shift", "OT Hrs", "Meter In", "Meter Out", "Run KM", "BD Hrs", "Involvement / Remarks"]
+    stmt_data = [[Paragraph(f"<b>{h}</b>", bold_cell) for h in stmt_headers]]
+
+    for _, row in s_df.iterrows():
+      rem_txt = str(row.get('REMARKS', ''))
+      if str(row.get('INVOLVEMENT', '')):
+        rem_txt += f" ({row.get('INVOLVEMENT')})"
+      stmt_data.append([
+          Paragraph(str(row.get("SL_NO", "")), cell_style),
+          Paragraph(str(row.get("DATE", "")), cell_style),
+          Paragraph(str(row.get("START_TIME", "")), cell_style),
+          Paragraph(str(row.get("END_TIME", "")), cell_style),
+          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_style),
+          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_style),
+          Paragraph(str(row.get("METER_START", "0")), cell_style),
+          Paragraph(str(row.get("METER_END", "0")), cell_style),
+          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_style),
+          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_style),
+          Paragraph(rem_txt, cell_style),
+      ])
+
+    st_table = Table(stmt_data, colWidths=[25, 65, 55, 55, 40, 45, 55, 55, 50, 50, 230])
+    st_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#34495E")),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#BDC3C7")),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    elements.append(st_table)
+    elements.append(Spacer(1, 15))
+
+  doc.build(elements)
+  return pdf_buffer.getvalue()
 
 
 # ----------------- 3. APP INTERFACE -----------------
@@ -459,20 +419,18 @@ tabs = st.tabs([
     "Vehicle Master Mapping",
 ])
 
-# Google Sheets se data live load karein
 df_master_do = load_sheet_df("master_do_items")
 df_vehs = load_sheet_df("master_vehicles")
 df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
 
-# Ensure required columns for df_vehs
 req_veh_cols = ["Vehicle_No", "Equipment_Family", "Mapped_DO_No"]
 for col in req_veh_cols:
   if col not in df_vehs.columns:
     df_vehs[col] = ""
 
 
-# --- TAB 1: DAILY ENTRY, EDIT & EXCEL IMPORT ---
+# --- TAB 1: DAILY ENTRY ---
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
   active_vehs = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]
@@ -480,44 +438,8 @@ with tabs[0]:
   if active_vehs.empty:
     st.warning("No vehicles registered. Please configure fleet entries in 'Vehicle Master Mapping' tab.")
   else:
-    with st.expander("📥 Bulk Statement Import / Export (Offline Excel Option)"):
-      st.caption("Aap Excel file bhar kar yahan upload kar sakte hain. System Google Sheets me data sync kar dega.")
-      c_dl1, c_dl2, c_dl3 = st.columns(3)
-      sel_dl_veh = c_dl1.selectbox("Select Vehicle for Template", active_vehs["Vehicle_No"].unique(), key="sel_dl_veh")
-      t_month = c_dl2.selectbox("Template Month", list(range(1, 13)), index=datetime.date.today().month - 1, key="t_month")
-      t_year = c_dl3.selectbox("Template Year", [2025, 2026, 2027], index=1, key="t_year")
-
-      excel_template = create_statement_template(sel_dl_veh, t_year, t_month)
-      clean_dl_veh = str(sel_dl_veh).replace("-", "_")
-      st.download_button(
-          label="📄 Download Official Blank Template (Excel)",
-          data=excel_template,
-          file_name="Tata_Statement_Template_{}_{}_{:02d}.xlsx".format(clean_dl_veh, t_year, t_month),
-          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      )
-
-      st.markdown("---")
-      st.write("**Upload Completed Statement Excel File:**")
-      up_excel = st.file_uploader("Upload Completed Statement Sheet", type=["xlsx", "xls"], key="bulk_excel_up")
-
-      if up_excel is not None:
-        if st.button("Sync & Import to Google Sheets"):
-          imported_df, msg = process_uploaded_statement_excel(up_excel, sel_dl_veh)
-          if imported_df is not None:
-            month_suffix = "-{:02d}-{}".format(t_month, t_year)
-            if not df_logs.empty:
-              df_logs = df_logs[~((df_logs["Vehicle_No"] == sel_dl_veh) & (df_logs["DATE"].astype(str).str.endswith(month_suffix)))]
-            df_logs = pd.concat([df_logs, imported_df], ignore_index=True)
-            save_sheet_df("fleet_daily_logsheets", df_logs)
-            st.success("Google Sheets synchronized successfully!")
-            st.rerun()
-          else:
-            st.error(msg)
-
-    st.markdown("---")
-
     col_t1, col_t2 = st.columns(2)
-    selected_veh = col_t1.selectbox("Select Deployed Vehicle", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
+    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
     selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")
     d_date_str = "{:02d}-{:02d}-{}".format(selected_date.day, selected_date.month, selected_date.year)
 
@@ -593,7 +515,7 @@ with tabs[0]:
         st.rerun()
 
 
-# --- TAB 2: BILLING & FULL MONTH STATEMENT ---
+# --- TAB 2: BILLING & MONTHLY STATEMENT ---
 with tabs[1]:
   st.subheader("Monthly Statement Generation & Financial Abstract")
 
@@ -612,8 +534,10 @@ with tabs[1]:
     num_days = calendar.monthrange(bill_y, bill_m)[1]
     bill_period = "01-{}-{} TO {:02d}-{}-{}".format(m_name[:3], bill_y, num_days, m_name[:3], bill_y)
 
-    assigned_vehs = df_vehs[df_vehs["Mapped_DO_No"] == chosen_do]["Vehicle_No"].tolist()
-    st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_vehs)))
+    norm_chosen_do = normalize_do(chosen_do)
+    assigned_vehs = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]["Vehicle_No"].tolist()
+
+    st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_vehs) if assigned_vehs else "None"))
 
     live_do_view = get_live_do_position(df_master_do, df_ledger, chosen_do, target_ra_bill_no=ra_bill_num)
 
@@ -641,8 +565,9 @@ with tabs[1]:
         total_group_km += km_val
 
     if assigned_vehs:
-      chosen_view_veh = st.selectbox("Select Equipment Logsheet to Review:", assigned_vehs)
-      st.info("Displaying sequential calendar statement (Days 1 to {}) for {}. Audit verification active.".format(num_days, chosen_view_veh))
+      st.markdown("---")
+      chosen_view_veh = st.selectbox("Select Equipment Logsheet to Review & Edit:", assigned_vehs)
+      st.info("Displaying sequential calendar statement (Days 1 to {}) for {}.".format(num_days, chosen_view_veh))
 
       edited_stmt = st.data_editor(
           veh_full_statements[chosen_view_veh],
@@ -651,7 +576,8 @@ with tabs[1]:
           key="stmt_edit_{}".format(chosen_view_veh),
       )
 
-      if st.button("Save Verified Adjustments for {}".format(chosen_view_veh)):
+      col_st1, col_st2 = st.columns(2)
+      if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh)):
         df_logs = df_logs[
             ~(
                 (df_logs["Vehicle_No"] == chosen_view_veh)
@@ -663,6 +589,15 @@ with tabs[1]:
         save_sheet_df("fleet_daily_logsheets", df_logs)
         st.success("Google Sheets synchronized successfully.")
         st.rerun()
+
+      # Single statement CSV download
+      csv_buf = edited_stmt.to_csv(index=False).encode('utf-8')
+      col_st2.download_button(
+          f"Download {chosen_view_veh} Statement (CSV)",
+          data=csv_buf,
+          file_name=f"Statement_{chosen_view_veh}_{bill_period}.csv",
+          mime="text/csv",
+      )
 
     month_qty = round(min(26.0 * max(1, len(assigned_vehs)), total_group_billable_shifts) / 26.0, 3)
 
@@ -719,24 +654,35 @@ with tabs[1]:
     in_words = num2words(int(total_this_bill), lang="en_IN").upper()
     st.write("**Net Invoice Value:** ₹{:,.2f} | **In Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
-    col_btn1, col_btn2 = st.columns(2)
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
 
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    # 1. Excel Package Download
+    buf_xl = io.BytesIO()
+    with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
       abs_df.to_excel(writer, sheet_name="Page1_Abstract", index=False)
       for v, s_df in veh_full_statements.items():
-        s_df.to_excel(writer, sheet_name="Stmt_{}".format(v.replace("-", "_"))[:31], index=False)
+        s_df.to_excel(writer, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
 
     clean_do = str(chosen_do).replace("/", "_")
     col_btn1.download_button(
-        "Download Official Excel Package (Abstract + Statements)",
-        data=buf.getvalue(),
-        file_name="Tata_RA_Bill_{}_{}.xlsx".format(ra_bill_num, clean_do),
+        "📊 Download Excel (Abstract + Statements)",
+        data=buf_xl.getvalue(),
+        file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    if col_btn2.button("Finalize & Lock RA Bill {}".format(ra_bill_num)):
-      df_ledger = df_ledger[~((df_ledger["DO_No"] == chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+    # 2. PDF Official Package Download
+    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements)
+    col_btn2.download_button(
+        "📄 Download Official PDF (Abstract + Statements)",
+        data=pdf_bytes,
+        file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
+        mime="application/pdf",
+    )
+
+    # 3. Finalize Bill
+    if col_btn3.button("Lock RA Bill {}".format(ra_bill_num)):
+      df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
       new_entries = []
       for _, r in abs_df.iterrows():
         new_entries.append({
@@ -753,26 +699,18 @@ with tabs[1]:
       st.success("RA Bill committed to Google Sheets ledger!")
       st.rerun()
 
-    with st.expander("Ledger Revision Controls"):
-      st.caption("Revert a previously committed abstract to release quantities back to the DO balance.")
-      if st.button("Void RA Bill {}".format(ra_bill_num)):
-        match = (df_ledger["DO_No"] == chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num))
-        if match.any():
-          df_ledger.loc[match, "Status"] = "Void"
-          save_sheet_df("ra_bills_ledger", df_ledger)
-          st.warning("RA Bill has been voided in Google Sheets.")
-          st.rerun()
-        else:
-          st.info("No matching finalized record found.")
 
-
-# --- TAB 3: DO UPLOAD & BASELINE ---
+# --- TAB 3: DO UPLOAD ---
 with tabs[2]:
   st.subheader("1. Register / Amend Delivery Order (DO) Contract")
   uploaded_pdf = st.file_uploader("Upload Official Tata Steel DO (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
 
   if uploaded_pdf is not None:
-    detected_wo, parsed_items = extract_data_from_tata_do(uploaded_pdf)
+    with pdfplumber.open(uploaded_pdf) as pdf:
+      first_page_text = pdf.pages[0].extract_text() or ""
+
+    wo_match = re.search(r"Order\s*No[.:\s]*-*(\d{10}/\d{2,3})", first_page_text, re.IGNORECASE)
+    detected_wo = wo_match.group(1).strip() if wo_match else None
 
     if not detected_wo:
       final_wo = st.text_input("Enter SAP Work Order Number Manually (e.g., 3700981341/109):").strip()
@@ -780,9 +718,34 @@ with tabs[2]:
       st.success("Extracted Order Number: **{}**".format(detected_wo))
       final_wo = detected_wo
 
+    pattern = r"(\d+)\s+(\d{2})\s+([A-Za-z0-9/\s,.\-#]+?)\s+([\d,]+\.?\d*)\s*(Months?|Hours?|LUMPSUM|KM)\s+([\d,]+\.?\d*)\s*INR"
+    matches = re.findall(pattern, first_page_text, re.IGNORECASE)
+    parsed_items = []
+    for m in matches:
+      _, srv_ln, desc, qty_str, unit, rate_str = m
+      desc_clean = desc.strip().replace("\n", " ")
+      qty = float(qty_str.replace(",", ""))
+      rate = float(rate_str.replace(",", ""))
+
+      family = "Backhoe / JCB" if "BACKHOE" in desc_clean.upper() or "JCB" in desc_clean.upper() else ("Camper" if "CAMPER" in desc_clean.upper() else ("Trailor-40MT" if "TRAILOR" in desc_clean.upper() else desc_clean[:20]))
+      ot_rate = rate if unit.lower() in ["hours", "hour"] else 0.0
+      fuel_rate = 40.0 if "TRAILOR" in family.upper() else 12.0
+
+      parsed_items.append({
+          "DO_No": final_wo,
+          "SrvLnNo": int(srv_ln),
+          "Equipment_Family": family,
+          "Description": desc_clean,
+          "Unit": unit.strip(),
+          "BOQ_Qty": qty,
+          "Rate": rate,
+          "OT_Rate": ot_rate,
+          "Fuel_Rate_KM": fuel_rate,
+          "Initial_Baseline_Qty": 0.0,
+          "Initial_Baseline_Amt": 0.0,
+      })
+
     if parsed_items and final_wo:
-      for itm in parsed_items:
-        itm["DO_No"] = final_wo
       preview_df = pd.DataFrame(parsed_items)
       st.dataframe(preview_df, use_container_width=True)
 
@@ -794,10 +757,7 @@ with tabs[2]:
 
   st.markdown("---")
   st.subheader("2. Contract Opening Baseline Configuration")
-  st.caption("Configure cumulative historical billing for active contracts prior to system cutover:")
-
   edited_master = st.data_editor(df_master_do, num_rows="dynamic", key="baseline_editor_clean")
-
   if st.button("Save Contract Baseline"):
     save_sheet_df("master_do_items", edited_master)
     st.success("Contract baseline updated in Google Sheets.")
@@ -807,26 +767,24 @@ with tabs[2]:
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
   st.subheader("Fleet Asset Mapping")
-  st.caption("Map deployed vehicle registration numbers to contract line item categories:")
+  st.caption("Map deployed vehicle registration numbers or Asset IDs (e.g., EXC-01) to contract DO:")
 
-  # 1. Direct Web Form se Nayi Gaadi Add Karein
-  with st.expander("➕ Add New Vehicle to Fleet (Direct Entry)", expanded=df_vehs.empty or df_vehs["Vehicle_No"].str.strip().eq("").all()):
+  with st.expander("➕ Add New Vehicle to Fleet (Direct Entry)", expanded=df_vehs.empty):
     with st.form("add_vehicle_form"):
       col_v1, col_v2, col_v3 = st.columns(3)
-      new_v_no = col_v1.text_input("Vehicle Registration No (e.g., JH-02-BC-1234)").strip().upper()
-      
-      fam_options = ["Backhoe / JCB", "Camper", "Trailor-40MT", "Tipper / Dumper", "Water Tanker", "Other"]
+      new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
+      fam_options = ["Trailor-40MT", "Backhoe / JCB", "Camper", "Tipper / Dumper", "Water Tanker", "Other"]
       new_fam = col_v2.selectbox("Equipment Family / Category", fam_options)
       
-      available_dos = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
-      if available_dos:
-        new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos)
+      available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
+      if available_dos_list:
+        new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
       else:
-        new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700981341/109)").strip()
+        new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
       
       if st.form_submit_button("Save & Register Vehicle"):
         if not new_v_no:
-          st.error("Kripya Vehicle Registration Number darj karein.")
+          st.error("Kripya Asset ID / Vehicle Number darj karein.")
         elif not df_vehs.empty and new_v_no in df_vehs["Vehicle_No"].astype(str).values:
           st.warning(f"Vehicle {new_v_no} pehle se registered hai.")
         else:
