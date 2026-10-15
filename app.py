@@ -1,6 +1,7 @@
 import calendar
 import datetime
 import io
+import json
 import re
 from google.oauth2.service_account import Credentials
 import gspread
@@ -21,14 +22,20 @@ SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
 
 @st.cache_resource
 def get_gspread_client():
-  creds_info = dict(st.secrets["gcp_service_account"])
   scopes = [
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/drive",
   ]
-  credentials = Credentials.from_service_account_info(
-      creds_info, scopes=scopes
-  )
+  if "gcp_json_raw" in st.secrets:
+    creds_info = json.loads(st.secrets["gcp_json_raw"])
+  elif "gcp_service_account" in st.secrets:
+    creds_info = dict(st.secrets["gcp_service_account"])
+  else:
+    raise KeyError(
+        "Neither 'gcp_json_raw' nor 'gcp_service_account' found in secrets!"
+    )
+
+  credentials = Credentials.from_service_account_info(creds_info, scopes=scopes)
   return gspread.authorize(credentials)
 
 
