@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+pdfplumber
+num2words
+gspread
+google-auth
+st-gsheets-connection
