@@ -923,16 +923,58 @@ with tabs[2]:
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
   st.subheader("Fleet Asset Mapping")
-  st.caption(
-      "Map deployed vehicle registration numbers to contract line item"
-      " categories:"
-  )
+  st.caption("Map deployed vehicle registration numbers to contract line item categories:")
 
+  # Agar Google Sheet nayi/khali hai, toh standard columns enforce karein
+  required_veh_cols = ["Vehicle_No", "Equipment_Family", "Mapped_DO_No"]
+  for col in required_veh_cols:
+    if col not in df_vehs.columns:
+      df_vehs[col] = ""
+
+  # 1. Direct Web Form se Nayi Gaadi Add Karein
+  with st.expander("➕ Add New Vehicle to Fleet (Direct Entry)", expanded=df_vehs.empty):
+    with st.form("add_vehicle_form"):
+      col_v1, col_v2, col_v3 = st.columns(3)
+      new_v_no = col_v1.text_input("Vehicle Registration No (e.g., JH-02-BC-1234)").strip().upper()
+      
+      fam_options = ["Backhoe / JCB", "Camper", "Trailor-40MT", "Tipper / Dumper", "Water Tanker", "Other"]
+      new_fam = col_v2.selectbox("Equipment Family / Category", fam_options)
+      
+      available_dos = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
+      if available_dos:
+        new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos)
+      else:
+        new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700981341/109)").strip()
+      
+      if st.form_submit_button("Save & Register Vehicle"):
+        if not new_v_no:
+          st.error("Kripya Vehicle Registration Number darj karein.")
+        elif not df_vehs.empty and new_v_no in df_vehs["Vehicle_No"].astype(str).values:
+          st.warning(f"Vehicle {new_v_no} pehle se registered hai.")
+        else:
+          new_row = pd.DataFrame([{
+              "Vehicle_No": new_v_no,
+              "Equipment_Family": new_fam,
+              "Mapped_DO_No": new_do
+          }])
+          df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
+          save_sheet_df("master_vehicles", df_vehs[required_veh_cols])
+          st.success(f"Vehicle {new_v_no} successfully registered to Google Sheets!")
+          st.rerun()
+
+  st.markdown("---")
+  st.write("**Registered Fleet Vehicles (Edit directly in table below):**")
+  
+  # Table editor - cells me direct click karke bhi edit kar sakte hain
   v_editor = st.data_editor(
-      df_vehs, num_rows="dynamic", key="vehicle_mapper_clean"
+      df_vehs[required_veh_cols],
+      num_rows="dynamic",
+      use_container_width=True,
+      key="vehicle_mapper_clean"
   )
 
-  if st.button("Update Fleet Registry"):
-    save_sheet_df("master_vehicles", v_editor)
+  if st.button("Update Fleet Registry Changes"):
+    valid_vehs = v_editor[v_editor["Vehicle_No"].astype(str).str.strip() != ""]
+    save_sheet_df("master_vehicles", valid_vehs)
     st.success("Fleet registry updated in Google Sheets.")
     st.rerun()
