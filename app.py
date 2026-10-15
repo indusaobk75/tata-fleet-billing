@@ -24,7 +24,7 @@ def check_access():
   if not st.session_state.authenticated:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-      st.markdown("### 🔐 Tata Steel Fleet Operations Portal")
+      st.markdown("### 🔐 Indusao Fleet Operations Portal")
       st.caption("M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
       st.markdown("---")
 
@@ -55,6 +55,15 @@ def check_access():
     st.stop()
 
 check_access()
+
+# Developer menu, header aur watermark ko users se chhupayein
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
 
 # ----------------- 1. GOOGLE SHEETS CONNECTION -----------------
 SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
