@@ -334,16 +334,39 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
 
 
 def apply_do_amendment(existing_master_df, new_extracted_items):
-  df = existing_master_df.copy()
+  required_cols = [
+      "DO_No",
+      "SrvLnNo",
+      "Equipment_Family",
+      "Description",
+      "Unit",
+      "BOQ_Qty",
+      "Rate",
+      "OT_Rate",
+      "Fuel_Rate_KM",
+      "Initial_Baseline_Qty",
+      "Initial_Baseline_Amt",
+  ]
+
+  # Agar master sheet pehle se khali hai
+  if existing_master_df.empty or "DO_No" not in existing_master_df.columns:
+    df = pd.DataFrame(columns=required_cols)
+  else:
+    df = existing_master_df.copy()
+
   for item in new_extracted_items:
     do_no = item["DO_No"]
     srv_ln = item["SrvLnNo"]
     new_boq_qty = float(item["BOQ_Qty"])
     new_rate = float(item["Rate"])
 
-    match_idx = df[
-        (df["DO_No"] == do_no) & (df["SrvLnNo"].astype(str) == str(srv_ln))
-    ].index
+    if not df.empty and "DO_No" in df.columns:
+      match_idx = df[
+          (df["DO_No"] == do_no) & (df["SrvLnNo"].astype(str) == str(srv_ln))
+      ].index
+    else:
+      match_idx = pd.Index([])
+
     if not match_idx.empty:
       i = match_idx[0]
       df.at[i, "BOQ_Qty"] = new_boq_qty
@@ -368,7 +391,6 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
       }
       df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
   return df
-
 
 def extract_data_from_tata_do(pdf_file):
   extracted_items = []
