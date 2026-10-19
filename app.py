@@ -362,11 +362,10 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. PROFESSIONAL PDF GENERATOR (LANDSCAPE FULL FILL) -----------------
+# ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate):
   pdf_buffer = io.BytesIO()
   
-  # Landscape A4 with optimized margins
   doc = SimpleDocTemplate(
       pdf_buffer,
       pagesize=landscape(A4),
@@ -481,7 +480,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
   elements.append(t_sig)
 
-  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (LANDSCAPE FULL FILL) =================
+  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS =================
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
@@ -489,7 +488,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9.5, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=4)))
 
-    # 1. Summary Strip Placed AT THE TOP of the Statement
+    # Summary Strip Placed AT THE TOP of the Statement
     v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
     v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
     v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
@@ -531,7 +530,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_v_sum)
     elements.append(Spacer(1, 4))
 
-    # 2. Sequential Calendar Statement Table (Landscape - Balanced Widths totaling 810 pt)
+    # Sequential Calendar Statement Table (Landscape - Balanced Widths totaling 810 pt)
     st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", "Run (KM)", "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
@@ -551,7 +550,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(str(row.get("REMARKS", ""))[:24], cell_l),
       ])
 
-    # Widths totaling 810 pt - Fits full landscape width perfectly
     t_stmt = Table(st_data, colWidths=[24, 60, 68, 68, 40, 48, 62, 62, 54, 54, 135, 135])
     t_stmt.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_navy),
@@ -585,7 +583,6 @@ df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
 df_rates = load_sheet_df("fleet_rate_master")
 
-# Default Rate Schedule if empty
 if df_rates.empty or "Category_Name" not in df_rates.columns:
   default_schedule = [
       {"Category_Name": "Backhoe / JCB", "Monthly_Rate": 100000.0, "OT_Rate": 299.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 5.50, "Unit_Display": "Ltr/Hr"},
@@ -618,23 +615,118 @@ for col in req_veh_cols:
     df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
-# --- TAB 1: DAILY ENTRY ---
+# --- TAB 1: DAILY ENTRY (WITH BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD) ---
 with tabs[0]:
-  st.subheader("Daily Field Duty Slip Entry & Verification")
+  st.subheader("Daily Field Duty Slip Entry & Verification")[cite: 7]
+
+  # 1. BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD ACCORDION
+  with st.expander("📥 Bulk Logsheet Upload via Excel / Download Template", expanded=False):
+    col_t_btn, col_t_info = st.columns([1, 2])
+    
+    # Generate Clean Excel Template
+    sample_template = pd.DataFrame([
+        {
+            "Vehicle_No": "NL01DA1034(ROLLER)",
+            "DATE": datetime.date.today().strftime("%d-%m-%Y"),
+            "START_TIME": "08:00 AM",
+            "END_TIME": "06:00 PM",
+            "METER_START": 1000,
+            "METER_END": 1025,
+            "BREAKDOWN_TIME_HRS": 0.0,
+            "INVOLVEMENT": "TSL Operations",
+            "REMARKS": "NORMAL",
+        }
+    ])
+    buf_tpl = io.BytesIO()
+    with pd.ExcelWriter(buf_tpl, engine="openpyxl") as writer:
+      sample_template.to_excel(writer, sheet_name="Logsheet_Template", index=False)
+
+    col_t_btn.download_button(
+        "📥 Download Blank Excel Template",
+        data=buf_tpl.getvalue(),
+        file_name="Tata_Steel_Logsheet_Template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    col_t_info.caption("Is template ko download karke Supervisor poore mahine ka log ek sath Excel me bhar kar niche upload kar sakta hai.")
+
+    st.markdown("---")
+    uploaded_log_file = st.file_uploader("Upload Completed Excel / CSV Logsheet", type=["xlsx", "xls", "csv"], key="bulk_log_uploader")
+
+    if uploaded_log_file is not None:
+      try:
+        if uploaded_log_file.name.endswith(".csv"):
+          up_df = pd.read_csv(uploaded_log_file)
+        else:
+          up_df = pd.read_excel(uploaded_log_file)
+
+        st.write("**Uploaded Data Preview:**")
+        st.dataframe(up_df.head(), use_container_width=True)
+
+        if st.button("🚀 Process & Append Bulk Logsheets to Cloud"):
+          new_processed_rows = []
+          for _, r in up_df.iterrows():
+            d_val = str(r.get("DATE", "")).strip()
+            v_val = str(r.get("Vehicle_No", "")).strip().upper()
+            s_t = str(r.get("START_TIME", ""))
+            e_t = str(r.get("END_TIME", ""))
+            m_s = r.get("METER_START", 0)
+            m_e = r.get("METER_END", 0)
+            bd = r.get("BREAKDOWN_TIME_HRS", 0.0)
+            rem = str(r.get("REMARKS", ""))
+            inv = str(r.get("INVOLVEMENT", ""))
+
+            disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_val, s_t, e_t, m_s, m_e, bd, rem)
+            
+            # SL No from date day
+            day_str = d_val.split("-")[0] if "-" in d_val else "1"
+
+            new_processed_rows.append({
+                "Vehicle_No": v_val,
+                "SL_NO": str(day_str),
+                "DATE": d_val,
+                "START_TIME": s_t,
+                "END_TIME": e_t,
+                "NO_OF_SHIFTS": disp_s,
+                "OVERTIME_HRS": str(ot) if ot > 0 else "0",
+                "METER_START": str(m_s),
+                "METER_END": str(m_e),
+                "TOTAL_RUNNING_KM": str(r_units),
+                "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
+                "BREAKDOWN_TIME_HRS": str(bd),
+                "INVOLVEMENT": inv,
+                "REMARKS": rem,
+            })
+
+          if new_processed_rows:
+            new_df = pd.DataFrame(new_processed_rows)
+            # Remove any overlapping entries already in database
+            if not df_logs.empty:
+              for _, nr in new_df.iterrows():
+                df_logs = df_logs[~((df_logs["Vehicle_No"] == nr["Vehicle_No"]) & (df_logs["DATE"] == nr["DATE"]))]
+            df_logs = pd.concat([df_logs, new_df], ignore_index=True)
+            if save_sheet_df("fleet_daily_logsheets", df_logs):
+              st.success(f"{len(new_processed_rows)} logsheet entries successfully synced to Google Sheets!")
+              st.rerun()
+      except Exception as err:
+        st.error(f"Error parsing file: {err}")
+
+  st.markdown("---")
+
+  # 2. SINGLE DUTY SLIP ENTRY FORM
   active_vehs = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]
 
   if active_vehs.empty:
     st.warning("No vehicles registered. Please configure fleet entries in 'Vehicle Master Mapping' tab.")
   else:
     col_t1, col_t2 = st.columns(2)
-    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
-    selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")
+    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")[cite: 7]
+    selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")[cite: 7]
     d_date_str = "{:02d}-{:02d}-{}".format(selected_date.day, selected_date.month, selected_date.year)
 
     v_match = active_vehs[active_vehs["Vehicle_No"] == selected_veh]
     if not v_match.empty:
       v_row = v_match.iloc[0]
-      st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))
+      st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))[cite: 7]
 
     existing_record = pd.DataFrame()
     if not df_logs.empty:
@@ -652,7 +744,7 @@ with tabs[0]:
       def_dept = str(rec.get("INVOLVEMENT", ""))
       def_rem = str(rec.get("REMARKS", ""))
     else:
-      st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))
+      st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))[cite: 7]
       def_start = "08:00 AM"
       def_end = "06:00 PM"
       def_bd = 0.0
@@ -661,18 +753,18 @@ with tabs[0]:
       def_dept = ""
       def_rem = ""
 
-    with st.form("duty_form"):
+    with st.form("duty_form"):[cite: 7]
       c1, c2, c3 = st.columns(3)
-      s_time = c1.text_input("Shift Start Time", def_start)
-      e_time = c2.text_input("Shift End Time (OT applies after 06:00 PM)", def_end)
-      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)
+      s_time = c1.text_input("Shift Start Time", def_start)[cite: 7]
+      e_time = c2.text_input("Shift End Time (OT applies after 06:00 PM)", def_end)[cite: 7]
+      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)[cite: 7]
 
       c4, c5, c6 = st.columns(3)
-      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)
-      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)
-      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)
+      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)[cite: 7]
+      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)[cite: 7]
+      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)[cite: 7]
 
-      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)
+      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)[cite: 7]
 
       btn_label = "Update / Override Existing Entry" if is_already_submitted else "Submit & Log Duty Slip"
       if st.form_submit_button(btn_label):
@@ -706,7 +798,7 @@ with tabs[0]:
 
 # --- TAB 2: BILLING & MONTHLY STATEMENT ---
 with tabs[1]:
-  st.subheader("Monthly Statement Generation & Financial Abstract")
+  st.subheader("Monthly Statement Generation & Financial Abstract")[cite: 7]
 
   available_dos = df_master_do["DO_No"].dropna().unique() if not df_master_do.empty else []
   if len(available_dos) == 0:
@@ -919,7 +1011,7 @@ with tabs[1]:
 
 # --- TAB 3: DO UPLOAD ---
 with tabs[2]:
-  st.subheader("1. Register / Amend Delivery Order (DO) Contract")
+  st.subheader("1. Register / Amend Delivery Order (DO) Contract")[cite: 7]
   uploaded_pdf = st.file_uploader("Upload Official Tata Steel DO (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
 
   if uploaded_pdf is not None:
@@ -983,7 +1075,7 @@ with tabs[2]:
 
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
-  st.subheader("Fleet Asset Mapping")
+  st.subheader("Fleet Asset Mapping")[cite: 7]
   st.caption("Map deployed vehicle registration numbers or Asset IDs to contract DO with their fuel consumption mode:")
 
   with st.expander("➕ Add New Vehicle to Fleet (Auto-Detect Terms)", expanded=df_vehs.empty):
@@ -1043,7 +1135,7 @@ with tabs[3]:
 
 # --- TAB 5: EQUIPMENT RATE & POLICY MASTER ---
 with tabs[4]:
-  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")
+  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")[cite: 7]
   st.caption(
       "Yahan se aap kisi bhi machine ka Monthly Hiring, OT Rate, Fuel Mode (KM/Hour) "
       "aur Consumption Factor directly edit kar sakte hain. 'Save' dabate hi aage ke sabhi bills naye rate se banenge."
