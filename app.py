@@ -9,7 +9,7 @@ from num2words import num2words
 import pandas as pd
 import pdfplumber
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
@@ -60,7 +60,6 @@ def check_access():
 
 check_access()
 
-# Streamlit branding hide karein
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -114,7 +113,7 @@ def save_sheet_df(worksheet_name, df):
     st.error(f"Error saving {worksheet_name}: {e}")
 
 
-# ----------------- 2. CALCULATION & ENGINE -----------------
+# ----------------- 2. UNIVERSAL CALCULATION & ENGINE -----------------
 def normalize_do(do_str):
   if not do_str:
     return ""
@@ -133,38 +132,66 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   if "SUNDAY" in rem_upper:
     is_sunday = True
 
-  is_breakdown = ("BREAKDOWN" in rem_upper) or (pd.notna(bd_hrs) and float(bd_hrs) >= 4.0)
-  run_km = max(0.0, float(m_end) - float(m_start)) if (pd.notna(m_end) and float(m_end) > 0) else 0.0
+  bd_hours_val = float(bd_hrs) if pd.notna(bd_hrs) and str(bd_hrs).strip() != "" else 0.0
+  is_breakdown = ("BREAKDOWN" in rem_upper) or (bd_hours_val >= 4.0)
+
+  m_s = float(m_start) if pd.notna(m_start) and str(m_start).strip() != "" else 0.0
+  m_e = float(m_end) if pd.notna(m_end) and str(m_end).strip() != "" else 0.0
+  run_units = max(0.0, m_e - m_s) if (m_e > 0 and m_e >= m_s) else 0.0
 
   ot_hours = 0.0
+  actual_working_hours = 0.0
+
   if pd.notna(end_t) and str(end_t).strip() and not is_breakdown:
     try:
+      clean_start = str(start_t).strip().upper() if pd.notna(start_t) and str(start_t).strip() else "08:00 AM"
+      clean_end = str(end_t).strip().upper()
+
+      def parse_t(t_val):
+        if "PM" in t_val or "AM" in t_val:
+          return pd.to_datetime(t_val, format="%I:%M %p")
+        elif len(t_val.split(":")) == 3:
+          return pd.to_datetime(t_val, format="%H:%M:%S")
+        else:
+          return pd.to_datetime(t_val, format="%H:%M")
+
+      t_in = parse_t(clean_start)
+      t_out = parse_t(clean_end)
+
+      gross_work = (t_out - t_in).total_seconds() / 3600.0
+      if gross_work < 0:
+        gross_work += 24.0
+      actual_working_hours = max(0.0, gross_work - bd_hours_val)
+
       cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
-      actual_end_t = pd.to_datetime(str(end_t).strip(), format="%I:%M %p")
-      diff = (actual_end_t - cutoff_t).total_seconds() / 3600.0
-      if diff < 0 and "AM" in str(end_t).upper():
+      diff = (t_out - cutoff_t).total_seconds() / 3600.0
+      if diff < 0 and "AM" in clean_end:
         diff += 24.0
-      eff_ot = max(0.0, diff - float(bd_hrs if pd.notna(bd_hrs) else 0))
-      ot_hours = round(eff_ot, 2)
+      ot_hours = round(max(0.0, diff - bd_hours_val), 2)
     except Exception:
       ot_hours = 0.0
+      actual_working_hours = 8.0 if not is_breakdown else 0.0
+  elif not is_breakdown and not is_sunday:
+    actual_working_hours = 8.0
 
   if is_breakdown:
     disp_shift = "0"
-    billable_shift = 0
+    billable_shift = 0.0
+    actual_working_hours = 0.0
   elif is_sunday:
     disp_shift = ""
-    billable_shift = 1
+    billable_shift = 0.0
+    actual_working_hours = 0.0
   else:
     disp_shift = "1"
-    billable_shift = 1
+    billable_shift = 1.0
 
-  return disp_shift, ot_hours, run_km, billable_shift
+  return disp_shift, ot_hours, run_units, billable_shift, actual_working_hours
 
 
 def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
   num_days = calendar.monthrange(year, month)[1]
-  veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str) == str(vehicle_no)].copy()
+  veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == str(vehicle_no).strip().upper()].copy()
 
   full_rows = []
   for day in range(1, num_days + 1):
@@ -176,7 +203,7 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
 
     if not match.empty:
       r = match.iloc[0]
-      disp_s, ot, r_km, _ = compute_shift_and_ot(
+      disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(
           d_str,
           r.get("START_TIME", ""),
           r.get("END_TIME", ""),
@@ -195,7 +222,8 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
           "OVERTIME_HRS": str(ot) if ot > 0 else "0",
           "METER_START": str(r.get("METER_START", "0")),
           "METER_END": str(r.get("METER_END", "0")),
-          "TOTAL_RUNNING_KM": str(r_km),
+          "TOTAL_RUNNING_KM": str(r_units),
+          "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
           "BREAKDOWN_TIME_HRS": str(r.get("BREAKDOWN_TIME_HRS", "0.0")),
           "INVOLVEMENT": str(r.get("INVOLVEMENT", "")),
           "REMARKS": str(r.get("REMARKS", "")),
@@ -212,6 +240,7 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
           "METER_START": "0",
           "METER_END": "0",
           "TOTAL_RUNNING_KM": "0.0",
+          "ACTUAL_WORK_HRS": "0.0",
           "BREAKDOWN_TIME_HRS": "0.0",
           "INVOLVEMENT": "",
           "REMARKS": "SUNDAY" if is_sun else "",
@@ -315,35 +344,35 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
 
 
 # ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
-def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements):
+def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate):
   pdf_buffer = io.BytesIO()
   doc = SimpleDocTemplate(
       pdf_buffer,
       pagesize=landscape(A4),
       rightMargin=18,
       leftMargin=18,
-      topMargin=16,
-      bottomMargin=16
+      topMargin=15,
+      bottomMargin=15
   )
   elements = []
   styles = getSampleStyleSheet()
 
   c_navy = colors.HexColor("#1A365D")
-  c_slate = colors.HexColor("#2B6CB0")
+  c_blue = colors.HexColor("#2B6CB0")
   c_border = colors.HexColor("#CBD5E0")
   c_row_alt = colors.HexColor("#F7FAFC")
 
-  comp_title = ParagraphStyle('CompTitle', parent=styles['Heading1'], fontSize=16, alignment=1, spaceAfter=2, fontName='Helvetica-Bold', textColor=c_navy)
-  abstract_heading = ParagraphStyle('AbsHeading', parent=styles['Heading2'], fontSize=12, alignment=1, spaceAfter=6, fontName='Helvetica-Bold', textColor=colors.HexColor("#2D3748"))
-  sub_meta = ParagraphStyle('SubMeta', parent=styles['Normal'], fontSize=8, alignment=1, spaceAfter=8, textColor=colors.HexColor("#4A5568"))
+  comp_title = ParagraphStyle('CompTitle', fontName='Helvetica-Bold', fontSize=15, alignment=1, spaceAfter=2, textColor=c_navy)
+  abstract_heading = ParagraphStyle('AbsHeading', fontName='Helvetica-Bold', fontSize=11, alignment=1, spaceAfter=4, textColor=colors.HexColor("#2D3748"))
+  sub_meta = ParagraphStyle('SubMeta', fontName='Helvetica', fontSize=7.5, alignment=1, spaceAfter=6, textColor=colors.HexColor("#4A5568"))
 
-  cell_h = ParagraphStyle('CellH', parent=styles['Normal'], fontSize=7.5, fontName='Helvetica-Bold', alignment=1, textColor=colors.white, leading=9)
-  cell_d = ParagraphStyle('CellD', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=1)
-  cell_l = ParagraphStyle('CellL', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=0)
-  cell_r = ParagraphStyle('CellR', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=2)
-  cell_bold_r = ParagraphStyle('CellBR', parent=styles['Normal'], fontSize=7, leading=8.5, fontName='Helvetica-Bold', alignment=2)
+  cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=7.5, alignment=1, textColor=colors.white, leading=9)
+  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7, leading=8.5, alignment=1)
+  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7, leading=8.5, alignment=0)
+  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7, leading=8.5, alignment=2)
+  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7, leading=8.5, alignment=2)
 
-  # ================= PAGE 1: M/S INDU SAO ABSTRACT =================
+  # ================= PAGE 1: ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -356,10 +385,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(f"<b>Date:</b> {datetime.date.today().strftime('%d-%b-%Y')}", cell_l),
       ],
       [
-          Paragraph(f"<b>Vendor Code:</b> ID47", cell_l),
-          Paragraph(f"<b>Contract Scope:</b> Heavy Equipment & Fleet Hiring", cell_l),
-          Paragraph(f"<b>Location:</b> West Bokaro Division", cell_l),
-          Paragraph(f"<b>Status:</b> Certified Submission", cell_l),
+          Paragraph("<b>Vendor Code:</b> ID47", cell_l),
+          Paragraph("<b>Scope:</b> Heavy Equipment & Fleet Hiring", cell_l),
+          Paragraph("<b>Location:</b> West Bokaro Division", cell_l),
+          Paragraph("<b>Diesel Rate (1st Day):</b> ₹{:,.2f} / Ltr".format(market_diesel_rate) if market_diesel_rate > 0 else "<b>Contract Rate Basis</b>", cell_l),
       ]
   ]
   t_meta = Table(meta_rows, colWidths=[230, 150, 230, 150])
@@ -371,7 +400,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('BOTTOMPADDING', (0,0), (-1,-1), 3),
   ]))
   elements.append(t_meta)
-  elements.append(Spacer(1, 8))
+  elements.append(Spacer(1, 6))
 
   headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
   abs_table_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in headers]]
@@ -401,7 +430,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
   ]))
   elements.append(t_abs)
-  elements.append(Spacer(1, 8))
+  elements.append(Spacer(1, 6))
 
   in_words = num2words(int(total_bill_amt), lang="en_IN").upper()
   total_box = [
@@ -418,7 +447,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('BOTTOMPADDING', (0,0), (-1,-1), 5),
   ]))
   elements.append(t_tot)
-  elements.append(Spacer(1, 45))
+  elements.append(Spacer(1, 35))
 
   sig_data = [
       [
@@ -431,25 +460,67 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
   elements.append(t_sig)
 
-  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS =================
+  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (PORTRAIT FIT) =================
   for veh, s_df in veh_statements.items():
-    elements.append(PageBreak())  # Guarantee: Statement starts on a brand new page
+    elements.append(PageBreak())
 
-    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VComp', parent=comp_title, fontSize=13)))
-    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VStmt', parent=abstract_heading, fontSize=10)))
-    elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | Billing Tenure: <b>{bill_period}</b> | Operating Location: West Bokaro", sub_meta))
+    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=12)))
+    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9.5)))
+    elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", sub_meta))
 
-    st_headers = ["SL", "Date", "Shift Time", "Disp Shift", "OT (Hrs)", "Odo Start", "Odo End", "Run (KM)", "B/D (Hrs)", "Involvement / Activity", "Remarks"]
+    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
+    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
+    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+
+    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0})
+    f_type = meta_info.get("type", "KM_BASED")
+    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
+
+    if f_type == "HOUR_BASED":
+      v_litres = round(v_act_work_hrs * f_factor, 2)
+      v_fuel_claim = round(v_litres * market_diesel_rate, 2)
+      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.1f} Hrs"
+      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel (@₹{market_diesel_rate:.2f}):</b> ₹{v_fuel_claim:,.2f}"
+    else:
+      v_fuel_claim = round(v_run_units * f_factor, 2)
+      col5_text = f"<b>Total Run:</b> {v_run_units:.1f} KM"
+      col6_text = f"<b>Fuel (@₹{f_factor:.2f}/KM):</b> ₹{v_fuel_claim:,.2f}"
+
+    v_summary_data = [
+        [
+            Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
+            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
+            Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
+            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.1f} Hrs", cell_l),
+            Paragraph(col5_text, cell_l),
+            Paragraph(col6_text, cell_bold_r),
+        ]
+    ]
+    t_v_sum = Table(v_summary_data, colWidths=[90, 95, 85, 85, 95, 310])
+    t_v_sum.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,-1), 1, c_blue),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EBF8FF")),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#BEE3F8")),
+        ('TOPPADDING', (0,0), (-1,-1), 2.5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+    ]))
+    elements.append(t_v_sum)
+    elements.append(Spacer(1, 4))
+
+    st_headers = ["SL", "Date", "Shift Time", "Shift", "OT", "Odo In", "Odo Out", "KM / Units", "B/D", "Activity / Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
     for _, row in s_df.iterrows():
-      shift_time = f"{row.get('START_TIME', '')} - {row.get('END_TIME', '')}" if row.get('START_TIME') else ""
-      invol_str = str(row.get('INVOLVEMENT', ''))
-      rem_str = str(row.get('REMARKS', ''))
+      shift_time = f"{row.get('START_TIME', '')[:5]}-{row.get('END_TIME', '')[:5]}" if str(row.get('START_TIME', '')).strip() else ""
+      rem_full = str(row.get('REMARKS', ''))
+      if str(row.get('INVOLVEMENT', '')).strip():
+        rem_full = f"{row.get('INVOLVEMENT')} - {rem_full}".strip(" -")
 
       st_data.append([
           Paragraph(str(row.get("SL_NO", "")), cell_d),
-          Paragraph(str(row.get("DATE", "")), cell_d),
+          Paragraph(str(row.get("DATE", ""))[:5], cell_d),
           Paragraph(shift_time, cell_d),
           Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_d),
           Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_d),
@@ -457,18 +528,16 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(str(row.get("METER_END", "0")), cell_d),
           Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_d),
           Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
-          Paragraph(invol_str[:35], cell_l),
-          Paragraph(rem_str[:30], cell_l),
+          Paragraph(rem_full[:35], cell_l),
       ])
 
-    # Compact single-page fit for 31 days
-    t_stmt = Table(st_data, colWidths=[22, 54, 78, 48, 42, 48, 48, 45, 45, 200, 130])
+    t_stmt = Table(st_data, colWidths=[24, 46, 75, 42, 38, 55, 55, 50, 40, 335])
     t_stmt.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), c_slate),
-        ('GRID', (0,0), (-1,-1), 0.4, c_border),
+        ('BACKGROUND', (0,0), (-1,0), c_navy),
+        ('GRID', (0,0), (-1,-1), 0.35, c_border),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 1.2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1.2),
+        ('TOPPADDING', (0,0), (-1,-1), 1.0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.0),
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
     ]))
     elements.append(t_stmt)
@@ -493,10 +562,10 @@ df_vehs = load_sheet_df("master_vehicles")
 df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
 
-req_veh_cols = ["Vehicle_No", "Equipment_Family", "Mapped_DO_No"]
+req_veh_cols = ["Vehicle_No", "Equipment_Family", "Mapped_DO_No", "Fuel_Type", "Consumption_Factor"]
 for col in req_veh_cols:
   if col not in df_vehs.columns:
-    df_vehs[col] = ""
+    df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
 # --- TAB 1: DAILY ENTRY ---
@@ -549,15 +618,15 @@ with tabs[0]:
       bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)
 
       c4, c5, c6 = st.columns(3)
-      m_start = c4.number_input("Odometer Start Reading", value=def_mstart, min_value=0)
-      m_end = c5.number_input("Odometer End Reading", value=def_mend, min_value=0)
+      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)
+      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)
       dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)
 
       remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)
 
       btn_label = "Update / Override Existing Entry" if is_already_submitted else "Submit & Log Duty Slip"
       if st.form_submit_button(btn_label):
-        disp_s, ot, r_km, _ = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
+        disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
 
         if is_already_submitted:
           df_logs = df_logs[~((df_logs["Vehicle_No"] == selected_veh) & (df_logs["DATE"] == d_date_str))]
@@ -573,7 +642,8 @@ with tabs[0]:
             "OVERTIME_HRS": str(ot) if ot > 0 else "0",
             "METER_START": str(m_start),
             "METER_END": str(m_end),
-            "TOTAL_RUNNING_KM": str(r_km),
+            "TOTAL_RUNNING_KM": str(r_units),
+            "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
             "BREAKDOWN_TIME_HRS": str(bd_hrs),
             "INVOLVEMENT": dept,
             "REMARKS": remarks,
@@ -592,35 +662,56 @@ with tabs[1]:
   if len(available_dos) == 0:
     st.info("No active Delivery Orders available. Please upload or register an Order under 'DO Upload' tab.")
   else:
-    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
     chosen_do = col_d1.selectbox("Select Target Work Order / DO", available_dos)
     ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
 
     today = datetime.date.today()
     bill_m = col_d3.selectbox("Billing Month", list(range(1, 13)), index=today.month - 1)
     bill_y = col_d3.selectbox("Billing Year", [2025, 2026, 2027], index=1)
+    
+    market_diesel_rate = col_d4.number_input(
+        "1st Day Diesel Market Rate (₹/Ltr)",
+        value=92.50,
+        step=0.25,
+        help="Excavator / JCB etc. ke liye har mahine ki 1st tarikh ka official rate"
+    )
+
     m_name = calendar.month_name[bill_m].upper()
     num_days = calendar.monthrange(bill_y, bill_m)[1]
     bill_period = "01-{}-{} TO {:02d}-{}-{}".format(m_name[:3], bill_y, num_days, m_name[:3], bill_y)
 
     norm_chosen_do = normalize_do(chosen_do)
-    assigned_vehs = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]["Vehicle_No"].tolist()
+    assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
+    assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
 
     st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_vehs) if assigned_vehs else "None"))
 
     live_do_view = get_live_do_position(df_master_do, df_ledger, chosen_do, target_ra_bill_no=ra_bill_num)
 
     veh_full_statements = {}
-    total_group_billable_shifts = 0
+    veh_fuel_meta = {}
+    total_group_billable_shifts = 0.0
     total_group_ot = 0.0
-    total_group_km = 0.0
+    total_calculated_fuel_amount = 0.0
 
     for v in assigned_vehs:
       v_statement = generate_full_month_statement(v, bill_y, bill_m, df_logs)
       veh_full_statements[v] = v_statement
 
+      v_row_match = assigned_vehs_df[assigned_vehs_df["Vehicle_No"] == v]
+      f_type = "KM_BASED"
+      f_factor = 0.0
+      if not v_row_match.empty:
+        f_type = str(v_row_match.iloc[0].get("Fuel_Type", "KM_BASED")).strip()
+        f_factor = float(v_row_match.iloc[0].get("Consumption_Factor", 0.0) or 0.0)
+
+      veh_fuel_meta[v] = {"type": f_type, "factor": f_factor}
+
+      v_run_units = 0.0
+      v_work_hours = 0.0
       for _, r in v_statement.iterrows():
-        _, ot_val, km_val, b_shift = compute_shift_and_ot(
+        _, ot_val, run_u, b_shift, act_h = compute_shift_and_ot(
             r["DATE"],
             r["START_TIME"],
             r["END_TIME"],
@@ -631,7 +722,13 @@ with tabs[1]:
         )
         total_group_billable_shifts += b_shift
         total_group_ot += ot_val
-        total_group_km += km_val
+        v_run_units += run_u
+        v_work_hours += act_h
+
+      if f_type == "HOUR_BASED":
+        total_calculated_fuel_amount += round(v_work_hours * f_factor * market_diesel_rate, 2)
+      else:
+        total_calculated_fuel_amount += round(v_run_units * f_factor, 2)
 
     if assigned_vehs:
       st.markdown("---")
@@ -667,7 +764,9 @@ with tabs[1]:
           mime="text/csv",
       )
 
-    month_qty = round(min(26.0 * max(1, len(assigned_vehs)), total_group_billable_shifts) / 26.0, 3)
+    num_vehs = max(1, len(assigned_vehs))
+    standard_month_shifts = 26.0 * num_vehs
+    month_qty = round(min(standard_month_shifts, total_group_billable_shifts) / standard_month_shifts * num_vehs, 3)
 
     abstract_rows = []
     total_this_bill = 0.0
@@ -684,14 +783,13 @@ with tabs[1]:
       elif "HOUR" in unit:
         this_qty = total_group_ot
         this_amt = round(this_qty * rate, 2)
-      elif "KM" in unit or "FUEL" in desc or "TRAILOR" in desc or "HYVA" in desc:
-        fuel_km_rate = float(row.get("Fuel_Rate_KM", 0.0) or 40.0)
-        if rate == 1.0 or unit == "LUMPSUM":
-          this_qty = round(total_group_km * fuel_km_rate, 2)
+      elif "KM" in unit or "FUEL" in desc or "REIMBUR" in desc or "LUMPSUM" in unit:
+        if "LUMPSUM" in unit or rate == 1.0:
+          this_qty = round(total_calculated_fuel_amount, 2)
           this_amt = this_qty
         else:
-          this_qty = total_group_km
-          this_amt = round(this_qty * (rate if rate > 0 else fuel_km_rate), 2)
+          this_qty = round(total_calculated_fuel_amount / (rate if rate > 0 else 1.0), 2)
+          this_amt = round(total_calculated_fuel_amount, 2)
       else:
         this_qty = 0.0
         this_amt = 0.0
@@ -742,7 +840,7 @@ with tabs[1]:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements)
+    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate)
     col_btn2.download_button(
         "📄 Download Official PDF (Abstract + Statements)",
         data=pdf_bytes,
@@ -798,7 +896,6 @@ with tabs[2]:
 
       family = "Backhoe / JCB" if "BACKHOE" in desc_clean.upper() or "JCB" in desc_clean.upper() else ("Camper" if "CAMPER" in desc_clean.upper() else ("Trailor-40MT" if "TRAILOR" in desc_clean.upper() else desc_clean[:20]))
       ot_rate = rate if unit.lower() in ["hours", "hour"] else 0.0
-      fuel_rate = 40.0 if "TRAILOR" in family.upper() else 12.0
 
       parsed_items.append({
           "DO_No": final_wo,
@@ -809,7 +906,7 @@ with tabs[2]:
           "BOQ_Qty": qty,
           "Rate": rate,
           "OT_Rate": ot_rate,
-          "Fuel_Rate_KM": fuel_rate,
+          "Fuel_Rate_KM": 0.0,
           "Initial_Baseline_Qty": 0.0,
           "Initial_Baseline_Amt": 0.0,
       })
@@ -826,6 +923,7 @@ with tabs[2]:
 
   st.markdown("---")
   st.subheader("2. Contract Opening Baseline Configuration")
+  st.caption("Edit rates, BOQ, baseline or set custom Fuel_Rate_KM per line item:")
   edited_master = st.data_editor(df_master_do, num_rows="dynamic", key="baseline_editor_clean")
   if st.button("Save Contract Baseline"):
     save_sheet_df("master_do_items", edited_master)
@@ -836,20 +934,29 @@ with tabs[2]:
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
   st.subheader("Fleet Asset Mapping")
-  st.caption("Map deployed vehicle registration numbers or Asset IDs (e.g., EXC-01) to contract DO:")
+  st.caption("Map deployed vehicle registration numbers or Asset IDs to contract DO with their fuel consumption mode:")
 
   with st.expander("➕ Add New Vehicle to Fleet (Direct Entry)", expanded=df_vehs.empty):
     with st.form("add_vehicle_form"):
-      col_v1, col_v2, col_v3 = st.columns(3)
+      col_v1, col_v2 = st.columns(2)
       new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
-      fam_options = ["Trailor-40MT", "Backhoe / JCB", "Camper", "Tipper / Dumper", "Water Tanker", "Other"]
+      fam_options = ["Trailor-40MT", "Backhoe / JCB", "Camper", "Tipper / Dumper", "Water Tanker", "Excavator", "Other"]
       new_fam = col_v2.selectbox("Equipment Family / Category", fam_options)
 
+      col_v3, col_v4, col_v5 = st.columns(3)
       available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
       if available_dos_list:
         new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
       else:
         new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
+
+      new_f_type = col_v4.selectbox("Fuel Mode", ["KM_BASED", "HOUR_BASED"], help="Trailor/Camper ke liye KM_BASED, Excavator/JCB ke liye HOUR_BASED")
+      new_f_factor = col_v5.number_input(
+          "Consumption Factor (₹/KM ya Litres/Hour)",
+          value=40.0 if "Trailor" in new_fam else (10.0 if "Excavator" in new_fam else 9.0),
+          step=0.5,
+          help="KM_BASED hai toh ₹/KM (e.g. 40 ya 9), HOUR_BASED hai toh Litres/Hour (e.g. 10.0)"
+      )
 
       if st.form_submit_button("Save & Register Vehicle"):
         if not new_v_no:
@@ -860,7 +967,9 @@ with tabs[3]:
           new_row = pd.DataFrame([{
               "Vehicle_No": new_v_no,
               "Equipment_Family": new_fam,
-              "Mapped_DO_No": new_do
+              "Mapped_DO_No": new_do,
+              "Fuel_Type": new_f_type,
+              "Consumption_Factor": str(new_f_factor)
           }])
           df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
           save_sheet_df("master_vehicles", df_vehs[req_veh_cols])
@@ -868,7 +977,7 @@ with tabs[3]:
           st.rerun()
 
   st.markdown("---")
-  st.write("**Registered Fleet Vehicles (Edit directly in table below):**")
+  st.write("**Registered Fleet Vehicles (Edit fuel mode & factor directly in table below):**")
 
   v_editor = st.data_editor(
       df_vehs[req_veh_cols],
