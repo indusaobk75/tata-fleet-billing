@@ -11,7 +11,7 @@ import pdfplumber
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
 
 st.set_page_config(
@@ -60,7 +60,7 @@ def check_access():
 
 check_access()
 
-# Watermark & Developer menu hide
+# Streamlit branding hide karein
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -314,101 +314,170 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- PDF GENERATOR FUNCTION -----------------
+# ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements):
   pdf_buffer = io.BytesIO()
-  doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+  doc = SimpleDocTemplate(
+      pdf_buffer,
+      pagesize=landscape(A4),
+      rightMargin=18,
+      leftMargin=18,
+      topMargin=16,
+      bottomMargin=16
+  )
   elements = []
   styles = getSampleStyleSheet()
 
-  title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, alignment=1, spaceAfter=4)
-  sub_style = ParagraphStyle('SubStyle', parent=styles['Normal'], fontSize=9, alignment=1, spaceAfter=10)
-  cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10)
-  bold_cell = ParagraphStyle('BoldCell', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold')
+  c_navy = colors.HexColor("#1A365D")
+  c_slate = colors.HexColor("#2B6CB0")
+  c_border = colors.HexColor("#CBD5E0")
+  c_row_alt = colors.HexColor("#F7FAFC")
 
-  # 1. Billing Abstract Header
-  elements.append(Paragraph("<b>M/S INDU SAO (VENDOR CODE: ID47)</b>", title_style))
-  elements.append(Paragraph(f"TATA STEEL FLEET BILLING ABSTRACT | <b>RA BILL NO: {ra_bill_no}</b> | WORK ORDER: <b>{do_no}</b>", sub_style))
-  elements.append(Paragraph(f"Billing Period: <b>{bill_period}</b> | Site: Coal Projects, West Bokaro", sub_style))
-  elements.append(Spacer(1, 6))
+  comp_title = ParagraphStyle('CompTitle', parent=styles['Heading1'], fontSize=16, alignment=1, spaceAfter=2, fontName='Helvetica-Bold', textColor=c_navy)
+  abstract_heading = ParagraphStyle('AbsHeading', parent=styles['Heading2'], fontSize=12, alignment=1, spaceAfter=6, fontName='Helvetica-Bold', textColor=colors.HexColor("#2D3748"))
+  sub_meta = ParagraphStyle('SubMeta', parent=styles['Normal'], fontSize=8, alignment=1, spaceAfter=8, textColor=colors.HexColor("#4A5568"))
 
-  # Abstract Table Data
-  headers = ["W.O SrL", "Description", "Unit", "Rate (₹)", "BOQ Qty", "Prev Qty", "Prev Amt (₹)", "This Qty", "This Amt (₹)", "Cumul Amt (₹)"]
-  table_data = [[Paragraph(f"<b>{h}</b>", bold_cell) for h in headers]]
+  cell_h = ParagraphStyle('CellH', parent=styles['Normal'], fontSize=7.5, fontName='Helvetica-Bold', alignment=1, textColor=colors.white, leading=9)
+  cell_d = ParagraphStyle('CellD', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=1)
+  cell_l = ParagraphStyle('CellL', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=0)
+  cell_r = ParagraphStyle('CellR', parent=styles['Normal'], fontSize=7, leading=8.5, alignment=2)
+  cell_bold_r = ParagraphStyle('CellBR', parent=styles['Normal'], fontSize=7, leading=8.5, fontName='Helvetica-Bold', alignment=2)
+
+  # ================= PAGE 1: M/S INDU SAO ABSTRACT =================
+  elements.append(Paragraph("M/S INDU SAO", comp_title))
+  elements.append(Paragraph("ABSTRACT", abstract_heading))
+  elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
+
+  meta_rows = [
+      [
+          Paragraph(f"<b>Work Order / DO No:</b> {do_no}", cell_l),
+          Paragraph(f"<b>RA Bill No:</b> {ra_bill_no}", cell_l),
+          Paragraph(f"<b>Billing Period:</b> {bill_period}", cell_l),
+          Paragraph(f"<b>Date:</b> {datetime.date.today().strftime('%d-%b-%Y')}", cell_l),
+      ],
+      [
+          Paragraph(f"<b>Vendor Code:</b> ID47", cell_l),
+          Paragraph(f"<b>Contract Scope:</b> Heavy Equipment & Fleet Hiring", cell_l),
+          Paragraph(f"<b>Location:</b> West Bokaro Division", cell_l),
+          Paragraph(f"<b>Status:</b> Certified Submission", cell_l),
+      ]
+  ]
+  t_meta = Table(meta_rows, colWidths=[230, 150, 230, 150])
+  t_meta.setStyle(TableStyle([
+      ('BOX', (0,0), (-1,-1), 1, c_navy),
+      ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EDF2F7")),
+      ('GRID', (0,0), (-1,-1), 0.5, c_border),
+      ('TOPPADDING', (0,0), (-1,-1), 3),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+  ]))
+  elements.append(t_meta)
+  elements.append(Spacer(1, 8))
+
+  headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
+  abs_table_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in headers]]
 
   for _, r in abs_df.iterrows():
-    row_data = [
-        Paragraph(str(r["W.O SrL No"]), cell_style),
-        Paragraph(str(r["Description"]), cell_style),
-        Paragraph(str(r["Unit"]), cell_style),
-        Paragraph(f"{float(r['BOQ Rate']):,.2f}", cell_style),
-        Paragraph(f"{float(r['BOQ Qty']):,.2f}", cell_style),
-        Paragraph(f"{float(r['Prev Qty']):,.2f}", cell_style),
-        Paragraph(f"{float(r['Prev Amount']):,.2f}", cell_style),
-        Paragraph(f"{float(r['This Bill Qty']):,.2f}", cell_style),
-        Paragraph(f"{float(r['This Bill Amount']):,.2f}", bold_cell),
-        Paragraph(f"{float(r['Cumulative Amount']):,.2f}", bold_cell),
-    ]
-    table_data.append(row_data)
+    abs_table_data.append([
+        Paragraph(str(r["W.O SrL No"]), cell_d),
+        Paragraph(str(r["Description"]), cell_l),
+        Paragraph(str(r["Unit"]), cell_d),
+        Paragraph(f"{float(r['BOQ Rate']):,.2f}", cell_r),
+        Paragraph(f"{float(r['BOQ Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['Prev Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['Prev Amount']):,.2f}", cell_r),
+        Paragraph(f"{float(r['This Bill Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['This Bill Amount']):,.2f}", cell_bold_r),
+        Paragraph(f"{float(r['Cumulative Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
+    ])
 
-  abs_table = Table(table_data, colWidths=[45, 170, 45, 60, 55, 55, 75, 55, 80, 85])
-  abs_table.setStyle(TableStyle([
-      ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
-      ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-      ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-      ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-      ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-      ('TOPPADDING', (0, 0), (-1, -1), 4),
-      ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+  t_abs = Table(abs_table_data, colWidths=[28, 202, 45, 55, 45, 45, 75, 45, 80, 50, 90])
+  t_abs.setStyle(TableStyle([
+      ('BACKGROUND', (0,0), (-1,0), c_navy),
+      ('GRID', (0,0), (-1,-1), 0.5, c_border),
+      ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+      ('TOPPADDING', (0,0), (-1,-1), 4),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+      ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
   ]))
-  elements.append(abs_table)
-  elements.append(Spacer(1, 10))
+  elements.append(t_abs)
+  elements.append(Spacer(1, 8))
 
   in_words = num2words(int(total_bill_amt), lang="en_IN").upper()
-  summary_p = f"<b>Total Invoice Amount: ₹{total_bill_amt:,.2f}</b> (INR {in_words} RUPEES ONLY)"
-  elements.append(Paragraph(summary_p, ParagraphStyle('Summ', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor("#1A5276"))))
-  elements.append(Spacer(1, 15))
+  total_box = [
+      [
+          Paragraph(f"<b>AMOUNT IN WORDS:</b> RUPEES {in_words} ONLY", cell_l),
+          Paragraph(f"<b>NET INVOICE VALUE: ₹{total_bill_amt:,.2f}</b>", ParagraphStyle('TotNet', parent=cell_bold_r, fontSize=8.5, textColor=c_navy))
+      ]
+  ]
+  t_tot = Table(total_box, colWidths=[550, 210])
+  t_tot.setStyle(TableStyle([
+      ('BOX', (0,0), (-1,-1), 1, c_navy),
+      ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#E2E8F0")),
+      ('TOPPADDING', (0,0), (-1,-1), 5),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+  ]))
+  elements.append(t_tot)
+  elements.append(Spacer(1, 45))
 
-  # 2. Daily Duty Statements per Vehicle
+  sig_data = [
+      [
+          Paragraph("____________________________<br/><b>Prepared By</b><br/>Site Supervisor", cell_d),
+          Paragraph("____________________________<br/><b>For M/S INDU SAO</b><br/>Authorized Signatory", cell_d),
+          Paragraph("____________________________<br/><b>Verified & Certified By</b><br/>Engineer-in-Charge (Tata Steel Ltd)", cell_d)
+      ]
+  ]
+  t_sig = Table(sig_data, colWidths=[250, 260, 250])
+  t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+  elements.append(t_sig)
+
+  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS =================
   for veh, s_df in veh_statements.items():
-    elements.append(Paragraph(f"<b>EQUIPMENT DUTY LOG STATEMENT - {veh}</b>", ParagraphStyle('VehHead', parent=styles['Heading2'], fontSize=11, spaceAfter=4)))
-    stmt_headers = ["SL", "Date", "In", "Out", "Shift", "OT Hrs", "Meter In", "Meter Out", "Run KM", "BD Hrs", "Involvement / Remarks"]
-    stmt_data = [[Paragraph(f"<b>{h}</b>", bold_cell) for h in stmt_headers]]
+    elements.append(PageBreak())  # Guarantee: Statement starts on a brand new page
+
+    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VComp', parent=comp_title, fontSize=13)))
+    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VStmt', parent=abstract_heading, fontSize=10)))
+    elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | Billing Tenure: <b>{bill_period}</b> | Operating Location: West Bokaro", sub_meta))
+
+    st_headers = ["SL", "Date", "Shift Time", "Disp Shift", "OT (Hrs)", "Odo Start", "Odo End", "Run (KM)", "B/D (Hrs)", "Involvement / Activity", "Remarks"]
+    st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
     for _, row in s_df.iterrows():
-      rem_txt = str(row.get('REMARKS', ''))
-      if str(row.get('INVOLVEMENT', '')):
-        rem_txt += f" ({row.get('INVOLVEMENT')})"
-      stmt_data.append([
-          Paragraph(str(row.get("SL_NO", "")), cell_style),
-          Paragraph(str(row.get("DATE", "")), cell_style),
-          Paragraph(str(row.get("START_TIME", "")), cell_style),
-          Paragraph(str(row.get("END_TIME", "")), cell_style),
-          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_style),
-          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_style),
-          Paragraph(str(row.get("METER_START", "0")), cell_style),
-          Paragraph(str(row.get("METER_END", "0")), cell_style),
-          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_style),
-          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_style),
-          Paragraph(rem_txt, cell_style),
+      shift_time = f"{row.get('START_TIME', '')} - {row.get('END_TIME', '')}" if row.get('START_TIME') else ""
+      invol_str = str(row.get('INVOLVEMENT', ''))
+      rem_str = str(row.get('REMARKS', ''))
+
+      st_data.append([
+          Paragraph(str(row.get("SL_NO", "")), cell_d),
+          Paragraph(str(row.get("DATE", "")), cell_d),
+          Paragraph(shift_time, cell_d),
+          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_d),
+          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_d),
+          Paragraph(str(row.get("METER_START", "0")), cell_d),
+          Paragraph(str(row.get("METER_END", "0")), cell_d),
+          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_d),
+          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
+          Paragraph(invol_str[:35], cell_l),
+          Paragraph(rem_str[:30], cell_l),
       ])
 
-    st_table = Table(stmt_data, colWidths=[25, 65, 55, 55, 40, 45, 55, 55, 50, 50, 230])
-    st_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#34495E")),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#BDC3C7")),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    # Compact single-page fit for 31 days
+    t_stmt = Table(st_data, colWidths=[22, 54, 78, 48, 42, 48, 48, 45, 45, 200, 130])
+    t_stmt.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), c_slate),
+        ('GRID', (0,0), (-1,-1), 0.4, c_border),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 1.2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.2),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
     ]))
-    elements.append(st_table)
-    elements.append(Spacer(1, 15))
+    elements.append(t_stmt)
 
   doc.build(elements)
   return pdf_buffer.getvalue()
 
 
-# ----------------- 3. APP INTERFACE -----------------
+# ----------------- 4. STREAMLIT APP INTERFACE -----------------
 st.title("Tata Steel Fleet Billing & DO Ledger System")
 st.caption("Vendor: M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
 
@@ -434,7 +503,7 @@ for col in req_veh_cols:
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
   active_vehs = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]
-  
+
   if active_vehs.empty:
     st.warning("No vehicles registered. Please configure fleet entries in 'Vehicle Master Mapping' tab.")
   else:
@@ -590,7 +659,6 @@ with tabs[1]:
         st.success("Google Sheets synchronized successfully.")
         st.rerun()
 
-      # Single statement CSV download
       csv_buf = edited_stmt.to_csv(index=False).encode('utf-8')
       col_st2.download_button(
           f"Download {chosen_view_veh} Statement (CSV)",
@@ -606,20 +674,24 @@ with tabs[1]:
 
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
-      unit = str(row.get("Unit", "")).strip()
+      unit = str(row.get("Unit", "")).strip().upper()
       rate = float(row.get("Rate", 0.0) or 0.0)
-      desc = str(row.get("Description", ""))
+      desc = str(row.get("Description", "")).upper()
 
-      if unit.lower() in ["months", "month"]:
+      if "MONTH" in unit:
         this_qty = month_qty
         this_amt = round(this_qty * rate, 2)
-      elif unit.lower() in ["hours", "hour"]:
+      elif "HOUR" in unit:
         this_qty = total_group_ot
         this_amt = round(this_qty * rate, 2)
-      elif "fuel" in desc.lower():
-        f_rate = float(row.get("Fuel_Rate_KM", 0.0) or 0.0)
-        this_qty = round(total_group_km * f_rate, 2) if rate == 1.0 else total_group_km
-        this_amt = round(this_qty * rate, 2)
+      elif "KM" in unit or "FUEL" in desc or "TRAILOR" in desc or "HYVA" in desc:
+        fuel_km_rate = float(row.get("Fuel_Rate_KM", 0.0) or 40.0)
+        if rate == 1.0 or unit == "LUMPSUM":
+          this_qty = round(total_group_km * fuel_km_rate, 2)
+          this_amt = this_qty
+        else:
+          this_qty = total_group_km
+          this_amt = round(this_qty * (rate if rate > 0 else fuel_km_rate), 2)
       else:
         this_qty = 0.0
         this_amt = 0.0
@@ -630,8 +702,8 @@ with tabs[1]:
 
       abstract_rows.append({
           "W.O SrL No": sl,
-          "Description": desc,
-          "Unit": unit,
+          "Description": row.get("Description", ""),
+          "Unit": row.get("Unit", ""),
           "BOQ Rate": rate,
           "BOQ Qty": row["BOQ_Qty"],
           "Prev Qty": row["Prev_Qty"],
@@ -656,7 +728,6 @@ with tabs[1]:
 
     col_btn1, col_btn2, col_btn3 = st.columns(3)
 
-    # 1. Excel Package Download
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
       abs_df.to_excel(writer, sheet_name="Page1_Abstract", index=False)
@@ -665,13 +736,12 @@ with tabs[1]:
 
     clean_do = str(chosen_do).replace("/", "_")
     col_btn1.download_button(
-        "📊 Download Excel (Abstract + Statements)",
+        "📊 Download Excel Package",
         data=buf_xl.getvalue(),
         file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    # 2. PDF Official Package Download
     pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements)
     col_btn2.download_button(
         "📄 Download Official PDF (Abstract + Statements)",
@@ -680,7 +750,6 @@ with tabs[1]:
         mime="application/pdf",
     )
 
-    # 3. Finalize Bill
     if col_btn3.button("Lock RA Bill {}".format(ra_bill_num)):
       df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
       new_entries = []
@@ -775,13 +844,13 @@ with tabs[3]:
       new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
       fam_options = ["Trailor-40MT", "Backhoe / JCB", "Camper", "Tipper / Dumper", "Water Tanker", "Other"]
       new_fam = col_v2.selectbox("Equipment Family / Category", fam_options)
-      
+
       available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
       if available_dos_list:
         new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
       else:
         new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
-      
+
       if st.form_submit_button("Save & Register Vehicle"):
         if not new_v_no:
           st.error("Kripya Asset ID / Vehicle Number darj karein.")
