@@ -10,19 +10,9 @@ from num2words import num2words
 import pandas as pd
 import pdfplumber
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape, portrait
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (
-    BaseDocTemplate,
-    Frame,
-    NextPageTemplate,
-    PageBreak,
-    PageTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
 
 st.set_page_config(
@@ -372,32 +362,19 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. DUAL ORIENTATION PDF GENERATOR -----------------
+# ----------------- 3. PROFESSIONAL PDF GENERATOR (LANDSCAPE FULL FILL) -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate):
   pdf_buffer = io.BytesIO()
-
-  # Set up BaseDocTemplate with Landscape AND Portrait templates
-  doc = BaseDocTemplate(
+  
+  # Landscape A4 with optimized margins
+  doc = SimpleDocTemplate(
       pdf_buffer,
       pagesize=landscape(A4),
-      leftMargin=14,
       rightMargin=14,
-      topMargin=14,
-      bottomMargin=14,
+      leftMargin=14,
+      topMargin=12,
+      bottomMargin=12
   )
-
-  # Landscape Frame & Template for Abstract
-  l_w, l_h = landscape(A4)
-  frame_land = Frame(14, 14, l_w - 28, l_h - 28, id='frame_land', topPadding=0, bottomPadding=0, leftPadding=0, rightPadding=0)
-  template_land = PageTemplate(id='LandscapePage', frames=frame_land, pagesize=landscape(A4))
-
-  # Portrait Frame & Template for Duty Statements
-  p_w, p_h = portrait(A4)
-  frame_port = Frame(14, 14, p_w - 28, p_h - 28, id='frame_port', topPadding=0, bottomPadding=0, leftPadding=0, rightPadding=0)
-  template_port = PageTemplate(id='PortraitPage', frames=frame_port, pagesize=portrait(A4))
-
-  doc.addPageTemplates([template_land, template_port])
-
   elements = []
   styles = getSampleStyleSheet()
 
@@ -410,13 +387,13 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   abstract_heading = ParagraphStyle('AbsHeading', fontName='Helvetica-Bold', fontSize=11, alignment=1, spaceAfter=4, textColor=colors.HexColor("#2D3748"))
   sub_meta = ParagraphStyle('SubMeta', fontName='Helvetica', fontSize=7.5, alignment=1, spaceAfter=6, textColor=colors.HexColor("#4A5568"))
 
-  cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=7.5, alignment=1, textColor=colors.white, leading=9)
-  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7, leading=8.5, alignment=1)
-  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7, leading=8.5, alignment=0)
-  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7, leading=8.5, alignment=2)
-  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7, leading=8.5, alignment=2)
+  cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=8, alignment=1, textColor=colors.white, leading=9.5)
+  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7.5, leading=9, alignment=1)
+  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, leading=9, alignment=0)
+  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=9, alignment=2)
+  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=9, alignment=2)
 
-  # ================= PAGE 1: ABSTRACT (LANDSCAPE FULL WIDTH) =================
+  # ================= PAGE 1: CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -435,7 +412,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph("<b>Diesel Rate (1st Day):</b> ₹{:,.2f} / Ltr".format(market_diesel_rate) if market_diesel_rate > 0 else "<b>Contract Rate Basis</b>", cell_l),
       ]
   ]
-  t_meta = Table(meta_rows, colWidths=[235, 160, 235, 160])
+  t_meta = Table(meta_rows, colWidths=[240, 165, 240, 165])
   t_meta.setStyle(TableStyle([
       ('BOX', (0,0), (-1,-1), 1, c_navy),
       ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EDF2F7")),
@@ -464,7 +441,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
     ])
 
-  t_abs = Table(abs_table_data, colWidths=[28, 212, 45, 55, 45, 45, 75, 45, 80, 50, 90])
+  t_abs = Table(abs_table_data, colWidths=[28, 222, 45, 55, 45, 45, 75, 45, 80, 50, 90])
   t_abs.setStyle(TableStyle([
       ('BACKGROUND', (0,0), (-1,0), c_navy),
       ('GRID', (0,0), (-1,-1), 0.5, c_border),
@@ -483,7 +460,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(f"<b>NET INVOICE VALUE: ₹{total_bill_amt:,.2f}</b>", ParagraphStyle('TotNet', parent=cell_bold_r, fontSize=8.5, textColor=c_navy))
       ]
   ]
-  t_tot = Table(total_box, colWidths=[570, 220])
+  t_tot = Table(total_box, colWidths=[580, 230])
   t_tot.setStyle(TableStyle([
       ('BOX', (0,0), (-1,-1), 1, c_navy),
       ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#E2E8F0")),
@@ -500,54 +477,19 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph("____________________________<br/><b>Verified & Certified By</b><br/>Engineer-in-Charge (Tata Steel Ltd)", cell_d)
       ]
   ]
-  t_sig = Table(sig_data, colWidths=[260, 270, 260])
+  t_sig = Table(sig_data, colWidths=[265, 280, 265])
   t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
   elements.append(t_sig)
 
-  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (STRICT PORTRAIT A4) =================
+  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (LANDSCAPE FULL FILL) =================
   for veh, s_df in veh_statements.items():
-    elements.append(NextPageTemplate('PortraitPage'))
     elements.append(PageBreak())
 
-    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=11, spaceAfter=1)))
-    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
+    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=12, spaceAfter=1)))
+    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9.5, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=4)))
 
-    # Statement Table with SEPARATE Involvement and Remarks columns
-    st_headers = ["SL", "Date", "Shift Time", "Shift", "OT", "Odo In", "Odo Out", "KM", "B/D", "Involvement", "Remarks"]
-    st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
-
-    for _, row in s_df.iterrows():
-      shift_time = f"{row.get('START_TIME', '')[:5]}-{row.get('END_TIME', '')[:5]}" if str(row.get('START_TIME', '')).strip() else ""
-
-      st_data.append([
-          Paragraph(str(row.get("SL_NO", "")), cell_d),
-          Paragraph(str(row.get("DATE", ""))[:5], cell_d),
-          Paragraph(shift_time, cell_d),
-          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_d),
-          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_d),
-          Paragraph(str(row.get("METER_START", "0")), cell_d),
-          Paragraph(str(row.get("METER_END", "0")), cell_d),
-          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_d),
-          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
-          Paragraph(str(row.get("INVOLVEMENT", ""))[:20], cell_l),
-          Paragraph(str(row.get("REMARKS", ""))[:22], cell_l),
-      ])
-
-    # Widths totaling 566 pt (exact fit for Portrait A4 width: 595 - 28 = 567 pt)
-    t_stmt = Table(st_data, colWidths=[20, 36, 68, 30, 26, 44, 44, 34, 28, 118, 118])
-    t_stmt.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), c_navy),
-        ('GRID', (0,0), (-1,-1), 0.35, c_border),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 1.0),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1.0),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
-    ]))
-    elements.append(t_stmt)
-    elements.append(Spacer(1, 5))
-
-    # Statement Summary Box - PLACED PROPERLY BELOW THE STATEMENT TABLE
+    # 1. Summary Strip Placed AT THE TOP of the Statement
     v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
     v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
     v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
@@ -562,7 +504,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       v_litres = round(v_act_work_hrs * f_factor, 2)
       v_fuel_claim = round(v_litres * market_diesel_rate, 2)
       col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.1f} Hrs"
-      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel (@₹{market_diesel_rate:.2f}):</b> ₹{v_fuel_claim:,.2f}"
+      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel Claim (@₹{market_diesel_rate:.2f}): ₹{v_fuel_claim:,.2f}</b>"
     else:
       v_fuel_claim = round(v_run_units * f_factor, 2)
       col5_text = f"<b>Total Run:</b> {v_run_units:.1f} KM"
@@ -571,22 +513,55 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     v_summary_data = [
         [
             Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
-            Paragraph(f"<b>Shifts:</b> {v_working_shifts}/26", cell_l),
-            Paragraph(f"<b>B/D:</b> {v_bd_hrs:.1f} Hrs", cell_l),
-            Paragraph(f"<b>OT:</b> {v_ot_hrs:.1f} Hrs", cell_l),
+            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
+            Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
+            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.1f} Hrs", cell_l),
             Paragraph(col5_text, cell_l),
             Paragraph(col6_text, cell_bold_r),
         ]
     ]
-    t_v_sum = Table(v_summary_data, colWidths=[90, 80, 75, 75, 95, 151])
+    t_v_sum = Table(v_summary_data, colWidths=[120, 120, 110, 110, 120, 230])
     t_v_sum.setStyle(TableStyle([
         ('BOX', (0,0), (-1,-1), 1, c_blue),
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EBF8FF")),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#BEE3F8")),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('TOPPADDING', (0,0), (-1,-1), 2.5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
     ]))
     elements.append(t_v_sum)
+    elements.append(Spacer(1, 4))
+
+    # 2. Sequential Calendar Statement Table (Landscape - Balanced Widths totaling 810 pt)
+    st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", "Run (KM)", "B/D (Hrs)", "Involvement", "Remarks"]
+    st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
+
+    for _, row in s_df.iterrows():
+      st_data.append([
+          Paragraph(str(row.get("SL_NO", "")), cell_d),
+          Paragraph(str(row.get("DATE", "")), cell_d),
+          Paragraph(str(row.get("START_TIME", "")), cell_d),
+          Paragraph(str(row.get("END_TIME", "")), cell_d),
+          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_d),
+          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_d),
+          Paragraph(str(row.get("METER_START", "0")), cell_d),
+          Paragraph(str(row.get("METER_END", "0")), cell_d),
+          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_d),
+          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
+          Paragraph(str(row.get("INVOLVEMENT", ""))[:20], cell_l),
+          Paragraph(str(row.get("REMARKS", ""))[:24], cell_l),
+      ])
+
+    # Widths totaling 810 pt - Fits full landscape width perfectly
+    t_stmt = Table(st_data, colWidths=[24, 60, 68, 68, 40, 48, 62, 62, 54, 54, 135, 135])
+    t_stmt.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), c_navy),
+        ('GRID', (0,0), (-1,-1), 0.4, c_border),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 2.0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.0),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
+    ]))
+    elements.append(t_stmt)
 
   doc.build(elements)
   return pdf_buffer.getvalue()
