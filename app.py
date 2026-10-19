@@ -70,7 +70,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 1. GOOGLE SHEETS CONNECTION & SMART CACHING -----------------
+# ----------------- 1. GOOGLE SHEETS CONNECTION & SMART CACHE -----------------
 SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
 
 @st.cache_resource
@@ -104,7 +104,6 @@ def load_sheet_df(worksheet_name):
       if "429" in err_str:
         time.sleep(2 * (attempt + 1))
         continue
-      st.error(f"Error loading {worksheet_name}: {e}")
       return pd.DataFrame()
   return pd.DataFrame()
 
@@ -114,7 +113,10 @@ def save_sheet_df(worksheet_name, df):
     try:
       gc = get_gspread_client()
       sh = gc.open(SHEET_NAME)
-      ws = sh.worksheet(worksheet_name)
+      try:
+        ws = sh.worksheet(worksheet_name)
+      except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
       ws.clear()
       df_clean = df.fillna("")
       ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
@@ -389,7 +391,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7, leading=8.5, alignment=2)
   cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7, leading=8.5, alignment=2)
 
-  # PAGE 1: ABSTRACT
+  # ================= PAGE 1: ABSTRACT (LANDSCAPE FULL WIDTH) =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -477,7 +479,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
   elements.append(t_sig)
 
-  # PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS
+  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (PORTRAIT FIT) =================
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
@@ -563,7 +565,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   return pdf_buffer.getvalue()
 
 
-# ----------------- 4. STREAMLIT APP INTERFACE -----------------
+# ----------------- 4. STREAMLIT APP NAVIGATION -----------------
 st.title("Tata Steel Fleet Billing & DO Ledger System")
 st.caption("Vendor: M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
 
@@ -572,12 +574,41 @@ tabs = st.tabs([
     "Monthly Statement & Abstract",
     "DO Upload & Baseline Setup",
     "Vehicle Master Mapping",
+    "Equipment Rate Master",
 ])
 
 df_master_do = load_sheet_df("master_do_items")
 df_vehs = load_sheet_df("master_vehicles")
 df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
+df_rates = load_sheet_df("fleet_rate_master")
+
+# Default Rate Schedule if empty
+if df_rates.empty or "Category_Name" not in df_rates.columns:
+  default_schedule = [
+      {"Category_Name": "Backhoe / JCB", "Monthly_Rate": 100000.0, "OT_Rate": 299.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 5.50, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Water Sprinkler (12,000 Litres)", "Monthly_Rate": 108000.0, "OT_Rate": 322.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 22.0, "Unit_Display": "₹/Km"},
+      {"Category_Name": "Drinking Water Tanker (5,000 Litres)", "Monthly_Rate": 76500.0, "OT_Rate": 229.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 16.0, "Unit_Display": "₹/Km"},
+      {"Category_Name": "Hywa (12 Tyres)", "Monthly_Rate": 140000.0, "OT_Rate": 374.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 40.0, "Unit_Display": "₹/Km"},
+      {"Category_Name": "Camper (Support Vehicle)", "Monthly_Rate": 40000.0, "OT_Rate": 90.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 9.0, "Unit_Display": "₹/Km"},
+      {"Category_Name": "Vibratory Roller (10T Capacity)", "Monthly_Rate": 115000.0, "OT_Rate": 340.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 9.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Baby Roller (1T Capacity)", "Monthly_Rate": 31500.0, "OT_Rate": 70.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 8.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Excavator (220 Class with Breaker)", "Monthly_Rate": 170000.0, "OT_Rate": 450.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 10.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Excavator (300 Class with Breaker)", "Monthly_Rate": 225000.0, "OT_Rate": 590.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 14.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "F-23 Crane", "Monthly_Rate": 140000.0, "OT_Rate": 300.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 3.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Trailer (40 MT)", "Monthly_Rate": 140000.0, "OT_Rate": 299.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 40.0, "Unit_Display": "₹/Km"},
+      {"Category_Name": "Diesel Bowser (800 Litres Capacity)", "Monthly_Rate": 50000.0, "OT_Rate": 135.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 9.0, "Unit_Display": "₹/Km"},
+  ]
+  df_rates = pd.DataFrame(default_schedule)
+
+rate_dict = {}
+for _, r in df_rates.iterrows():
+  rate_dict[str(r["Category_Name"]).strip()] = {
+      "mode": str(r.get("Fuel_Mode", "KM_BASED")).strip(),
+      "factor": float(r.get("Fuel_Factor", 0.0) or 0.0),
+      "m_rate": float(r.get("Monthly_Rate", 0.0) or 0.0),
+      "ot_rate": float(r.get("OT_Rate", 0.0) or 0.0),
+  }
 
 req_veh_cols = ["Vehicle_No", "Equipment_Family", "Mapped_DO_No", "Fuel_Type", "Consumption_Factor"]
 for col in req_veh_cols:
@@ -953,45 +984,43 @@ with tabs[3]:
   st.subheader("Fleet Asset Mapping")
   st.caption("Map deployed vehicle registration numbers or Asset IDs to contract DO with their fuel consumption mode:")
 
-  with st.expander("➕ Add New Vehicle to Fleet (Direct Entry)", expanded=df_vehs.empty):
-    with st.form("add_vehicle_form"):
-      col_v1, col_v2 = st.columns(2)
-      new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
-      fam_options = ["Trailor-40MT", "Backhoe / JCB", "Camper", "Tipper / Dumper", "Water Tanker", "Excavator", "Other"]
-      new_fam = col_v2.selectbox("Equipment Family / Category", fam_options)
+  with st.expander("➕ Add New Vehicle to Fleet (Auto-Detect Terms)", expanded=df_vehs.empty):
+    col_v1, col_v2 = st.columns(2)
+    new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
 
-      col_v3, col_v4, col_v5 = st.columns(3)
-      available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
-      if available_dos_list:
-        new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
+    available_categories = list(rate_dict.keys())
+    new_fam = col_v2.selectbox("Equipment Category (PDF Schedule)", available_categories)
+
+    preset_mode = rate_dict.get(new_fam, {}).get("mode", "KM_BASED")
+    preset_factor = rate_dict.get(new_fam, {}).get("factor", 0.0)
+
+    col_v3, col_v4, col_v5 = st.columns(3)
+    available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
+    if available_dos_list:
+      new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
+    else:
+      new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
+
+    new_f_type = col_v4.selectbox("Fuel Mode", ["KM_BASED", "HOUR_BASED"], index=0 if preset_mode == "KM_BASED" else 1)
+    new_f_factor = col_v5.number_input("Consumption Factor (₹/KM or Ltr/Hr)", value=float(preset_factor), step=0.5)
+
+    if st.button("Save & Register Vehicle"):
+      if not new_v_no:
+        st.error("Kripya Asset ID / Vehicle Number darj karein.")
+      elif not df_vehs.empty and new_v_no in df_vehs["Vehicle_No"].astype(str).values:
+        st.warning(f"Vehicle {new_v_no} pehle se registered hai.")
       else:
-        new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
-
-      new_f_type = col_v4.selectbox("Fuel Mode", ["KM_BASED", "HOUR_BASED"], help="Trailor/Camper ke liye KM_BASED, Excavator/JCB ke liye HOUR_BASED")
-      new_f_factor = col_v5.number_input(
-          "Consumption Factor (₹/KM ya Litres/Hour)",
-          value=40.0 if "Trailor" in new_fam else (10.0 if "Excavator" in new_fam else 9.0),
-          step=0.5,
-          help="KM_BASED hai toh ₹/KM (e.g. 40 ya 9), HOUR_BASED hai toh Litres/Hour (e.g. 10.0)"
-      )
-
-      if st.form_submit_button("Save & Register Vehicle"):
-        if not new_v_no:
-          st.error("Kripya Asset ID / Vehicle Number darj karein.")
-        elif not df_vehs.empty and new_v_no in df_vehs["Vehicle_No"].astype(str).values:
-          st.warning(f"Vehicle {new_v_no} pehle se registered hai.")
-        else:
-          new_row = pd.DataFrame([{
-              "Vehicle_No": new_v_no,
-              "Equipment_Family": new_fam,
-              "Mapped_DO_No": new_do,
-              "Fuel_Type": new_f_type,
-              "Consumption_Factor": str(new_f_factor)
-          }])
-          df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
-          if save_sheet_df("master_vehicles", df_vehs[req_veh_cols]):
-            st.success(f"Vehicle {new_v_no} successfully registered to Google Sheets!")
-            st.rerun()
+        new_row = pd.DataFrame([{
+            "Vehicle_No": new_v_no,
+            "Equipment_Family": new_fam,
+            "Mapped_DO_No": new_do,
+            "Fuel_Type": new_f_type,
+            "Consumption_Factor": str(new_f_factor)
+        }])
+        df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
+        if save_sheet_df("master_vehicles", df_vehs[req_veh_cols]):
+          st.success(f"Vehicle {new_v_no} registered successfully!")
+          st.rerun()
 
   st.markdown("---")
   st.write("**Registered Fleet Vehicles (Edit fuel mode & factor directly in table below):**")
@@ -1007,4 +1036,33 @@ with tabs[3]:
     valid_vehs = v_editor[v_editor["Vehicle_No"].astype(str).str.strip() != ""]
     if save_sheet_df("master_vehicles", valid_vehs):
       st.success("Fleet registry updated in Google Sheets.")
+      st.rerun()
+
+
+# --- TAB 5: EQUIPMENT RATE & POLICY MASTER ---
+with tabs[4]:
+  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")
+  st.caption(
+      "Yahan se aap kisi bhi machine ka Monthly Hiring, OT Rate, Fuel Mode (KM/Hour) "
+      "aur Consumption Factor directly edit kar sakte hain. 'Save' dabate hi aage ke sabhi bills naye rate se banenge."
+  )
+
+  edited_rates = st.data_editor(
+      df_rates,
+      num_rows="dynamic",
+      use_container_width=True,
+      key="rate_master_editor_live",
+      column_config={
+          "Category_Name": st.column_config.TextColumn("Equipment Description", required=True),
+          "Monthly_Rate": st.column_config.NumberColumn("Monthly Hiring (₹)", format="₹%d"),
+          "OT_Rate": st.column_config.NumberColumn("Overtime Rate (₹/Hr)", format="₹%.2f"),
+          "Fuel_Mode": st.column_config.SelectboxColumn("Fuel Mode", options=["KM_BASED", "HOUR_BASED"], required=True),
+          "Fuel_Factor": st.column_config.NumberColumn("Consumption Factor (₹/Km or Ltr/Hr)", format="%.2f"),
+          "Unit_Display": st.column_config.TextColumn("Terms Label"),
+      }
+  )
+
+  if st.button("💾 Save Revised Master Rates to Cloud", type="primary"):
+    if save_sheet_df("fleet_rate_master", edited_rates):
+      st.success("Master rates Google Sheets me update ho gaye!")
       st.rerun()
