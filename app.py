@@ -617,13 +617,12 @@ for col in req_veh_cols:
 
 # --- TAB 1: DAILY ENTRY (WITH BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD) ---
 with tabs[0]:
-  st.subheader("Daily Field Duty Slip Entry & Verification")[cite: 7]
+  st.subheader("Daily Field Duty Slip Entry & Verification")
 
   # 1. BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD ACCORDION
   with st.expander("📥 Bulk Logsheet Upload via Excel / Download Template", expanded=False):
     col_t_btn, col_t_info = st.columns([1, 2])
     
-    # Generate Clean Excel Template
     sample_template = pd.DataFrame([
         {
             "Vehicle_No": "NL01DA1034(ROLLER)",
@@ -677,7 +676,6 @@ with tabs[0]:
 
             disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_val, s_t, e_t, m_s, m_e, bd, rem)
             
-            # SL No from date day
             day_str = d_val.split("-")[0] if "-" in d_val else "1"
 
             new_processed_rows.append({
@@ -699,7 +697,6 @@ with tabs[0]:
 
           if new_processed_rows:
             new_df = pd.DataFrame(new_processed_rows)
-            # Remove any overlapping entries already in database
             if not df_logs.empty:
               for _, nr in new_df.iterrows():
                 df_logs = df_logs[~((df_logs["Vehicle_No"] == nr["Vehicle_No"]) & (df_logs["DATE"] == nr["DATE"]))]
@@ -719,14 +716,14 @@ with tabs[0]:
     st.warning("No vehicles registered. Please configure fleet entries in 'Vehicle Master Mapping' tab.")
   else:
     col_t1, col_t2 = st.columns(2)
-    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")[cite: 7]
-    selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")[cite: 7]
+    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
+    selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")
     d_date_str = "{:02d}-{:02d}-{}".format(selected_date.day, selected_date.month, selected_date.year)
 
     v_match = active_vehs[active_vehs["Vehicle_No"] == selected_veh]
     if not v_match.empty:
       v_row = v_match.iloc[0]
-      st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))[cite: 7]
+      st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))
 
     existing_record = pd.DataFrame()
     if not df_logs.empty:
@@ -744,7 +741,7 @@ with tabs[0]:
       def_dept = str(rec.get("INVOLVEMENT", ""))
       def_rem = str(rec.get("REMARKS", ""))
     else:
-      st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))[cite: 7]
+      st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))
       def_start = "08:00 AM"
       def_end = "06:00 PM"
       def_bd = 0.0
@@ -753,18 +750,18 @@ with tabs[0]:
       def_dept = ""
       def_rem = ""
 
-    with st.form("duty_form"):[cite: 7]
+    with st.form("duty_form"):
       c1, c2, c3 = st.columns(3)
-      s_time = c1.text_input("Shift Start Time", def_start)[cite: 7]
-      e_time = c2.text_input("Shift End Time (OT applies after 06:00 PM)", def_end)[cite: 7]
-      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)[cite: 7]
+      s_time = c1.text_input("Shift Start Time", def_start)
+      e_time = c2.text_input("Shift End Time (OT applies after 06:00 PM)", def_end)
+      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)
 
       c4, c5, c6 = st.columns(3)
-      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)[cite: 7]
-      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)[cite: 7]
-      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)[cite: 7]
+      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)
+      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)
+      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)
 
-      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)[cite: 7]
+      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)
 
       btn_label = "Update / Override Existing Entry" if is_already_submitted else "Submit & Log Duty Slip"
       if st.form_submit_button(btn_label):
@@ -798,7 +795,7 @@ with tabs[0]:
 
 # --- TAB 2: BILLING & MONTHLY STATEMENT ---
 with tabs[1]:
-  st.subheader("Monthly Statement Generation & Financial Abstract")[cite: 7]
+  st.subheader("Monthly Statement Generation & Financial Abstract")
 
   available_dos = df_master_do["DO_No"].dropna().unique() if not df_master_do.empty else []
   if len(available_dos) == 0:
@@ -1011,7 +1008,7 @@ with tabs[1]:
 
 # --- TAB 3: DO UPLOAD ---
 with tabs[2]:
-  st.subheader("1. Register / Amend Delivery Order (DO) Contract")[cite: 7]
+  st.subheader("1. Register / Amend Delivery Order (DO) Contract")
   uploaded_pdf = st.file_uploader("Upload Official Tata Steel DO (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
 
   if uploaded_pdf is not None:
@@ -1075,7 +1072,7 @@ with tabs[2]:
 
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
-  st.subheader("Fleet Asset Mapping")[cite: 7]
+  st.subheader("Fleet Asset Mapping")
   st.caption("Map deployed vehicle registration numbers or Asset IDs to contract DO with their fuel consumption mode:")
 
   with st.expander("➕ Add New Vehicle to Fleet (Auto-Detect Terms)", expanded=df_vehs.empty):
@@ -1135,7 +1132,7 @@ with tabs[3]:
 
 # --- TAB 5: EQUIPMENT RATE & POLICY MASTER ---
 with tabs[4]:
-  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")[cite: 7]
+  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")
   st.caption(
       "Yahan se aap kisi bhi machine ka Monthly Hiring, OT Rate, Fuel Mode (KM/Hour) "
       "aur Consumption Factor directly edit kar sakte hain. 'Save' dabate hi aage ke sabhi bills naye rate se banenge."
