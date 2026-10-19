@@ -371,8 +371,8 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       pagesize=landscape(A4),
       rightMargin=14,
       leftMargin=14,
-      topMargin=12,
-      bottomMargin=12
+      topMargin=10,
+      bottomMargin=10
   )
   elements = []
   styles = getSampleStyleSheet()
@@ -387,10 +387,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   sub_meta = ParagraphStyle('SubMeta', fontName='Helvetica', fontSize=7.5, alignment=1, spaceAfter=6, textColor=colors.HexColor("#4A5568"))
 
   cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=8, alignment=1, textColor=colors.white, leading=9.5)
-  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7.5, leading=9, alignment=1)
-  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, leading=9, alignment=0)
-  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=9, alignment=2)
-  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=9, alignment=2)
+  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=1)
+  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=0)
+  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=2)
+  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=8.5, alignment=2)
 
   # ================= PAGE 1: CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
@@ -484,11 +484,56 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
-    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=12, spaceAfter=1)))
-    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9.5, spaceAfter=2)))
-    elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=4)))
+    elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=11, spaceAfter=1)))
+    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
+    elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=3)))
 
-    # Sequential Calendar Statement Table (Landscape - Balanced Widths totaling 810 pt)
+    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
+    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
+    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+
+    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh})
+    f_type = meta_info.get("type", "KM_BASED")
+    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
+    m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
+    ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
+    veh_desc = meta_info.get("desc", veh)
+
+    # 1. TOP AUDIT SUMMARY STRIP
+    if f_type == "HOUR_BASED":
+      v_litres = round(v_act_work_hrs * f_factor, 2)
+      v_fuel_claim = round(v_litres * market_diesel_rate, 2)
+      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.1f} Hrs"
+      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel: ₹{v_fuel_claim:,.2f}</b>"
+    else:
+      v_fuel_claim = round(v_run_units * f_factor, 2)
+      col5_text = f"<b>Total Run:</b> {v_run_units:.1f} KM"
+      col6_text = f"<b>Fuel Claim (@₹{f_factor:.2f}/KM): ₹{v_fuel_claim:,.2f}</b>"
+
+    v_summary_data = [
+        [
+            Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
+            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
+            Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
+            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.1f} Hrs", cell_l),
+            Paragraph(col5_text, cell_l),
+            Paragraph(col6_text, cell_bold_r),
+        ]
+    ]
+    t_v_sum = Table(v_summary_data, colWidths=[120, 120, 110, 110, 120, 230])
+    t_v_sum.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,-1), 1, c_blue),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EBF8FF")),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#BEE3F8")),
+        ('TOPPADDING', (0,0), (-1,-1), 2.0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.0),
+    ]))
+    elements.append(t_v_sum)
+    elements.append(Spacer(1, 3))
+
+    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE
     st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", "Run (KM)", "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
@@ -513,28 +558,14 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ('BACKGROUND', (0,0), (-1,0), c_navy),
         ('GRID', (0,0), (-1,-1), 0.4, c_border),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 1.6),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1.6),
+        ('TOPPADDING', (0,0), (-1,-1), 1.1),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.1),
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
     ]))
     elements.append(t_stmt)
-    elements.append(Spacer(1, 5))
+    elements.append(Spacer(1, 4))
 
-    # ================= MINI BILLING ABSTRACT TABLE (BELOW STATEMENT) =================
-    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
-    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
-    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
-
-    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh})
-    f_type = meta_info.get("type", "KM_BASED")
-    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
-    m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
-    ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
-    veh_desc = meta_info.get("desc", veh)
-
-    # Monthly Qty prorata (out of 26 working shifts)
+    # 3. BOTTOM MINI BILLING ABSTRACT TABLE
     v_month_qty = round(v_working_shifts / 26.0, 3)
     v_hire_amt = round(v_month_qty * m_rate, 2)
     v_ot_amt = round(v_ot_hrs * ot_rate, 2)
@@ -567,7 +598,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ],
         [
             Paragraph("20", cell_d),
-            Paragraph(f"Overtime (OT) Charges", cell_l),
+            Paragraph("Overtime (OT) Charges", cell_l),
             Paragraph("HOUR", cell_d),
             Paragraph(f"{v_ot_hrs:.2f}", cell_d),
             Paragraph(f"{ot_rate:,.2f}", cell_r),
@@ -594,10 +625,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     t_mini_abs = Table(mini_abs_data, colWidths=[45, 395, 60, 75, 110, 125])
     t_mini_abs.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_blue),
-        ('GRID', (0,0), (-1,-1), 0.5, c_border),
+        ('GRID', (0,0), (-1,-1), 0.4, c_border),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2.5),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+        ('TOPPADDING', (0,0), (-1,-1), 1.8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.8),
         ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#E2E8F0")),
     ]))
     elements.append(t_mini_abs)
