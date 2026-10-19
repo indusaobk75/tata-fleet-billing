@@ -488,48 +488,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9.5, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=4)))
 
-    # Summary Strip Placed AT THE TOP of the Statement
-    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
-    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
-    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
-
-    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0})
-    f_type = meta_info.get("type", "KM_BASED")
-    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
-
-    if f_type == "HOUR_BASED":
-      v_litres = round(v_act_work_hrs * f_factor, 2)
-      v_fuel_claim = round(v_litres * market_diesel_rate, 2)
-      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.1f} Hrs"
-      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel Claim (@₹{market_diesel_rate:.2f}): ₹{v_fuel_claim:,.2f}</b>"
-    else:
-      v_fuel_claim = round(v_run_units * f_factor, 2)
-      col5_text = f"<b>Total Run:</b> {v_run_units:.1f} KM"
-      col6_text = f"<b>Fuel Claim (@₹{f_factor:.2f}/KM): ₹{v_fuel_claim:,.2f}</b>"
-
-    v_summary_data = [
-        [
-            Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
-            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
-            Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
-            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.1f} Hrs", cell_l),
-            Paragraph(col5_text, cell_l),
-            Paragraph(col6_text, cell_bold_r),
-        ]
-    ]
-    t_v_sum = Table(v_summary_data, colWidths=[120, 120, 110, 110, 120, 230])
-    t_v_sum.setStyle(TableStyle([
-        ('BOX', (0,0), (-1,-1), 1, c_blue),
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EBF8FF")),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#BEE3F8")),
-        ('TOPPADDING', (0,0), (-1,-1), 2.5),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
-    ]))
-    elements.append(t_v_sum)
-    elements.append(Spacer(1, 4))
-
     # Sequential Calendar Statement Table (Landscape - Balanced Widths totaling 810 pt)
     st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", "Run (KM)", "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
@@ -555,11 +513,94 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ('BACKGROUND', (0,0), (-1,0), c_navy),
         ('GRID', (0,0), (-1,-1), 0.4, c_border),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2.0),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2.0),
+        ('TOPPADDING', (0,0), (-1,-1), 1.6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.6),
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
     ]))
     elements.append(t_stmt)
+    elements.append(Spacer(1, 5))
+
+    # ================= MINI BILLING ABSTRACT TABLE (BELOW STATEMENT) =================
+    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
+    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
+    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+
+    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh})
+    f_type = meta_info.get("type", "KM_BASED")
+    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
+    m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
+    ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
+    veh_desc = meta_info.get("desc", veh)
+
+    # Monthly Qty prorata (out of 26 working shifts)
+    v_month_qty = round(v_working_shifts / 26.0, 3)
+    v_hire_amt = round(v_month_qty * m_rate, 2)
+    v_ot_amt = round(v_ot_hrs * ot_rate, 2)
+
+    if f_type == "HOUR_BASED":
+      v_fuel_qty = round(v_act_work_hrs * f_factor, 2)
+      v_fuel_uom = "LITER"
+      v_fuel_rate_disp = market_diesel_rate
+      v_fuel_amt = round(v_fuel_qty * market_diesel_rate, 2)
+      fuel_desc_str = f"Billing of Fuel Consumption ({f_factor:.1f} Ltr/Hr)"
+    else:
+      v_fuel_qty = round(v_run_units, 2)
+      v_fuel_uom = "KM"
+      v_fuel_rate_disp = f_factor
+      v_fuel_amt = round(v_fuel_qty * f_factor, 2)
+      fuel_desc_str = f"Billing of Fuel Consumption (₹{f_factor:.2f}/Km)"
+
+    v_total_veh_bill = round(v_hire_amt + v_ot_amt + v_fuel_amt, 2)
+
+    mini_headers = ["SRL.NO", "Description of Scope", "UOM", "QTY", "RATE / QTY (₹)", "AMOUNT (₹)"]
+    mini_abs_data = [
+        [Paragraph(f"<b>{h}</b>", cell_h) for h in mini_headers],
+        [
+            Paragraph("10", cell_d),
+            Paragraph(f"Hiring Charges for {veh_desc}", cell_l),
+            Paragraph("Month", cell_d),
+            Paragraph(f"{v_month_qty:.3f}", cell_d),
+            Paragraph(f"{m_rate:,.2f}", cell_r),
+            Paragraph(f"{v_hire_amt:,.2f}", cell_bold_r),
+        ],
+        [
+            Paragraph("20", cell_d),
+            Paragraph(f"Overtime (OT) Charges", cell_l),
+            Paragraph("HOUR", cell_d),
+            Paragraph(f"{v_ot_hrs:.2f}", cell_d),
+            Paragraph(f"{ot_rate:,.2f}", cell_r),
+            Paragraph(f"{v_ot_amt:,.2f}", cell_bold_r),
+        ],
+        [
+            Paragraph("30", cell_d),
+            Paragraph(fuel_desc_str, cell_l),
+            Paragraph(v_fuel_uom, cell_d),
+            Paragraph(f"{v_fuel_qty:.2f}", cell_d),
+            Paragraph(f"{v_fuel_rate_disp:,.2f}", cell_r),
+            Paragraph(f"{v_fuel_amt:,.2f}", cell_bold_r),
+        ],
+        [
+            Paragraph("<b>TOTAL</b>", cell_d),
+            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} (Shifts: {v_working_shifts}/26, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
+            Paragraph("", cell_d),
+            Paragraph("", cell_d),
+            Paragraph("", cell_d),
+            Paragraph(f"<b>₹{v_total_veh_bill:,.2f}</b>", cell_bold_r),
+        ]
+    ]
+
+    t_mini_abs = Table(mini_abs_data, colWidths=[45, 395, 60, 75, 110, 125])
+    t_mini_abs.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), c_blue),
+        ('GRID', (0,0), (-1,-1), 0.5, c_border),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 2.5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#E2E8F0")),
+    ]))
+    elements.append(t_mini_abs)
 
   doc.build(elements)
   return pdf_buffer.getvalue()
@@ -615,40 +656,57 @@ for col in req_veh_cols:
     df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
-# --- TAB 1: DAILY ENTRY (WITH BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD) ---
+# --- TAB 1: DAILY ENTRY (WITH PRE-CONFIGURED EXCEL TEMPLATE) ---
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
 
-  # 1. BULK EXCEL UPLOAD & TEMPLATE DOWNLOAD ACCORDION
   with st.expander("📥 Bulk Logsheet Upload via Excel / Download Template", expanded=False):
-    col_t_btn, col_t_info = st.columns([1, 2])
+    st.markdown("##### 1. Download Blank Month Calendar Template")
+    col_sel_v, col_sel_m, col_sel_y = st.columns(3)
     
-    sample_template = pd.DataFrame([
-        {
-            "Vehicle_No": "NL01DA1034(ROLLER)",
-            "DATE": datetime.date.today().strftime("%d-%m-%Y"),
-            "START_TIME": "08:00 AM",
-            "END_TIME": "06:00 PM",
-            "METER_START": 1000,
-            "METER_END": 1025,
-            "BREAKDOWN_TIME_HRS": 0.0,
-            "INVOLVEMENT": "TSL Operations",
-            "REMARKS": "NORMAL",
-        }
-    ])
+    active_vehs_list = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]["Vehicle_No"].unique().tolist()
+    if not active_vehs_list:
+      active_vehs_list = ["NL01DA1034(ROLLER)", "JH02BY7955"]
+
+    tpl_veh = col_sel_v.selectbox("Target Vehicle for Template", active_vehs_list, key="tpl_veh_select")
+    today = datetime.date.today()
+    tpl_month = col_sel_m.selectbox("Template Billing Month", list(range(1, 13)), index=today.month - 1, key="tpl_month_select")
+    tpl_year = col_sel_y.selectbox("Template Billing Year", [2025, 2026, 2027], index=1, key="tpl_year_select")
+
+    num_days_in_m = calendar.monthrange(tpl_year, tpl_month)[1]
+    template_rows = []
+    for day in range(1, num_days_in_m + 1):
+      d_str = "{:02d}-{:02d}-{}".format(day, tpl_month, tpl_year)
+      d_obj = datetime.date(tpl_year, tpl_month, day)
+      is_sun = d_obj.weekday() == 6
+      template_rows.append({
+          "SL_NO": day,
+          "Vehicle_No": tpl_veh,
+          "DATE": d_str,
+          "START_TIME": "" if is_sun else "08:00 AM",
+          "END_TIME": "" if is_sun else "06:00 PM",
+          "METER_START": "",
+          "METER_END": "",
+          "BREAKDOWN_TIME_HRS": 0.0,
+          "INVOLVEMENT": "" if is_sun else "TSL Operations",
+          "REMARKS": "SUNDAY" if is_sun else "",
+      })
+
     buf_tpl = io.BytesIO()
     with pd.ExcelWriter(buf_tpl, engine="openpyxl") as writer:
-      sample_template.to_excel(writer, sheet_name="Logsheet_Template", index=False)
+      pd.DataFrame(template_rows).to_excel(writer, sheet_name=f"{tpl_veh[:15]}_Logsheet", index=False)
 
-    col_t_btn.download_button(
-        "📥 Download Blank Excel Template",
+    m_name_tpl = calendar.month_name[tpl_month].upper()
+    st.download_button(
+        f"📥 Download Pre-Filled Excel Template ({tpl_veh} - {m_name_tpl} {tpl_year})",
         data=buf_tpl.getvalue(),
-        file_name="Tata_Steel_Logsheet_Template.xlsx",
+        file_name=f"Logsheet_Template_{tpl_veh}_{m_name_tpl}_{tpl_year}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    col_t_info.caption("Is template ko download karke Supervisor poore mahine ka log ek sath Excel me bhar kar niche upload kar sakta hai.")
+    st.caption("Is template me Days 1 se 30/31 aur dates pehle se set hain. Supervisor ko bas meter reading aur timings bharni hain.")
 
     st.markdown("---")
+    st.markdown("##### 2. Upload Filled Excel / CSV Logsheet")
     uploaded_log_file = st.file_uploader("Upload Completed Excel / CSV Logsheet", type=["xlsx", "xls", "csv"], key="bulk_log_uploader")
 
     if uploaded_log_file is not None:
@@ -666,8 +724,8 @@ with tabs[0]:
           for _, r in up_df.iterrows():
             d_val = str(r.get("DATE", "")).strip()
             v_val = str(r.get("Vehicle_No", "")).strip().upper()
-            s_t = str(r.get("START_TIME", ""))
-            e_t = str(r.get("END_TIME", ""))
+            s_t = str(r.get("START_TIME", "")).strip()
+            e_t = str(r.get("END_TIME", "")).strip()
             m_s = r.get("METER_START", 0)
             m_e = r.get("METER_END", 0)
             bd = r.get("BREAKDOWN_TIME_HRS", 0.0)
@@ -675,7 +733,6 @@ with tabs[0]:
             inv = str(r.get("INVOLVEMENT", ""))
 
             disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_val, s_t, e_t, m_s, m_e, bd, rem)
-            
             day_str = d_val.split("-")[0] if "-" in d_val else "1"
 
             new_processed_rows.append({
@@ -709,7 +766,7 @@ with tabs[0]:
 
   st.markdown("---")
 
-  # 2. SINGLE DUTY SLIP ENTRY FORM
+  # SINGLE DUTY SLIP ENTRY FORM
   active_vehs = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]
 
   if active_vehs.empty:
@@ -811,9 +868,9 @@ with tabs[1]:
 
     market_diesel_rate = col_d4.number_input(
         "1st Day Diesel Market Rate (₹/Ltr)",
-        value=92.50,
+        value=101.06,
         step=0.25,
-        help="Excavator / JCB etc. ke liye har mahine ki 1st tarikh ka official rate"
+        help="Excavator / JCB / Roller etc. ke liye har mahine ki 1st tarikh ka official IOCL rate"
     )
 
     m_name = calendar.month_name[bill_m].upper()
@@ -841,11 +898,34 @@ with tabs[1]:
       v_row_match = assigned_vehs_df[assigned_vehs_df["Vehicle_No"] == v]
       f_type = "KM_BASED"
       f_factor = 0.0
+      v_fam = "General"
       if not v_row_match.empty:
         f_type = str(v_row_match.iloc[0].get("Fuel_Type", "KM_BASED")).strip()
         f_factor = float(v_row_match.iloc[0].get("Consumption_Factor", 0.0) or 0.0)
+        v_fam = str(v_row_match.iloc[0].get("Equipment_Family", "General")).strip()
 
-      veh_fuel_meta[v] = {"type": f_type, "factor": f_factor}
+      rule_preset = rate_dict.get(v_fam, {})
+      m_rate_val = rule_preset.get("m_rate", 0.0)
+      ot_rate_val = rule_preset.get("ot_rate", 0.0)
+
+      # Fallback to DO rates if not in rate_dict
+      if m_rate_val == 0.0 and not live_do_view.empty:
+        m_row = live_do_view[live_do_view["Unit"].astype(str).str.upper().str.contains("MONTH")]
+        if not m_row.empty:
+          m_rate_val = float(m_row.iloc[0].get("Rate", 0.0) or 0.0)
+
+      if ot_rate_val == 0.0 and not live_do_view.empty:
+        ot_row = live_do_view[live_do_view["Unit"].astype(str).str.upper().str.contains("HOUR")]
+        if not ot_row.empty:
+          ot_rate_val = float(ot_row.iloc[0].get("Rate", 0.0) or 0.0)
+
+      veh_fuel_meta[v] = {
+          "type": f_type,
+          "factor": f_factor,
+          "m_rate": m_rate_val,
+          "ot_rate": ot_rate_val,
+          "desc": v_fam if v_fam != "General" else v,
+      }
 
       v_run_units = 0.0
       v_work_hours = 0.0
