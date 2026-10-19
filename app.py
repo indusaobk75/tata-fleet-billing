@@ -3,13 +3,14 @@ import datetime
 import io
 import json
 import re
+import time
 from google.oauth2.service_account import Credentials
 import gspread
 from num2words import num2words
 import pandas as pd
 import pdfplumber
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape, portrait
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import streamlit as st
@@ -69,7 +70,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 1. GOOGLE SHEETS CONNECTION -----------------
+# ----------------- 1. GOOGLE SHEETS CONNECTION & SMART CACHING -----------------
 SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
 
 @st.cache_resource
@@ -89,28 +90,44 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_sheet_df(worksheet_name):
-  try:
-    gc = get_gspread_client()
-    sh = gc.open(SHEET_NAME)
-    ws = sh.worksheet(worksheet_name)
-    data = ws.get_all_records()
-    return pd.DataFrame(data)
-  except Exception as e:
-    st.error(f"Error loading {worksheet_name}: {e}")
-    return pd.DataFrame()
+  for attempt in range(3):
+    try:
+      gc = get_gspread_client()
+      sh = gc.open(SHEET_NAME)
+      ws = sh.worksheet(worksheet_name)
+      data = ws.get_all_records()
+      return pd.DataFrame(data)
+    except Exception as e:
+      err_str = str(e)
+      if "429" in err_str:
+        time.sleep(2 * (attempt + 1))
+        continue
+      st.error(f"Error loading {worksheet_name}: {e}")
+      return pd.DataFrame()
+  return pd.DataFrame()
 
 
 def save_sheet_df(worksheet_name, df):
-  try:
-    gc = get_gspread_client()
-    sh = gc.open(SHEET_NAME)
-    ws = sh.worksheet(worksheet_name)
-    ws.clear()
-    df_clean = df.fillna("")
-    ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
-  except Exception as e:
-    st.error(f"Error saving {worksheet_name}: {e}")
+  for attempt in range(3):
+    try:
+      gc = get_gspread_client()
+      sh = gc.open(SHEET_NAME)
+      ws = sh.worksheet(worksheet_name)
+      ws.clear()
+      df_clean = df.fillna("")
+      ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
+      st.cache_data.clear()
+      return True
+    except Exception as e:
+      err_str = str(e)
+      if "429" in err_str:
+        time.sleep(2 * (attempt + 1))
+        continue
+      st.error(f"Error saving {worksheet_name}: {e}")
+      return False
+  return False
 
 
 # ----------------- 2. UNIVERSAL CALCULATION & ENGINE -----------------
@@ -372,7 +389,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7, leading=8.5, alignment=2)
   cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7, leading=8.5, alignment=2)
 
-  # ================= PAGE 1: ABSTRACT =================
+  # PAGE 1: ABSTRACT
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -460,7 +477,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
   elements.append(t_sig)
 
-  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS (PORTRAIT FIT) =================
+  # PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
@@ -649,9 +666,9 @@ with tabs[0]:
             "REMARKS": remarks,
         }
         df_logs = pd.concat([df_logs, pd.DataFrame([new_row])], ignore_index=True)
-        save_sheet_df("fleet_daily_logsheets", df_logs)
-        st.success(f"Duty slip recorded to Google Sheets for vehicle {selected_veh}.")
-        st.rerun()
+        if save_sheet_df("fleet_daily_logsheets", df_logs):
+          st.success(f"Duty slip recorded to Google Sheets for vehicle {selected_veh}.")
+          st.rerun()
 
 
 # --- TAB 2: BILLING & MONTHLY STATEMENT ---
@@ -669,7 +686,7 @@ with tabs[1]:
     today = datetime.date.today()
     bill_m = col_d3.selectbox("Billing Month", list(range(1, 13)), index=today.month - 1)
     bill_y = col_d3.selectbox("Billing Year", [2025, 2026, 2027], index=1)
-    
+
     market_diesel_rate = col_d4.number_input(
         "1st Day Diesel Market Rate (₹/Ltr)",
         value=92.50,
@@ -752,9 +769,9 @@ with tabs[1]:
         ]
         valid_rows = edited_stmt[(edited_stmt["START_TIME"].str.strip() != "") | (edited_stmt["REMARKS"].str.strip() != "")]
         df_logs = pd.concat([df_logs, valid_rows], ignore_index=True)
-        save_sheet_df("fleet_daily_logsheets", df_logs)
-        st.success("Google Sheets synchronized successfully.")
-        st.rerun()
+        if save_sheet_df("fleet_daily_logsheets", df_logs):
+          st.success("Google Sheets synchronized successfully.")
+          st.rerun()
 
       csv_buf = edited_stmt.to_csv(index=False).encode('utf-8')
       col_st2.download_button(
@@ -862,9 +879,9 @@ with tabs[1]:
             "Status": "Approved",
         })
       df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
-      save_sheet_df("ra_bills_ledger", df_ledger)
-      st.success("RA Bill committed to Google Sheets ledger!")
-      st.rerun()
+      if save_sheet_df("ra_bills_ledger", df_ledger):
+        st.success("RA Bill committed to Google Sheets ledger!")
+        st.rerun()
 
 
 # --- TAB 3: DO UPLOAD ---
@@ -917,18 +934,18 @@ with tabs[2]:
 
       if st.button("Confirm & Apply Contract Scope"):
         df_master_do = apply_do_amendment(df_master_do, parsed_items)
-        save_sheet_df("master_do_items", df_master_do)
-        st.success("Contract terms saved to Google Sheets for Order {}.".format(final_wo))
-        st.rerun()
+        if save_sheet_df("master_do_items", df_master_do):
+          st.success("Contract terms saved to Google Sheets for Order {}.".format(final_wo))
+          st.rerun()
 
   st.markdown("---")
   st.subheader("2. Contract Opening Baseline Configuration")
   st.caption("Edit rates, BOQ, baseline or set custom Fuel_Rate_KM per line item:")
   edited_master = st.data_editor(df_master_do, num_rows="dynamic", key="baseline_editor_clean")
   if st.button("Save Contract Baseline"):
-    save_sheet_df("master_do_items", edited_master)
-    st.success("Contract baseline updated in Google Sheets.")
-    st.rerun()
+    if save_sheet_df("master_do_items", edited_master):
+      st.success("Contract baseline updated in Google Sheets.")
+      st.rerun()
 
 
 # --- TAB 4: VEHICLE MASTER MAPPING ---
@@ -972,9 +989,9 @@ with tabs[3]:
               "Consumption_Factor": str(new_f_factor)
           }])
           df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
-          save_sheet_df("master_vehicles", df_vehs[req_veh_cols])
-          st.success(f"Vehicle {new_v_no} successfully registered to Google Sheets!")
-          st.rerun()
+          if save_sheet_df("master_vehicles", df_vehs[req_veh_cols]):
+            st.success(f"Vehicle {new_v_no} successfully registered to Google Sheets!")
+            st.rerun()
 
   st.markdown("---")
   st.write("**Registered Fleet Vehicles (Edit fuel mode & factor directly in table below):**")
@@ -988,6 +1005,6 @@ with tabs[3]:
 
   if st.button("Update Fleet Registry Changes"):
     valid_vehs = v_editor[v_editor["Vehicle_No"].astype(str).str.strip() != ""]
-    save_sheet_df("master_vehicles", valid_vehs)
-    st.success("Fleet registry updated in Google Sheets.")
-    st.rerun()
+    if save_sheet_df("master_vehicles", valid_vehs):
+      st.success("Fleet registry updated in Google Sheets.")
+      st.rerun()
