@@ -30,15 +30,15 @@ def check_access():
   if not st.session_state.authenticated:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-      st.markdown("### 🔐 Tata Steel Fleet Operations Portal")
-      st.caption("M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
+      st.markdown("### 🔐 Fleet Operations & Billing Portal")
+      st.caption("Vendor: M/S INDU SAO (Vendor Code: ID47) | Coal Projects, West Bokaro")
       st.markdown("---")
 
       st.info(
-          "**Confidential Internal Workspace**\n\n"
-          "This portal contains proprietary commercial data and contract ledger records. "
-          "Access is strictly restricted to authorized site supervisors and billing personnel. "
-          "Please verify your credentials to proceed."
+          "**Confidential Commercial Workspace**\n\n"
+          "This system contains proprietary billing records and client contract abstracts. "
+          "Access is restricted to authorized site supervisors and billing executives. "
+          "Please authenticate with your designated security passkey to continue."
       )
 
       with st.form("secure_login_gate"):
@@ -47,16 +47,16 @@ def check_access():
             type="password",
             placeholder="Enter authorized passkey...",
         )
-        submit_auth = st.form_submit_button("Authenticate & Enter System")
+        submit_auth = st.form_submit_button("Authenticate & Access Workspace")
 
         if submit_auth:
           master_password = st.secrets.get("app_password", "TataSteel@2026")
           if entered_pass == master_password:
             st.session_state.authenticated = True
-            st.success("Authentication successful. Loading workspace...")
+            st.success("Authentication confirmed. Initializing application...")
             st.rerun()
           else:
-            st.error("Authentication failed: Invalid security passkey. Access denied.")
+            st.error("Access Denied: Invalid security passkey entered.")
 
     st.stop()
 
@@ -128,7 +128,7 @@ def save_sheet_df(worksheet_name, df):
       if "429" in err_str:
         time.sleep(2 * (attempt + 1))
         continue
-      st.error(f"Error saving {worksheet_name}: {e}")
+      st.error(f"Error persisting to {worksheet_name}: {e}")
       return False
   return False
 
@@ -178,7 +178,6 @@ def format_12hr_time(t_val):
     return "-"
   try:
     if "PM" in s.upper() or "AM" in s.upper():
-      # Normalize AM/PM formatting
       dt = pd.to_datetime(s.upper(), format="%I:%M %p")
       return dt.strftime("%I:%M %p")
     elif len(s.split(":")) == 3:
@@ -202,16 +201,13 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   if "SUNDAY" in rem_upper:
     is_sunday = True
 
-  # Safe parse breakdown hours
   try:
     bd_hours_val = float(bd_hrs) if pd.notna(bd_hrs) and str(bd_hrs).strip() != "" and str(bd_hrs).lower() != "nan" else 0.0
   except Exception:
     bd_hours_val = 0.0
 
-  # Breakdown rule >= 4.0 Hours or explicit BREAKDOWN in remarks
   is_breakdown = ("BREAKDOWN" in rem_upper) or (bd_hours_val >= 4.0)
 
-  # Safe parse meter readings
   try:
     m_s = float(m_start) if pd.notna(m_start) and str(m_start).strip() != "" and str(m_start).lower() != "nan" else 0.0
   except Exception:
@@ -249,7 +245,6 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
         gross_work += 24.0
       gross_work_hours = gross_work
 
-      # Overtime beyond standard 06:00 PM cutoff (minus breakdown)
       cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
       diff = (t_out - cutoff_t).total_seconds() / 3600.0
       if diff < 0 and "AM" in clean_end:
@@ -263,15 +258,12 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
 
   actual_working_hours = round(max(0.0, gross_work_hours - bd_hours_val), 2)
 
-  # Standard Shift Calculation based on >= 4.0 Hours rule
   if is_breakdown:
     disp_shift = "0"
     billable_shift = 0.0
-    actual_working_hours = 0.0
   elif is_sunday:
     disp_shift = ""
     billable_shift = 0.0
-    actual_working_hours = 0.0
   else:
     disp_shift = "1"
     billable_shift = 1.0
@@ -317,7 +309,6 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
           raw_rem,
       )
 
-      # 12-Hour formatted times for display
       s_12hr = format_12hr_time(raw_s) if raw_s != "-" else "-"
       e_12hr = format_12hr_time(raw_e) if raw_e != "-" else "-"
 
@@ -602,8 +593,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
 
     v_working_shifts = 0
     v_ot_hrs = 0.0
-    v_run_units = 0.0
-    v_act_work_hrs = 0.0
+    v_meter_run_units = 0.0
     v_bd_hrs = 0.0
 
     for _, r in s_df.iterrows():
@@ -617,12 +607,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         pass
 
       try:
-        v_run_units += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
-      except Exception:
-        pass
-
-      try:
-        v_act_work_hrs += float(r.get("ACTUAL_WORK_HRS", 0) or 0)
+        v_meter_run_units += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
       except Exception:
         pass
 
@@ -640,14 +625,15 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
 
     # 1. TOP AUDIT SUMMARY STRIP
     if f_type == "HOUR_BASED":
-      v_litres = round(v_act_work_hrs * f_factor, 2)
+      # FUEL STRICTLY COMPUTED ON ACTUAL ENGINE METER RUN HOURS (run_units / HMR difference)
+      v_litres = round(v_meter_run_units * f_factor, 2)
       v_fuel_claim = round(v_litres * market_diesel_rate, 2)
-      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.2f} Hrs"
+      col5_text = f"<b>Engine Run:</b> {v_meter_run_units:.2f} Hrs"
       col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.2f} L | <b>Fuel: ₹{v_fuel_claim:,.2f}</b>"
       run_col_header = "Run (HRS)"
     else:
-      v_fuel_claim = round(v_run_units * f_factor, 2)
-      col5_text = f"<b>Total Run:</b> {v_run_units:.2f} KM"
+      v_fuel_claim = round(v_meter_run_units * f_factor, 2)
+      col5_text = f"<b>Total Run:</b> {v_meter_run_units:.2f} KM"
       col6_text = f"<b>Fuel Claim (@₹{f_factor:.2f}/KM): ₹{v_fuel_claim:,.2f}</b>"
       run_col_header = "Run (KM)"
 
@@ -672,7 +658,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_v_sum)
     elements.append(Spacer(1, 3))
 
-    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE (Dynamic Header: Run (KM) vs Run (HRS))
+    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE
     st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", run_col_header, "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
@@ -692,7 +678,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(clean_text_cell(row.get("REMARKS", "-")), cell_rem),
       ])
 
-    # Column widths adjusted for full remarks visibility
     t_stmt = Table(st_data, colWidths=[22, 58, 64, 64, 34, 44, 58, 58, 54, 48, 110, 196])
     t_stmt.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_navy),
@@ -711,13 +696,13 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     v_ot_amt = round(v_ot_hrs * ot_rate, 2)
 
     if f_type == "HOUR_BASED":
-      v_fuel_qty = round(v_act_work_hrs * f_factor, 2)
+      v_fuel_qty = round(v_meter_run_units * f_factor, 2)
       v_fuel_uom = "LITER"
       v_fuel_rate_disp = market_diesel_rate
       v_fuel_amt = round(v_fuel_qty * market_diesel_rate, 2)
       fuel_desc_str = f"Billing of Fuel Consumption ({f_factor:.1f} Ltr/Hr)"
     else:
-      v_fuel_qty = round(v_run_units, 2)
+      v_fuel_qty = round(v_meter_run_units, 2)
       v_fuel_uom = "KM"
       v_fuel_rate_disp = f_factor
       v_fuel_amt = round(v_fuel_qty * f_factor, 2)
@@ -778,15 +763,15 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
 
 
 # ----------------- 4. STREAMLIT APP NAVIGATION -----------------
-st.title("Tata Steel Fleet Billing & DO Ledger System")
-st.caption("Vendor: M/S INDU SAO (ID47) | Coal Projects, West Bokaro")
+st.title("Tata Steel Fleet Operations & Billing System")
+st.caption("Contractor: M/S INDU SAO (Vendor Code: ID47) | Coal Projects, West Bokaro Division")
 
 tabs = st.tabs([
     "Daily Logsheet Entry",
     "Monthly Statement & Abstract",
-    "DO Upload & Baseline Setup",
-    "Vehicle Master Mapping",
-    "Equipment Rate Master",
+    "Delivery Order (DO) Contract Management",
+    "Vehicle Fleet Master Mapping",
+    "Equipment Rate & Fuel Policy Master",
 ])
 
 df_master_do = load_sheet_df("master_do_items")
@@ -795,7 +780,6 @@ df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
 df_rates = load_sheet_df("fleet_rate_master")
 
-# Defensive check for df_logs
 required_log_cols = ["Vehicle_No", "SL_NO", "DATE", "START_TIME", "END_TIME", "NO_OF_SHIFTS", "OVERTIME_HRS", "METER_START", "METER_END", "TOTAL_RUNNING_KM", "ACTUAL_WORK_HRS", "BREAKDOWN_TIME_HRS", "INVOLVEMENT", "REMARKS"]
 if df_logs.empty or "Vehicle_No" not in df_logs.columns:
   df_logs = pd.DataFrame(columns=required_log_cols)
@@ -836,18 +820,18 @@ for col in req_veh_cols:
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
 
-  with st.expander("📥 Bulk Logsheet Upload via Excel / Download Template", expanded=False):
-    st.markdown("##### 1. Download Blank Month Calendar Template")
+  with st.expander("📥 Bulk Logsheet Upload (Excel / CSV) & Template Generator", expanded=False):
+    st.markdown("##### 1. Generate Pre-Filled Monthly Calendar Template")
     col_sel_v, col_sel_m, col_sel_y = st.columns(3)
     
     active_vehs_list = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]["Vehicle_No"].unique().tolist()
     if not active_vehs_list:
       active_vehs_list = ["NL01DA1034(ROLLER)", "JH02BY7955"]
 
-    tpl_veh = col_sel_v.selectbox("Target Vehicle for Template", active_vehs_list, key="tpl_veh_select")
+    tpl_veh = col_sel_v.selectbox("Target Equipment / Vehicle ID", active_vehs_list, key="tpl_veh_select")
     today = datetime.date.today()
-    tpl_month = col_sel_m.selectbox("Template Billing Month", list(range(1, 13)), index=today.month - 1, key="tpl_month_select")
-    tpl_year = col_sel_y.selectbox("Template Billing Year", [2025, 2026, 2027], index=1, key="tpl_year_select")
+    tpl_month = col_sel_m.selectbox("Billing Month", list(range(1, 13)), index=today.month - 1, key="tpl_month_select")
+    tpl_year = col_sel_y.selectbox("Billing Year", [2025, 2026, 2027], index=1, key="tpl_year_select")
 
     num_days_in_m = calendar.monthrange(tpl_year, tpl_month)[1]
     template_rows = []
@@ -874,16 +858,16 @@ with tabs[0]:
 
     m_name_tpl = calendar.month_name[tpl_month].upper()
     st.download_button(
-        f"📥 Download Pre-Filled Excel Template ({tpl_veh} - {m_name_tpl} {tpl_year})",
+        f"📥 Download Structured Excel Template ({tpl_veh} - {m_name_tpl} {tpl_year})",
         data=buf_tpl.getvalue(),
         file_name=f"Logsheet_Template_{tpl_veh}_{m_name_tpl}_{tpl_year}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.caption("Is template me Days 1 se 30/31 aur dates pehle se set hain. Supervisor ko bas meter reading aur timings bharni hain.")
+    st.caption("The template automatically populates sequential calendar days (1 to 30/31). Enter meter readings and operational remarks directly.")
 
     st.markdown("---")
-    st.markdown("##### 2. Upload Filled Excel / CSV Logsheet")
-    uploaded_log_file = st.file_uploader("Upload Completed Excel / CSV Logsheet", type=["xlsx", "xls", "csv"], key="bulk_log_uploader")
+    st.markdown("##### 2. Upload Completed Logsheet File")
+    uploaded_log_file = st.file_uploader("Select Completed Excel / CSV Logsheet", type=["xlsx", "xls", "csv"], key="bulk_log_uploader")
 
     if uploaded_log_file is not None:
       try:
@@ -892,10 +876,10 @@ with tabs[0]:
         else:
           up_df = pd.read_excel(uploaded_log_file)
 
-        st.write("**Uploaded Data Preview:**")
+        st.write("**Data Preview:**")
         st.dataframe(up_df.head(), use_container_width=True)
 
-        if st.button("🚀 Process & Append Bulk Logsheets to Cloud"):
+        if st.button("🚀 Process & Synchronize Records to Cloud"):
           new_processed_rows = []
           for _, r in up_df.iterrows():
             d_val = clean_text_cell(r.get("DATE", ""))
@@ -938,10 +922,10 @@ with tabs[0]:
                 df_logs = df_logs[~((df_logs["Vehicle_No"] == nr["Vehicle_No"]) & (df_logs["DATE"] == nr["DATE"]))]
             df_logs = pd.concat([df_logs, new_df], ignore_index=True)
             if save_sheet_df("fleet_daily_logsheets", df_logs):
-              st.success(f"{len(new_processed_rows)} logsheet entries successfully synced to Google Sheets!")
+              st.success(f"Success: {len(new_processed_rows)} records successfully synced to Google Sheets!")
               st.rerun()
       except Exception as err:
-        st.error(f"Error parsing file: {err}")
+        st.error(f"Error parsing logsheet file: {err}")
 
   st.markdown("---")
 
@@ -949,17 +933,17 @@ with tabs[0]:
   active_vehs = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]
 
   if active_vehs.empty:
-    st.warning("No vehicles registered. Please configure fleet entries in 'Vehicle Master Mapping' tab.")
+    st.warning("No vehicles registered. Please configure fleet entries under the 'Vehicle Fleet Master Mapping' tab.")
   else:
     col_t1, col_t2 = st.columns(2)
-    selected_veh = col_t1.selectbox("Select Deployed Vehicle / Asset ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
-    selected_date = col_t2.date_input("Select Operating Date", datetime.date.today(), key="daily_form_date")
+    selected_veh = col_t1.selectbox("Select Equipment / Vehicle ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
+    selected_date = col_t2.date_input("Operating Date", datetime.date.today(), key="daily_form_date")
     d_date_str = "{:02d}-{:02d}-{}".format(selected_date.day, selected_date.month, selected_date.year)
 
     v_match = active_vehs[active_vehs["Vehicle_No"] == selected_veh]
     if not v_match.empty:
       v_row = v_match.iloc[0]
-      st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))
+      st.caption("Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))
 
     existing_record = pd.DataFrame()
     if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
@@ -968,7 +952,7 @@ with tabs[0]:
     is_already_submitted = not existing_record.empty
 
     if is_already_submitted:
-      st.warning("Notice: Existing duty log detected for Date {}. Form is loaded in Correction / Overwrite mode.".format(d_date_str))
+      st.warning("Notice: Existing entry detected for {}. Loaded in edit/correction mode.".format(d_date_str))
       rec = existing_record.iloc[0]
       def_start = format_12hr_time(clean_text_cell(rec.get("START_TIME", "08:00 AM")))
       def_end = format_12hr_time(clean_text_cell(rec.get("END_TIME", "06:00 PM")))
@@ -987,7 +971,7 @@ with tabs[0]:
       def_dept = clean_text_cell(rec.get("INVOLVEMENT", ""))
       def_rem = clean_text_cell(rec.get("REMARKS", ""))
     else:
-      st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))
+      st.info("Ready for duty log entry | Date: {}".format(d_date_str))
       def_start = "08:00 AM"
       def_end = "06:00 PM"
       def_bd = 0.0
@@ -998,18 +982,18 @@ with tabs[0]:
 
     with st.form("duty_form"):
       c1, c2, c3 = st.columns(3)
-      s_time = c1.text_input("Shift Start Time (e.g. 08:00 AM)", def_start if def_start != "-" else "08:00 AM")
-      e_time = c2.text_input("Shift End Time (e.g. 06:00 PM)", def_end if def_end != "-" else "06:00 PM")
+      s_time = c1.text_input("Shift Start Time (e.g., 08:00 AM)", def_start if def_start != "-" else "08:00 AM")
+      e_time = c2.text_input("Shift End Time (e.g., 06:00 PM)", def_end if def_end != "-" else "06:00 PM")
       bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=float(def_bd), step=0.5)
 
       c4, c5, c6 = st.columns(3)
-      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=float(def_mstart), min_value=0.0)
-      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=float(def_mend), min_value=0.0)
-      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept if def_dept != "-" else "")
+      m_start = c4.number_input("Meter Start Reading", value=float(def_mstart), min_value=0.0)
+      m_end = c5.number_input("Meter End Reading", value=float(def_mend), min_value=0.0)
+      dept = c6.text_input("Site Department / Indentor", def_dept if def_dept != "-" else "")
 
-      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem if def_rem != "-" else "")
+      remarks = st.text_input("Operational Remarks (NORMAL / SUNDAY / BREAKDOWN / IDLE)", def_rem if def_rem != "-" else "")
 
-      btn_label = "Update / Override Existing Entry" if is_already_submitted else "Submit & Log Duty Slip"
+      btn_label = "Update Existing Duty Record" if is_already_submitted else "Submit & Save Duty Slip"
       if st.form_submit_button(btn_label):
         disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
 
@@ -1035,7 +1019,7 @@ with tabs[0]:
         }
         df_logs = pd.concat([df_logs, pd.DataFrame([new_row])], ignore_index=True)
         if save_sheet_df("fleet_daily_logsheets", df_logs):
-          st.success(f"Duty slip recorded to Google Sheets for vehicle {selected_veh}.")
+          st.success(f"Duty slip successfully recorded for {selected_veh}.")
           st.rerun()
 
 
@@ -1045,10 +1029,10 @@ with tabs[1]:
 
   available_dos = df_master_do["DO_No"].dropna().unique() if not df_master_do.empty else []
   if len(available_dos) == 0:
-    st.info("No active Delivery Orders available. Please upload or register an Order under 'DO Upload' tab.")
+    st.info("No active Delivery Orders available. Please upload a contract under 'Delivery Order Management'.")
   else:
     col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-    chosen_do = col_d1.selectbox("Select Target Work Order / DO", available_dos)
+    chosen_do = col_d1.selectbox("Work Order / DO Selection", available_dos)
     ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
 
     today = datetime.date.today()
@@ -1056,10 +1040,10 @@ with tabs[1]:
     bill_y = col_d3.selectbox("Billing Year", [2025, 2026, 2027], index=1)
 
     market_diesel_rate = col_d4.number_input(
-        "1st Day Diesel Market Rate (₹/Ltr)",
+        "Official 1st Day Diesel Rate (₹/Ltr)",
         value=101.06,
         step=0.25,
-        help="Excavator / JCB / Roller etc. ke liye har mahine ki 1st tarikh ka official IOCL rate"
+        help="IOCL prevailing rate applicable for heavy machinery fuel claims."
     )
 
     m_name = calendar.month_name[bill_m].upper()
@@ -1115,8 +1099,7 @@ with tabs[1]:
 
       v_shifts = 0.0
       v_ot = 0.0
-      v_run_units = 0.0
-      v_work_hours = 0.0
+      v_meter_run = 0.0
       v_bd_hours = 0.0
 
       for _, r in v_statement.iterrows():
@@ -1130,12 +1113,7 @@ with tabs[1]:
           pass
 
         try:
-          v_run_units += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
-        except Exception:
-          pass
-
-        try:
-          v_work_hours += float(r.get("ACTUAL_WORK_HRS", 0) or 0)
+          v_meter_run += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
         except Exception:
           pass
 
@@ -1147,27 +1125,26 @@ with tabs[1]:
       # Monthly prorata out of 26 working shifts
       v_month_qty = round(v_shifts / 26.0, 3)
 
-      # Per-vehicle Fuel Claim
+      # Per-vehicle Fuel Claim strictly on ACTUAL METER RUNNING UNITS (KM or Engine Hours)
       if f_type == "HOUR_BASED":
-        v_fuel_cost = round(v_work_hours * f_factor * market_diesel_rate, 2)
+        v_fuel_cost = round(v_meter_run * f_factor * market_diesel_rate, 2)
       else:
-        v_fuel_cost = round(v_run_units * f_factor, 2)
+        v_fuel_cost = round(v_meter_run * f_factor, 2)
 
       veh_metrics[v] = {
           "family": v_fam,
           "shifts": v_shifts,
           "month_qty": v_month_qty,
           "ot_hours": v_ot,
-          "run_units": v_run_units,
-          "work_hours": v_work_hours,
+          "run_units": v_meter_run,
           "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
       }
 
     if assigned_vehs:
       st.markdown("---")
-      chosen_view_veh = st.selectbox("Select Equipment Logsheet to Review & Edit:", assigned_vehs)
-      st.info("Displaying sequential calendar statement (Days 1 to {}) for {}.".format(num_days, chosen_view_veh))
+      chosen_view_veh = st.selectbox("Select Equipment Duty Log to Audit & Edit:", assigned_vehs)
+      st.info("Reviewing sequential calendar logsheet (Days 1 to {}) for {}.".format(num_days, chosen_view_veh))
 
       edited_stmt = st.data_editor(
           veh_full_statements[chosen_view_veh],
@@ -1196,7 +1173,7 @@ with tabs[1]:
 
       csv_buf = edited_stmt.to_csv(index=False).encode('utf-8')
       col_st2.download_button(
-          f"Download {chosen_view_veh} Statement (CSV)",
+          f"Export {chosen_view_veh} Statement (CSV)",
           data=csv_buf,
           file_name=f"Statement_{chosen_view_veh}_{bill_period}.csv",
           mime="text/csv",
@@ -1205,7 +1182,6 @@ with tabs[1]:
     abstract_rows = []
     total_this_bill = 0.0
 
-    # Match each DO line item to its specific equipment
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
@@ -1265,14 +1241,14 @@ with tabs[1]:
     abs_df = pd.DataFrame(abstract_rows)
 
     st.markdown("---")
-    st.subheader("RA Bill {} Billing Abstract".format(ra_bill_num))
+    st.subheader("Consolidated Billing Abstract (RA Bill {})".format(ra_bill_num))
     st.dataframe(
         abs_df[["W.O SrL No", "Description", "Unit", "Prev Amount", "This Bill Amount", "Cumulative Amount"]],
         use_container_width=True,
     )
 
     in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
-    st.write("**Net Invoice Value:** ₹{:,.2f} | **In Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
+    st.write("**Net Invoice Value:** ₹{:,.2f} | **Amount in Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
     col_btn1, col_btn2, col_btn3 = st.columns(3)
 
@@ -1284,7 +1260,7 @@ with tabs[1]:
 
     clean_do = str(chosen_do).replace("/", "_")
     col_btn1.download_button(
-        "📊 Download Excel Package",
+        "📊 Export Full Billing Workbook (Excel)",
         data=buf_xl.getvalue(),
         file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1292,13 +1268,13 @@ with tabs[1]:
 
     pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate)
     col_btn2.download_button(
-        "📄 Download Official PDF (Abstract + Statements)",
+        "📄 Generate Official Client PDF Package",
         data=pdf_bytes,
         file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
         mime="application/pdf",
     )
 
-    if col_btn3.button("Lock RA Bill {}".format(ra_bill_num)):
+    if col_btn3.button("Finalize & Lock RA Bill {}".format(ra_bill_num)):
       df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
       new_entries = []
       for _, r in abs_df.iterrows():
@@ -1313,14 +1289,14 @@ with tabs[1]:
         })
       df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
       if save_sheet_df("ra_bills_ledger", df_ledger):
-        st.success("RA Bill committed to Google Sheets ledger!")
+        st.success("RA Bill committed and locked in commercial ledger.")
         st.rerun()
 
 
 # --- TAB 3: DO UPLOAD ---
 with tabs[2]:
-  st.subheader("1. Register / Amend Delivery Order (DO) Contract")
-  uploaded_pdf = st.file_uploader("Upload Official Tata Steel DO (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
+  st.subheader("1. Register / Amend SAP Delivery Order (DO) Contract")
+  uploaded_pdf = st.file_uploader("Upload Official Tata Steel Work Order (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
 
   if uploaded_pdf is not None:
     with pdfplumber.open(uploaded_pdf) as pdf:
@@ -1330,9 +1306,9 @@ with tabs[2]:
     detected_wo = wo_match.group(1).strip() if wo_match else None
 
     if not detected_wo:
-      final_wo = st.text_input("Enter SAP Work Order Number Manually (e.g., 3700981341/109):").strip()
+      final_wo = st.text_input("Enter SAP Work Order Reference Manually (e.g., 3700981341/109):").strip()
     else:
-      st.success("Extracted Order Number: **{}**".format(detected_wo))
+      st.success("Extracted Order Reference: **{}**".format(detected_wo))
       final_wo = detected_wo
 
     pattern = r"(\d+)\s+(\d{2})\s+([A-Za-z0-9/\s,.\-#]+?)\s+([\d,]+\.?\d*)\s*(Months?|Hours?|LUMPSUM|KM)\s+([\d,]+\.?\d*)\s*INR"
@@ -1368,30 +1344,30 @@ with tabs[2]:
       if st.button("Confirm & Apply Contract Scope"):
         df_master_do = apply_do_amendment(df_master_do, parsed_items)
         if save_sheet_df("master_do_items", df_master_do):
-          st.success("Contract terms saved to Google Sheets for Order {}.".format(final_wo))
+          st.success("Contract terms registered to Google Sheets for Order {}.".format(final_wo))
           st.rerun()
 
   st.markdown("---")
-  st.subheader("2. Contract Opening Baseline Configuration")
-  st.caption("Edit rates, BOQ, baseline or set custom Fuel_Rate_KM per line item:")
+  st.subheader("2. Opening Baseline & Rate Ledger Configuration")
+  st.caption("Review BOQ values, baseline quantities, and rates across contract line items:")
   edited_master = st.data_editor(df_master_do, num_rows="dynamic", key="baseline_editor_clean")
   if st.button("Save Contract Baseline"):
     if save_sheet_df("master_do_items", edited_master):
-      st.success("Contract baseline updated in Google Sheets.")
+      st.success("Contract baseline updated successfully.")
       st.rerun()
 
 
 # --- TAB 4: VEHICLE MASTER MAPPING ---
 with tabs[3]:
-  st.subheader("Fleet Asset Mapping")
-  st.caption("Map deployed vehicle registration numbers or Asset IDs to contract DO with their fuel consumption mode:")
+  st.subheader("Fleet Asset Mapping & Deployment")
+  st.caption("Map deployed vehicle registration numbers and asset tags to corresponding delivery orders:")
 
-  with st.expander("➕ Add New Vehicle to Fleet (Auto-Detect Terms)", expanded=df_vehs.empty):
+  with st.expander("➕ Register Deployed Asset to Fleet", expanded=df_vehs.empty):
     col_v1, col_v2 = st.columns(2)
-    new_v_no = col_v1.text_input("Asset ID / Reg No (e.g., JH02BY7955 or EXC-01)").strip().upper()
+    new_v_no = col_v1.text_input("Asset ID / Registration Number (e.g., JH02BY7955 or EXC-01)").strip().upper()
 
     available_categories = list(rate_dict.keys())
-    new_fam = col_v2.selectbox("Equipment Category (PDF Schedule)", available_categories)
+    new_fam = col_v2.selectbox("Equipment Classification Category", available_categories)
 
     preset_mode = rate_dict.get(new_fam, {}).get("mode", "KM_BASED")
     preset_factor = rate_dict.get(new_fam, {}).get("factor", 0.0)
@@ -1399,18 +1375,18 @@ with tabs[3]:
     col_v3, col_v4, col_v5 = st.columns(3)
     available_dos_list = df_master_do["DO_No"].dropna().unique().tolist() if not df_master_do.empty else []
     if available_dos_list:
-      new_do = col_v3.selectbox("Mapped Tata Steel DO / WO", available_dos_list)
+      new_do = col_v3.selectbox("Mapped Contract Delivery Order", available_dos_list)
     else:
-      new_do = col_v3.text_input("Mapped DO / WO No (e.g., 3700991558/109)").strip()
+      new_do = col_v3.text_input("Delivery Order Reference (e.g., 3700991558/109)").strip()
 
-    new_f_type = col_v4.selectbox("Fuel Mode", ["KM_BASED", "HOUR_BASED"], index=0 if preset_mode == "KM_BASED" else 1)
+    new_f_type = col_v4.selectbox("Fuel Computation Basis", ["KM_BASED", "HOUR_BASED"], index=0 if preset_mode == "KM_BASED" else 1)
     new_f_factor = col_v5.number_input("Consumption Factor (₹/KM or Ltr/Hr)", value=float(preset_factor), step=0.5)
 
-    if st.button("Save & Register Vehicle"):
+    if st.button("Register Equipment Asset"):
       if not new_v_no:
-        st.error("Kripya Asset ID / Vehicle Number darj karein.")
+        st.error("Please enter a valid Equipment Asset ID or Registration Number.")
       elif not df_vehs.empty and new_v_no in df_vehs["Vehicle_No"].astype(str).values:
-        st.warning(f"Vehicle {new_v_no} pehle se registered hai.")
+        st.warning(f"Equipment {new_v_no} is already registered in fleet master.")
       else:
         new_row = pd.DataFrame([{
             "Vehicle_No": new_v_no,
@@ -1421,11 +1397,11 @@ with tabs[3]:
         }])
         df_vehs = pd.concat([df_vehs[df_vehs["Vehicle_No"] != ""], new_row], ignore_index=True)
         if save_sheet_df("master_vehicles", df_vehs[req_veh_cols]):
-          st.success(f"Vehicle {new_v_no} registered successfully!")
+          st.success(f"Equipment {new_v_no} registered successfully.")
           st.rerun()
 
   st.markdown("---")
-  st.write("**Registered Fleet Vehicles (Edit fuel mode & factor directly in table below):**")
+  st.write("**Registered Fleet Master Registry (Inline Table Editor):**")
 
   v_editor = st.data_editor(
       df_vehs[req_veh_cols],
@@ -1434,7 +1410,7 @@ with tabs[3]:
       key="vehicle_mapper_clean",
   )
 
-  if st.button("Update Fleet Registry Changes"):
+  if st.button("Save Fleet Registry Updates"):
     valid_vehs = v_editor[v_editor["Vehicle_No"].astype(str).str.strip() != ""]
     if save_sheet_df("master_vehicles", valid_vehs):
       st.success("Fleet registry updated in Google Sheets.")
@@ -1443,10 +1419,10 @@ with tabs[3]:
 
 # --- TAB 5: EQUIPMENT RATE & POLICY MASTER ---
 with tabs[4]:
-  st.subheader("⚙️ Fleet Categories & Fuel Policy Master (No Code Editing Needed)")
+  st.subheader("⚙️ Commercial Terms & Machinery Policy Master")
   st.caption(
-      "Yahan se aap kisi bhi machine ka Monthly Hiring, OT Rate, Fuel Mode (KM/Hour) "
-      "aur Consumption Factor directly edit kar sakte hain. 'Save' dabate hi aage ke sabhi bills naye rate se banenge."
+      "Configure standard hiring rates, overtime terms, and fuel reimbursement norms. "
+      "Modifications saved here are automatically applied to subsequent billing calculations."
   )
 
   edited_rates = st.data_editor(
@@ -1460,11 +1436,11 @@ with tabs[4]:
           "OT_Rate": st.column_config.NumberColumn("Overtime Rate (₹/Hr)", format="₹%.2f"),
           "Fuel_Mode": st.column_config.SelectboxColumn("Fuel Mode", options=["KM_BASED", "HOUR_BASED"], required=True),
           "Fuel_Factor": st.column_config.NumberColumn("Consumption Factor (₹/Km or Ltr/Hr)", format="%.2f"),
-          "Unit_Display": st.column_config.TextColumn("Terms Label"),
+          "Unit_Display": st.column_config.TextColumn("Unit Description"),
       }
   )
 
-  if st.button("💾 Save Revised Master Rates to Cloud", type="primary"):
+  if st.button("💾 Save Revised Commercial Terms to Cloud", type="primary"):
     if save_sheet_df("fleet_rate_master", edited_rates):
-      st.success("Master rates Google Sheets me update ho gaye!")
+      st.success("Commercial rate terms synchronized successfully.")
       st.rerun()
