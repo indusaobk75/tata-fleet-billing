@@ -465,7 +465,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
 
 
 # ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
-def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate):
+def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
   doc = SimpleDocTemplate(
@@ -494,6 +494,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=2)
   cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=8.5, alignment=2)
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
+  hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
   # ================= PAGE 1: CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
@@ -553,7 +554,13 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
   ]))
   elements.append(t_abs)
-  elements.append(Spacer(1, 6))
+  elements.append(Spacer(1, 4))
+
+  # HOLD RESTRICTION AUDIT NOTE CALLOUT
+  if hold_notes:
+    for hn in hold_notes:
+      elements.append(Paragraph(f"⚠️ <b>DO RESTRICTION HOLD:</b> {hn}", hold_style))
+    elements.append(Spacer(1, 3))
 
   in_words = num2words(int(round(total_bill_amt)), lang="en_IN").upper()
   total_box = [
@@ -570,7 +577,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('BOTTOMPADDING', (0,0), (-1,-1), 5),
   ]))
   elements.append(t_tot)
-  elements.append(Spacer(1, 35))
+  elements.append(Spacer(1, 25))
 
   sig_data = [
       [
@@ -616,16 +623,16 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       except Exception:
         pass
 
-    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh})
+    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh, "hold_qty": 0.0})
     f_type = meta_info.get("type", "KM_BASED")
     f_factor = float(meta_info.get("factor", 0.0) or 0.0)
     m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
     ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
     veh_desc = meta_info.get("desc", veh)
+    v_hold_qty = float(meta_info.get("hold_qty", 0.0) or 0.0)
 
     # 1. TOP AUDIT SUMMARY STRIP
     if f_type == "HOUR_BASED":
-      # FUEL STRICTLY COMPUTED ON ACTUAL ENGINE METER RUN HOURS (run_units / HMR difference)
       v_litres = round(v_meter_run_units * f_factor, 2)
       v_fuel_claim = round(v_litres * market_diesel_rate, 2)
       col5_text = f"<b>Engine Run:</b> {v_meter_run_units:.2f} Hrs"
@@ -690,9 +697,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_stmt)
     elements.append(Spacer(1, 4))
 
-    # 3. BOTTOM MINI BILLING ABSTRACT TABLE
-    v_month_qty = round(v_working_shifts / 26.0, 3)
-    v_hire_amt = round(v_month_qty * m_rate, 2)
+    # 3. BOTTOM MINI BILLING ABSTRACT TABLE (WITH HOLD QUANTITY IF APPLICABLE)
+    v_actual_month_qty = round(v_working_shifts / 26.0, 3)
+    v_billed_month_qty = max(0.0, round(v_actual_month_qty - v_hold_qty, 3))
+    v_hire_amt = round(v_billed_month_qty * m_rate, 2)
     v_ot_amt = round(v_ot_hrs * ot_rate, 2)
 
     if f_type == "HOUR_BASED":
@@ -710,6 +718,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
 
     v_total_veh_bill = round(v_hire_amt + v_ot_amt + v_fuel_amt, 2)
 
+    hire_qty_label = f"{v_billed_month_qty:.3f}"
+    if v_hold_qty > 0:
+      hire_qty_label += f"<br/><font color='#C53030'>({v_hold_qty:.3f} HOLD)</font>"
+
     mini_headers = ["SRL.NO", "Description of Scope", "UOM", "QTY", "RATE / QTY (₹)", "AMOUNT (₹)"]
     mini_abs_data = [
         [Paragraph(f"<b>{h}</b>", cell_h) for h in mini_headers],
@@ -717,7 +729,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
             Paragraph("10", cell_d),
             Paragraph(f"Hiring Charges for {veh_desc}", cell_l),
             Paragraph("Month", cell_d),
-            Paragraph(f"{v_month_qty:.3f}", cell_d),
+            Paragraph(hire_qty_label, cell_d),
             Paragraph(f"{m_rate:,.2f}", cell_r),
             Paragraph(f"{v_hire_amt:,.2f}", cell_bold_r),
         ],
@@ -1089,14 +1101,6 @@ with tabs[1]:
         if not ot_row.empty:
           ot_rate_val = float(ot_row.iloc[0].get("Rate", 0.0) or 0.0)
 
-      veh_fuel_meta[v] = {
-          "type": f_type,
-          "factor": f_factor,
-          "m_rate": m_rate_val,
-          "ot_rate": ot_rate_val,
-          "desc": v_fam if v_fam != "General" else v,
-      }
-
       v_shifts = 0.0
       v_ot = 0.0
       v_meter_run = 0.0
@@ -1122,10 +1126,9 @@ with tabs[1]:
         except Exception:
           pass
 
-      # Monthly prorata out of 26 working shifts
       v_month_qty = round(v_shifts / 26.0, 3)
 
-      # Per-vehicle Fuel Claim strictly on ACTUAL METER RUNNING UNITS (KM or Engine Hours)
+      # Fuel calculation strictly on METER RUN (KM or Engine Hours)
       if f_type == "HOUR_BASED":
         v_fuel_cost = round(v_meter_run * f_factor * market_diesel_rate, 2)
       else:
@@ -1139,6 +1142,16 @@ with tabs[1]:
           "run_units": v_meter_run,
           "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
+          "hold_qty": 0.0,
+      }
+
+      veh_fuel_meta[v] = {
+          "type": f_type,
+          "factor": f_factor,
+          "m_rate": m_rate_val,
+          "ot_rate": ot_rate_val,
+          "desc": v_fam if v_fam != "General" else v,
+          "hold_qty": 0.0,
       }
 
     if assigned_vehs:
@@ -1181,40 +1194,70 @@ with tabs[1]:
 
     abstract_rows = []
     total_this_bill = 0.0
+    hold_notes = []
 
+    # Match each DO line item to its specific equipment & APPLY DO QUANTITY CEILING
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
       rate = float(row.get("Rate", 0.0) or 0.0)
       desc = str(row.get("Description", "")).upper()
       do_fam = str(row.get("Equipment_Family", "")).upper()
+      balance_boq = float(row.get("Balance_BOQ_Qty", 0.0) or 0.0)
 
-      matching_v_metrics = [
-          m for v_name, m in veh_metrics.items()
+      matching_v_entries = [
+          (v_name, m) for v_name, m in veh_metrics.items()
           if (m["family"].upper() in desc)
           or (m["family"].upper() in do_fam)
           or (any(word in desc for word in m["family"].upper().split() if len(word) > 2))
       ]
 
-      if not matching_v_metrics:
-        matching_v_metrics = list(veh_metrics.values())
+      if not matching_v_entries:
+        matching_v_entries = [(v_name, m) for v_name, m in veh_metrics.items()]
 
-      line_shifts_qty = sum(m["month_qty"] for m in matching_v_metrics)
-      line_ot_qty = sum(m["ot_hours"] for m in matching_v_metrics)
-      line_fuel_cost = sum(m["fuel_cost"] for m in matching_v_metrics)
+      matching_metrics = [m for _, m in matching_v_entries]
+      line_shifts_qty = sum(m["month_qty"] for m in matching_metrics)
+      line_ot_qty = sum(m["ot_hours"] for m in matching_metrics)
+      line_fuel_cost = sum(m["fuel_cost"] for m in matching_metrics)
+
+      hold_qty_for_line = 0.0
 
       if "MONTH" in unit:
-        this_qty = round(line_shifts_qty, 3)
+        computed_qty = round(line_shifts_qty, 3)
+        # Check DO Balance Cap
+        if balance_boq > 0 and computed_qty > balance_boq:
+          this_qty = round(balance_boq, 3)
+          hold_qty_for_line = round(computed_qty - balance_boq, 3)
+          hold_notes.append(f"Line {sl} ({row.get('Description')}): Actual Qty {computed_qty:.3f} exceeded available DO balance {balance_boq:.3f}. Billed: {this_qty:.3f} | {hold_qty_for_line:.3f} HOLD due to insufficient DO quantity.")
+          # Assign hold qty to matching vehicles
+          for v_name, _ in matching_v_entries:
+            if v_name in veh_fuel_meta:
+              veh_fuel_meta[v_name]["hold_qty"] = hold_qty_for_line
+        else:
+          this_qty = computed_qty
         this_amt = round(this_qty * rate, 2)
       elif "HOUR" in unit:
-        this_qty = round(line_ot_qty, 2)
+        computed_qty = round(line_ot_qty, 2)
+        if balance_boq > 0 and computed_qty > balance_boq:
+          this_qty = round(balance_boq, 2)
+          hold_qty_for_line = round(computed_qty - balance_boq, 2)
+          hold_notes.append(f"Line {sl} (OT): Actual Qty {computed_qty:.2f} exceeded available DO balance {balance_boq:.2f}. Billed: {this_qty:.2f} | {hold_qty_for_line:.2f} HOLD.")
+        else:
+          this_qty = computed_qty
         this_amt = round(this_qty * rate, 2)
       elif "KM" in unit or "FUEL" in desc or "REIMBUR" in desc or "LUMPSUM" in unit:
         if "LUMPSUM" in unit or rate == 1.0:
-          this_qty = round(line_fuel_cost, 2)
+          computed_qty = round(line_fuel_cost, 2)
+          if balance_boq > 0 and computed_qty > balance_boq:
+            this_qty = round(balance_boq, 2)
+            hold_qty_for_line = round(computed_qty - balance_boq, 2)
+            hold_notes.append(f"Line {sl} (Fuel): Actual Value ₹{computed_qty:,.2f} exceeded DO Balance ₹{balance_boq:,.2f}. Billed: ₹{this_qty:,.2f} | ₹{hold_qty_for_line:,.2f} HOLD.")
+          else:
+            this_qty = computed_qty
           this_amt = this_qty
         else:
-          this_qty = round(line_fuel_cost / (rate if rate > 0 else 1.0), 2)
+          computed_qty = round(line_fuel_cost / (rate if rate > 0 else 1.0), 2)
+          this_qty = computed_qty
           this_amt = round(line_fuel_cost, 2)
       else:
         this_qty = 0.0
@@ -1247,6 +1290,10 @@ with tabs[1]:
         use_container_width=True,
     )
 
+    if hold_notes:
+      for hn in hold_notes:
+        st.warning(hn)
+
     in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
     st.write("**Net Invoice Value:** ₹{:,.2f} | **Amount in Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
@@ -1266,7 +1313,7 @@ with tabs[1]:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate)
+    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, hold_notes)
     col_btn2.download_button(
         "📄 Generate Official Client PDF Package",
         data=pdf_bytes,
