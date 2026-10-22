@@ -90,7 +90,7 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_sheet_df(worksheet_name):
   for attempt in range(3):
     try:
@@ -139,15 +139,35 @@ def normalize_do(do_str):
   return str(do_str).split("/")[0].strip()
 
 
+def parse_any_date(date_val):
+  if pd.isna(date_val) or not str(date_val).strip():
+    return None
+  s = str(date_val).strip().split(" ")[0].replace("/", "-")
+  for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%m-%y", "%m-%d-%Y"):
+    try:
+      return datetime.datetime.strptime(s, fmt).date()
+    except Exception:
+      pass
+  try:
+    # Handle single digit dates e.g. 1-5-2026
+    parts = s.split("-")
+    if len(parts) == 3:
+      d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+      if y < 100:
+        y += 2000
+      return datetime.date(y, m, d)
+  except Exception:
+    pass
+  return None
+
+
 def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remarks):
   rem_upper = str(remarks).upper() if pd.notna(remarks) else ""
 
   is_sunday = False
-  try:
-    if datetime.datetime.strptime(str(date_str).strip(), "%d-%m-%Y").weekday() == 6:
-      is_sunday = True
-  except Exception:
-    pass
+  d_obj = parse_any_date(date_str)
+  if d_obj and d_obj.weekday() == 6:
+    is_sunday = True
   if "SUNDAY" in rem_upper:
     is_sunday = True
 
@@ -210,22 +230,24 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
 
 def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
   num_days = calendar.monthrange(year, month)[1]
-  
-  # Safe check: Agar raw_logs_df empty hai ya Vehicle_No column nahi hai
+
   if raw_logs_df is None or raw_logs_df.empty or "Vehicle_No" not in raw_logs_df.columns:
     veh_logs = pd.DataFrame()
   else:
-    veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == str(vehicle_no).strip().upper()].copy()
+    v_clean = str(vehicle_no).strip().upper()
+    veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == v_clean].copy()
+    if not veh_logs.empty and "DATE" in veh_logs.columns:
+      veh_logs["parsed_dt"] = veh_logs["DATE"].apply(parse_any_date)
 
   full_rows = []
   for day in range(1, num_days + 1):
-    d_str = "{:02d}-{:02d}-{}".format(day, month, year)
     d_obj = datetime.date(year, month, day)
+    d_str = d_obj.strftime("%d-%m-%Y")
     is_sun = d_obj.weekday() == 6
 
     match = pd.DataFrame()
-    if not veh_logs.empty and "DATE" in veh_logs.columns:
-      match = veh_logs[veh_logs["DATE"] == d_str]
+    if not veh_logs.empty and "parsed_dt" in veh_logs.columns:
+      match = veh_logs[veh_logs["parsed_dt"] == d_obj]
 
     if not match.empty:
       r = match.iloc[0]
@@ -779,7 +801,8 @@ with tabs[0]:
             inv = str(r.get("INVOLVEMENT", ""))
 
             disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_val, s_t, e_t, m_s, m_e, bd, rem)
-            day_str = d_val.split("-")[0] if "-" in d_val else "1"
+            parsed_d = parse_any_date(d_val)
+            day_str = str(parsed_d.day) if parsed_d else (d_val.split("-")[0] if "-" in d_val else "1")
 
             new_processed_rows.append({
                 "Vehicle_No": v_val,
@@ -830,7 +853,8 @@ with tabs[0]:
 
     existing_record = pd.DataFrame()
     if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
-      existing_record = df_logs[(df_logs["Vehicle_No"] == selected_veh) & (df_logs["DATE"] == d_date_str)]
+      df_logs["parsed_dt_chk"] = df_logs["DATE"].apply(parse_any_date)
+      existing_record = df_logs[(df_logs["Vehicle_No"] == selected_veh) & (df_logs["parsed_dt_chk"] == selected_date)]
     is_already_submitted = not existing_record.empty
 
     if is_already_submitted:
@@ -933,9 +957,9 @@ with tabs[1]:
 
     veh_full_statements = {}
     veh_fuel_meta = {}
-    total_group_billable_shifts = 0.0
-    total_group_ot = 0.0
-    total_calculated_fuel_amount = 0.0
+
+    # Structure to hold per-vehicle metrics
+    veh_metrics = {}
 
     for v in assigned_vehs:
       v_statement = generate_full_month_statement(v, bill_y, bill_m, df_logs)
@@ -972,6 +996,8 @@ with tabs[1]:
           "desc": v_fam if v_fam != "General" else v,
       }
 
+      v_shifts = 0.0
+      v_ot = 0.0
       v_run_units = 0.0
       v_work_hours = 0.0
       for _, r in v_statement.iterrows():
@@ -984,15 +1010,29 @@ with tabs[1]:
             r["BREAKDOWN_TIME_HRS"],
             r["REMARKS"],
         )
-        total_group_billable_shifts += b_shift
-        total_group_ot += ot_val
+        v_shifts += b_shift
+        v_ot += ot_val
         v_run_units += run_u
         v_work_hours += act_h
 
+      # Monthly prorata out of 26 working shifts
+      v_month_qty = round(v_shifts / 26.0, 3)
+
+      # Per-vehicle Fuel Claim
       if f_type == "HOUR_BASED":
-        total_calculated_fuel_amount += round(v_work_hours * f_factor * market_diesel_rate, 2)
+        v_fuel_cost = round(v_work_hours * f_factor * market_diesel_rate, 2)
       else:
-        total_calculated_fuel_amount += round(v_run_units * f_factor, 2)
+        v_fuel_cost = round(v_run_units * f_factor, 2)
+
+      veh_metrics[v] = {
+          "family": v_fam,
+          "shifts": v_shifts,
+          "month_qty": v_month_qty,
+          "ot_hours": v_ot,
+          "run_units": v_run_units,
+          "work_hours": v_work_hours,
+          "fuel_cost": v_fuel_cost,
+      }
 
     if assigned_vehs:
       st.markdown("---")
@@ -1008,12 +1048,17 @@ with tabs[1]:
 
       col_st1, col_st2 = st.columns(2)
       if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh)):
+        # Remove existing rows for this vehicle and month
+        df_logs["parsed_dt_save"] = df_logs["DATE"].apply(parse_any_date)
         df_logs = df_logs[
             ~(
                 (df_logs["Vehicle_No"] == chosen_view_veh)
-                & (df_logs["DATE"].astype(str).str.endswith("-{:02d}-{}".format(bill_m, bill_y)))
+                & (df_logs["parsed_dt_save"].apply(lambda d: d.year == bill_y and d.month == bill_m if d else False))
             )
         ]
+        if "parsed_dt_save" in df_logs.columns:
+          df_logs = df_logs.drop(columns=["parsed_dt_save"])
+
         valid_rows = edited_stmt[(edited_stmt["START_TIME"].str.strip() != "") | (edited_stmt["REMARKS"].str.strip() != "")]
         df_logs = pd.concat([df_logs, valid_rows], ignore_index=True)
         if save_sheet_df("fleet_daily_logsheets", df_logs):
@@ -1028,32 +1073,46 @@ with tabs[1]:
           mime="text/csv",
       )
 
-    num_vehs = max(1, len(assigned_vehs))
-    standard_month_shifts = 26.0 * num_vehs
-    month_qty = round(min(standard_month_shifts, total_group_billable_shifts) / standard_month_shifts * num_vehs, 3)
-
     abstract_rows = []
     total_this_bill = 0.0
 
+    # Match each DO line item to its specific equipment
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
       rate = float(row.get("Rate", 0.0) or 0.0)
       desc = str(row.get("Description", "")).upper()
+      do_fam = str(row.get("Equipment_Family", "")).upper()
+
+      # Find matching vehicles for this line item based on equipment category
+      matching_v_metrics = [
+          m for v_name, m in veh_metrics.items()
+          if (m["family"].upper() in desc)
+          or (m["family"].upper() in do_fam)
+          or (any(word in desc for word in m["family"].upper().split() if len(word) > 2))
+      ]
+
+      # If only 1 vehicle in DO or no specific match, assign to all vehicles in DO
+      if not matching_v_metrics:
+        matching_v_metrics = list(veh_metrics.values())
+
+      line_shifts_qty = sum(m["month_qty"] for m in matching_v_metrics)
+      line_ot_qty = sum(m["ot_hours"] for m in matching_v_metrics)
+      line_fuel_cost = sum(m["fuel_cost"] for m in matching_v_metrics)
 
       if "MONTH" in unit:
-        this_qty = month_qty
+        this_qty = round(line_shifts_qty, 3)
         this_amt = round(this_qty * rate, 2)
       elif "HOUR" in unit:
-        this_qty = total_group_ot
+        this_qty = round(line_ot_qty, 2)
         this_amt = round(this_qty * rate, 2)
       elif "KM" in unit or "FUEL" in desc or "REIMBUR" in desc or "LUMPSUM" in unit:
         if "LUMPSUM" in unit or rate == 1.0:
-          this_qty = round(total_calculated_fuel_amount, 2)
+          this_qty = round(line_fuel_cost, 2)
           this_amt = this_qty
         else:
-          this_qty = round(total_calculated_fuel_amount / (rate if rate > 0 else 1.0), 2)
-          this_amt = round(total_calculated_fuel_amount, 2)
+          this_qty = round(line_fuel_cost / (rate if rate > 0 else 1.0), 2)
+          this_amt = round(line_fuel_cost, 2)
       else:
         this_qty = 0.0
         this_amt = 0.0
