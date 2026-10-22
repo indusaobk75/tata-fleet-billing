@@ -210,7 +210,12 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
 
 def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
   num_days = calendar.monthrange(year, month)[1]
-  veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == str(vehicle_no).strip().upper()].copy()
+  
+  # Safe check: Agar raw_logs_df empty hai ya Vehicle_No column nahi hai
+  if raw_logs_df is None or raw_logs_df.empty or "Vehicle_No" not in raw_logs_df.columns:
+    veh_logs = pd.DataFrame()
+  else:
+    veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == str(vehicle_no).strip().upper()].copy()
 
   full_rows = []
   for day in range(1, num_days + 1):
@@ -218,7 +223,9 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
     d_obj = datetime.date(year, month, day)
     is_sun = d_obj.weekday() == 6
 
-    match = veh_logs[veh_logs["DATE"] == d_str]
+    match = pd.DataFrame()
+    if not veh_logs.empty and "DATE" in veh_logs.columns:
+      match = veh_logs[veh_logs["DATE"] == d_str]
 
     if not match.empty:
       r = match.iloc[0]
@@ -270,6 +277,9 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
 
 def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
   norm_target = normalize_do(do_no)
+  if df_master.empty or "DO_No" not in df_master.columns:
+    return pd.DataFrame()
+
   do_items = df_master[df_master["DO_No"].astype(str).apply(normalize_do) == norm_target].copy()
   positions = []
 
@@ -281,13 +291,13 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
 
     prior_qty = 0.0
     prior_amt = 0.0
-    if not df_ledger.empty:
+    if not df_ledger.empty and "DO_No" in df_ledger.columns and "SrvLnNo" in df_ledger.columns:
       prior_bills = df_ledger[
           (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_target)
           & (df_ledger["SrvLnNo"].astype(str) == str(srv_ln))
           & (df_ledger["Status"] == "Approved")
       ]
-      if target_ra_bill_no:
+      if target_ra_bill_no and "RA_Bill_No" in prior_bills.columns:
         prior_bills = prior_bills[prior_bills["RA_Bill_No"].astype(str) != str(target_ra_bill_no)]
 
       prior_qty = prior_bills["Billed_Qty"].astype(float).sum()
@@ -655,6 +665,11 @@ df_logs = load_sheet_df("fleet_daily_logsheets")
 df_ledger = load_sheet_df("ra_bills_ledger")
 df_rates = load_sheet_df("fleet_rate_master")
 
+# Defensive check for df_logs
+required_log_cols = ["Vehicle_No", "SL_NO", "DATE", "START_TIME", "END_TIME", "NO_OF_SHIFTS", "OVERTIME_HRS", "METER_START", "METER_END", "TOTAL_RUNNING_KM", "ACTUAL_WORK_HRS", "BREAKDOWN_TIME_HRS", "INVOLVEMENT", "REMARKS"]
+if df_logs.empty or "Vehicle_No" not in df_logs.columns:
+  df_logs = pd.DataFrame(columns=required_log_cols)
+
 if df_rates.empty or "Category_Name" not in df_rates.columns:
   default_schedule = [
       {"Category_Name": "Backhoe / JCB", "Monthly_Rate": 100000.0, "OT_Rate": 299.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 5.50, "Unit_Display": "Ltr/Hr"},
@@ -785,7 +800,7 @@ with tabs[0]:
 
           if new_processed_rows:
             new_df = pd.DataFrame(new_processed_rows)
-            if not df_logs.empty:
+            if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
               for _, nr in new_df.iterrows():
                 df_logs = df_logs[~((df_logs["Vehicle_No"] == nr["Vehicle_No"]) & (df_logs["DATE"] == nr["DATE"]))]
             df_logs = pd.concat([df_logs, new_df], ignore_index=True)
@@ -814,7 +829,7 @@ with tabs[0]:
       st.caption("Asset Category: **{}** | Work Order Reference: **{}**".format(v_row.get("Equipment_Family"), v_row.get("Mapped_DO_No")))
 
     existing_record = pd.DataFrame()
-    if not df_logs.empty:
+    if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
       existing_record = df_logs[(df_logs["Vehicle_No"] == selected_veh) & (df_logs["DATE"] == d_date_str)]
     is_already_submitted = not existing_record.empty
 
@@ -939,7 +954,6 @@ with tabs[1]:
       m_rate_val = rule_preset.get("m_rate", 0.0)
       ot_rate_val = rule_preset.get("ot_rate", 0.0)
 
-      # Fallback to DO rates if not in rate_dict
       if m_rate_val == 0.0 and not live_do_view.empty:
         m_row = live_do_view[live_do_view["Unit"].astype(str).str.upper().str.contains("MONTH")]
         if not m_row.empty:
