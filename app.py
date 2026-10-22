@@ -2,6 +2,7 @@ import calendar
 import datetime
 import io
 import json
+import math
 import re
 import time
 from google.oauth2.service_account import Credentials
@@ -139,6 +140,15 @@ def normalize_do(do_str):
   return str(do_str).split("/")[0].strip()
 
 
+def clean_text_cell(val):
+  if pd.isna(val) or val is None:
+    return "-"
+  s = str(val).strip()
+  if s.lower() in ["nan", "none", "null", ""]:
+    return "-"
+  return s
+
+
 def parse_any_date(date_val):
   if pd.isna(date_val) or not str(date_val).strip():
     return None
@@ -149,7 +159,6 @@ def parse_any_date(date_val):
     except Exception:
       pass
   try:
-    # Handle single digit dates e.g. 1-5-2026
     parts = s.split("-")
     if len(parts) == 3:
       d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
@@ -159,6 +168,28 @@ def parse_any_date(date_val):
   except Exception:
     pass
   return None
+
+
+def format_12hr_time(t_val):
+  if pd.isna(t_val) or not str(t_val).strip():
+    return "-"
+  s = str(t_val).strip()
+  if s.lower() in ["nan", "none", "null", "-", "no work"]:
+    return "-"
+  try:
+    if "PM" in s.upper() or "AM" in s.upper():
+      # Normalize AM/PM formatting
+      dt = pd.to_datetime(s.upper(), format="%I:%M %p")
+      return dt.strftime("%I:%M %p")
+    elif len(s.split(":")) == 3:
+      dt = pd.to_datetime(s, format="%H:%M:%S")
+      return dt.strftime("%I:%M %p")
+    elif len(s.split(":")) == 2:
+      dt = pd.to_datetime(s, format="%H:%M")
+      return dt.strftime("%I:%M %p")
+  except Exception:
+    pass
+  return s
 
 
 def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remarks):
@@ -171,22 +202,38 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   if "SUNDAY" in rem_upper:
     is_sunday = True
 
-  bd_hours_val = float(bd_hrs) if pd.notna(bd_hrs) and str(bd_hrs).strip() != "" else 0.0
+  # Safe parse breakdown hours
+  try:
+    bd_hours_val = float(bd_hrs) if pd.notna(bd_hrs) and str(bd_hrs).strip() != "" and str(bd_hrs).lower() != "nan" else 0.0
+  except Exception:
+    bd_hours_val = 0.0
+
+  # Breakdown rule >= 4.0 Hours or explicit BREAKDOWN in remarks
   is_breakdown = ("BREAKDOWN" in rem_upper) or (bd_hours_val >= 4.0)
 
-  m_s = float(m_start) if pd.notna(m_start) and str(m_start).strip() != "" else 0.0
-  m_e = float(m_end) if pd.notna(m_end) and str(m_end).strip() != "" else 0.0
-  run_units = max(0.0, m_e - m_s) if (m_e > 0 and m_e >= m_s) else 0.0
+  # Safe parse meter readings
+  try:
+    m_s = float(m_start) if pd.notna(m_start) and str(m_start).strip() != "" and str(m_start).lower() != "nan" else 0.0
+  except Exception:
+    m_s = 0.0
+
+  try:
+    m_e = float(m_end) if pd.notna(m_end) and str(m_end).strip() != "" and str(m_end).lower() != "nan" else 0.0
+  except Exception:
+    m_e = 0.0
+
+  run_units = round(max(0.0, m_e - m_s), 2) if (m_e > 0 and m_e >= m_s) else 0.0
 
   ot_hours = 0.0
-  actual_working_hours = 0.0
+  gross_work_hours = 0.0
 
-  if pd.notna(end_t) and str(end_t).strip() and not is_breakdown:
+  clean_start = str(start_t).strip().upper() if pd.notna(start_t) and str(start_t).strip() and str(start_t).lower() != "nan" else ""
+  clean_end = str(end_t).strip().upper() if pd.notna(end_t) and str(end_t).strip() and str(end_t).lower() != "nan" else ""
+
+  if clean_start and clean_end and "NO WORK" not in clean_start and "NO WORK" not in clean_end and not is_breakdown:
     try:
-      clean_start = str(start_t).strip().upper() if pd.notna(start_t) and str(start_t).strip() else "08:00 AM"
-      clean_end = str(end_t).strip().upper()
-
       def parse_t(t_val):
+        t_val = t_val.strip()
         if "PM" in t_val or "AM" in t_val:
           return pd.to_datetime(t_val, format="%I:%M %p")
         elif len(t_val.split(":")) == 3:
@@ -200,19 +247,23 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
       gross_work = (t_out - t_in).total_seconds() / 3600.0
       if gross_work < 0:
         gross_work += 24.0
-      actual_working_hours = max(0.0, gross_work - bd_hours_val)
+      gross_work_hours = gross_work
 
+      # Overtime beyond standard 06:00 PM cutoff (minus breakdown)
       cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
       diff = (t_out - cutoff_t).total_seconds() / 3600.0
       if diff < 0 and "AM" in clean_end:
         diff += 24.0
       ot_hours = round(max(0.0, diff - bd_hours_val), 2)
     except Exception:
+      gross_work_hours = 8.0
       ot_hours = 0.0
-      actual_working_hours = 8.0 if not is_breakdown else 0.0
-  elif not is_breakdown and not is_sunday:
-    actual_working_hours = 8.0
+  elif not is_sunday and not is_breakdown:
+    gross_work_hours = 8.0
 
+  actual_working_hours = round(max(0.0, gross_work_hours - bd_hours_val), 2)
+
+  # Standard Shift Calculation based on >= 4.0 Hours rule
   if is_breakdown:
     disp_shift = "0"
     billable_shift = 0.0
@@ -251,47 +302,75 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
 
     if not match.empty:
       r = match.iloc[0]
+      raw_s = clean_text_cell(r.get("START_TIME", ""))
+      raw_e = clean_text_cell(r.get("END_TIME", ""))
+      raw_rem = clean_text_cell(r.get("REMARKS", ""))
+      raw_inv = clean_text_cell(r.get("INVOLVEMENT", ""))
+
       disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(
           d_str,
-          r.get("START_TIME", ""),
-          r.get("END_TIME", ""),
+          raw_s,
+          raw_e,
           r.get("METER_START", 0),
           r.get("METER_END", 0),
           r.get("BREAKDOWN_TIME_HRS", 0),
-          r.get("REMARKS", ""),
+          raw_rem,
       )
+
+      # 12-Hour formatted times for display
+      s_12hr = format_12hr_time(raw_s) if raw_s != "-" else "-"
+      e_12hr = format_12hr_time(raw_e) if raw_e != "-" else "-"
+
+      try:
+        raw_bd = float(r.get("BREAKDOWN_TIME_HRS", 0.0) or 0.0)
+        bd_disp = f"{raw_bd:.1f}" if raw_bd > 0 else "0.0"
+      except Exception:
+        bd_disp = "0.0"
+
+      try:
+        ms_val = float(r.get("METER_START", 0.0) or 0.0)
+        ms_disp = f"{ms_val:.1f}" if ms_val > 0 else "-"
+      except Exception:
+        ms_disp = "-"
+
+      try:
+        me_val = float(r.get("METER_END", 0.0) or 0.0)
+        me_disp = f"{me_val:.1f}" if me_val > 0 else "-"
+      except Exception:
+        me_disp = "-"
+
       full_rows.append({
           "Vehicle_No": vehicle_no,
           "SL_NO": str(day),
           "DATE": d_str,
-          "START_TIME": str(r.get("START_TIME", "")),
-          "END_TIME": str(r.get("END_TIME", "")),
+          "START_TIME": s_12hr,
+          "END_TIME": e_12hr,
           "NO_OF_SHIFTS": disp_s,
-          "OVERTIME_HRS": str(ot) if ot > 0 else "0",
-          "METER_START": str(r.get("METER_START", "0")),
-          "METER_END": str(r.get("METER_END", "0")),
-          "TOTAL_RUNNING_KM": str(r_units),
-          "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
-          "BREAKDOWN_TIME_HRS": str(r.get("BREAKDOWN_TIME_HRS", "0.0")),
-          "INVOLVEMENT": str(r.get("INVOLVEMENT", "")),
-          "REMARKS": str(r.get("REMARKS", "")),
+          "OVERTIME_HRS": f"{ot:.2f}" if ot > 0 else "0",
+          "METER_START": ms_disp,
+          "METER_END": me_disp,
+          "TOTAL_RUNNING_KM": f"{r_units:.2f}",
+          "ACTUAL_WORK_HRS": f"{act_hrs:.2f}",
+          "BREAKDOWN_TIME_HRS": bd_disp,
+          "INVOLVEMENT": raw_inv if raw_inv != "-" else "",
+          "REMARKS": raw_rem if raw_rem != "-" else "",
       })
     else:
       full_rows.append({
           "Vehicle_No": vehicle_no,
           "SL_NO": str(day),
           "DATE": d_str,
-          "START_TIME": "",
-          "END_TIME": "",
+          "START_TIME": "-",
+          "END_TIME": "-",
           "NO_OF_SHIFTS": "",
           "OVERTIME_HRS": "0",
-          "METER_START": "0",
-          "METER_END": "0",
-          "TOTAL_RUNNING_KM": "0.0",
-          "ACTUAL_WORK_HRS": "0.0",
+          "METER_START": "-",
+          "METER_END": "-",
+          "TOTAL_RUNNING_KM": "0.00",
+          "ACTUAL_WORK_HRS": "0.00",
           "BREAKDOWN_TIME_HRS": "0.0",
-          "INVOLVEMENT": "",
-          "REMARKS": "SUNDAY" if is_sun else "",
+          "INVOLVEMENT": "-",
+          "REMARKS": "SUNDAY" if is_sun else "-",
       })
 
   return pd.DataFrame(full_rows)
@@ -423,6 +502,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=0)
   cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=2)
   cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=8.5, alignment=2)
+  cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
 
   # ================= PAGE 1: CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
@@ -484,7 +564,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   elements.append(t_abs)
   elements.append(Spacer(1, 6))
 
-  in_words = num2words(int(total_bill_amt), lang="en_IN").upper()
+  in_words = num2words(int(round(total_bill_amt)), lang="en_IN").upper()
   total_box = [
       [
           Paragraph(f"<b>AMOUNT IN WORDS:</b> RUPEES {in_words} ONLY", cell_l),
@@ -520,11 +600,36 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=3)))
 
-    v_working_shifts = sum(1 for _, r in s_df.iterrows() if str(r.get("NO_OF_SHIFTS", "")).strip() == "1")
-    v_ot_hrs = sum(float(r.get("OVERTIME_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_run_units = sum(float(r.get("TOTAL_RUNNING_KM", 0) or 0) for _, r in s_df.iterrows())
-    v_act_work_hrs = sum(float(r.get("ACTUAL_WORK_HRS", 0) or 0) for _, r in s_df.iterrows())
-    v_bd_hrs = sum(float(r.get("BREAKDOWN_TIME_HRS", 0) or 0) for _, r in s_df.iterrows())
+    v_working_shifts = 0
+    v_ot_hrs = 0.0
+    v_run_units = 0.0
+    v_act_work_hrs = 0.0
+    v_bd_hrs = 0.0
+
+    for _, r in s_df.iterrows():
+      s_str = str(r.get("NO_OF_SHIFTS", "")).strip()
+      if s_str == "1":
+        v_working_shifts += 1
+
+      try:
+        v_ot_hrs += float(r.get("OVERTIME_HRS", 0) or 0)
+      except Exception:
+        pass
+
+      try:
+        v_run_units += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
+      except Exception:
+        pass
+
+      try:
+        v_act_work_hrs += float(r.get("ACTUAL_WORK_HRS", 0) or 0)
+      except Exception:
+        pass
+
+      try:
+        v_bd_hrs += float(r.get("BREAKDOWN_TIME_HRS", 0) or 0)
+      except Exception:
+        pass
 
     meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh})
     f_type = meta_info.get("type", "KM_BASED")
@@ -537,19 +642,21 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     if f_type == "HOUR_BASED":
       v_litres = round(v_act_work_hrs * f_factor, 2)
       v_fuel_claim = round(v_litres * market_diesel_rate, 2)
-      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.1f} Hrs"
-      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.1f} L | <b>Fuel: ₹{v_fuel_claim:,.2f}</b>"
+      col5_text = f"<b>Engine Run:</b> {v_act_work_hrs:.2f} Hrs"
+      col6_text = f"<b>Cons (@{f_factor:.1f}L/H):</b> {v_litres:.2f} L | <b>Fuel: ₹{v_fuel_claim:,.2f}</b>"
+      run_col_header = "Run (HRS)"
     else:
       v_fuel_claim = round(v_run_units * f_factor, 2)
-      col5_text = f"<b>Total Run:</b> {v_run_units:.1f} KM"
+      col5_text = f"<b>Total Run:</b> {v_run_units:.2f} KM"
       col6_text = f"<b>Fuel Claim (@₹{f_factor:.2f}/KM): ₹{v_fuel_claim:,.2f}</b>"
+      run_col_header = "Run (KM)"
 
     v_summary_data = [
         [
             Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
             Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
             Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
-            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.1f} Hrs", cell_l),
+            Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.2f} Hrs", cell_l),
             Paragraph(col5_text, cell_l),
             Paragraph(col6_text, cell_bold_r),
         ]
@@ -565,27 +672,28 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_v_sum)
     elements.append(Spacer(1, 3))
 
-    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE
-    st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", "Run (KM)", "B/D (Hrs)", "Involvement", "Remarks"]
+    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE (Dynamic Header: Run (KM) vs Run (HRS))
+    st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", run_col_header, "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
     for _, row in s_df.iterrows():
       st_data.append([
-          Paragraph(str(row.get("SL_NO", "")), cell_d),
-          Paragraph(str(row.get("DATE", "")), cell_d),
-          Paragraph(str(row.get("START_TIME", "")), cell_d),
-          Paragraph(str(row.get("END_TIME", "")), cell_d),
-          Paragraph(str(row.get("NO_OF_SHIFTS", "")), cell_d),
-          Paragraph(str(row.get("OVERTIME_HRS", "0")), cell_d),
-          Paragraph(str(row.get("METER_START", "0")), cell_d),
-          Paragraph(str(row.get("METER_END", "0")), cell_d),
-          Paragraph(str(row.get("TOTAL_RUNNING_KM", "0.0")), cell_d),
-          Paragraph(str(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
-          Paragraph(str(row.get("INVOLVEMENT", ""))[:20], cell_l),
-          Paragraph(str(row.get("REMARKS", ""))[:24], cell_l),
+          Paragraph(clean_text_cell(row.get("SL_NO", "")), cell_d),
+          Paragraph(clean_text_cell(row.get("DATE", "")), cell_d),
+          Paragraph(clean_text_cell(row.get("START_TIME", "-")), cell_d),
+          Paragraph(clean_text_cell(row.get("END_TIME", "-")), cell_d),
+          Paragraph(clean_text_cell(row.get("NO_OF_SHIFTS", "")), cell_d),
+          Paragraph(clean_text_cell(row.get("OVERTIME_HRS", "0")), cell_d),
+          Paragraph(clean_text_cell(row.get("METER_START", "-")), cell_d),
+          Paragraph(clean_text_cell(row.get("METER_END", "-")), cell_d),
+          Paragraph(clean_text_cell(row.get("TOTAL_RUNNING_KM", "0.00")), cell_d),
+          Paragraph(clean_text_cell(row.get("BREAKDOWN_TIME_HRS", "0.0")), cell_d),
+          Paragraph(clean_text_cell(row.get("INVOLVEMENT", "-")), cell_l),
+          Paragraph(clean_text_cell(row.get("REMARKS", "-")), cell_rem),
       ])
 
-    t_stmt = Table(st_data, colWidths=[24, 60, 68, 68, 40, 48, 62, 62, 54, 54, 135, 135])
+    # Column widths adjusted for full remarks visibility
+    t_stmt = Table(st_data, colWidths=[22, 58, 64, 64, 34, 44, 58, 58, 54, 48, 110, 196])
     t_stmt.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_navy),
         ('GRID', (0,0), (-1,-1), 0.4, c_border),
@@ -751,13 +859,13 @@ with tabs[0]:
           "SL_NO": day,
           "Vehicle_No": tpl_veh,
           "DATE": d_str,
-          "START_TIME": "" if is_sun else "08:00 AM",
-          "END_TIME": "" if is_sun else "06:00 PM",
+          "START_TIME": "-" if is_sun else "08:00 AM",
+          "END_TIME": "-" if is_sun else "06:00 PM",
           "METER_START": "",
           "METER_END": "",
           "BREAKDOWN_TIME_HRS": 0.0,
-          "INVOLVEMENT": "" if is_sun else "TSL Operations",
-          "REMARKS": "SUNDAY" if is_sun else "",
+          "INVOLVEMENT": "-" if is_sun else "TSL Operations",
+          "REMARKS": "SUNDAY" if is_sun else "-",
       })
 
     buf_tpl = io.BytesIO()
@@ -790,15 +898,17 @@ with tabs[0]:
         if st.button("🚀 Process & Append Bulk Logsheets to Cloud"):
           new_processed_rows = []
           for _, r in up_df.iterrows():
-            d_val = str(r.get("DATE", "")).strip()
-            v_val = str(r.get("Vehicle_No", "")).strip().upper()
-            s_t = str(r.get("START_TIME", "")).strip()
-            e_t = str(r.get("END_TIME", "")).strip()
+            d_val = clean_text_cell(r.get("DATE", ""))
+            if d_val == "-":
+              continue
+            v_val = clean_text_cell(r.get("Vehicle_No", "")).upper()
+            s_t = clean_text_cell(r.get("START_TIME", ""))
+            e_t = clean_text_cell(r.get("END_TIME", ""))
             m_s = r.get("METER_START", 0)
             m_e = r.get("METER_END", 0)
             bd = r.get("BREAKDOWN_TIME_HRS", 0.0)
-            rem = str(r.get("REMARKS", ""))
-            inv = str(r.get("INVOLVEMENT", ""))
+            rem = clean_text_cell(r.get("REMARKS", ""))
+            inv = clean_text_cell(r.get("INVOLVEMENT", ""))
 
             disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_val, s_t, e_t, m_s, m_e, bd, rem)
             parsed_d = parse_any_date(d_val)
@@ -808,17 +918,17 @@ with tabs[0]:
                 "Vehicle_No": v_val,
                 "SL_NO": str(day_str),
                 "DATE": d_val,
-                "START_TIME": s_t,
-                "END_TIME": e_t,
+                "START_TIME": format_12hr_time(s_t) if s_t != "-" else "-",
+                "END_TIME": format_12hr_time(e_t) if e_t != "-" else "-",
                 "NO_OF_SHIFTS": disp_s,
-                "OVERTIME_HRS": str(ot) if ot > 0 else "0",
-                "METER_START": str(m_s),
-                "METER_END": str(m_e),
-                "TOTAL_RUNNING_KM": str(r_units),
-                "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
-                "BREAKDOWN_TIME_HRS": str(bd),
-                "INVOLVEMENT": inv,
-                "REMARKS": rem,
+                "OVERTIME_HRS": f"{ot:.2f}" if ot > 0 else "0",
+                "METER_START": str(m_s) if str(m_s).lower() != "nan" else "",
+                "METER_END": str(m_e) if str(m_e).lower() != "nan" else "",
+                "TOTAL_RUNNING_KM": f"{r_units:.2f}",
+                "ACTUAL_WORK_HRS": f"{act_hrs:.2f}",
+                "BREAKDOWN_TIME_HRS": str(bd) if str(bd).lower() != "nan" else "0.0",
+                "INVOLVEMENT": inv if inv != "-" else "",
+                "REMARKS": rem if rem != "-" else "",
             })
 
           if new_processed_rows:
@@ -860,35 +970,44 @@ with tabs[0]:
     if is_already_submitted:
       st.warning("Notice: Existing duty log detected for Date {}. Form is loaded in Correction / Overwrite mode.".format(d_date_str))
       rec = existing_record.iloc[0]
-      def_start = str(rec.get("START_TIME", "08:00 AM"))
-      def_end = str(rec.get("END_TIME", "06:00 PM"))
-      def_bd = float(rec.get("BREAKDOWN_TIME_HRS", 0.0) or 0.0)
-      def_mstart = int(float(rec.get("METER_START", 0) or 0))
-      def_mend = int(float(rec.get("METER_END", 0) or 0))
-      def_dept = str(rec.get("INVOLVEMENT", ""))
-      def_rem = str(rec.get("REMARKS", ""))
+      def_start = format_12hr_time(clean_text_cell(rec.get("START_TIME", "08:00 AM")))
+      def_end = format_12hr_time(clean_text_cell(rec.get("END_TIME", "06:00 PM")))
+      try:
+        def_bd = float(rec.get("BREAKDOWN_TIME_HRS", 0.0) or 0.0)
+      except Exception:
+        def_bd = 0.0
+      try:
+        def_mstart = float(rec.get("METER_START", 0) or 0)
+      except Exception:
+        def_mstart = 0.0
+      try:
+        def_mend = float(rec.get("METER_END", 0) or 0)
+      except Exception:
+        def_mend = 0.0
+      def_dept = clean_text_cell(rec.get("INVOLVEMENT", ""))
+      def_rem = clean_text_cell(rec.get("REMARKS", ""))
     else:
       st.info("Status: Ready for New Log Entry | Date: {}".format(d_date_str))
       def_start = "08:00 AM"
       def_end = "06:00 PM"
       def_bd = 0.0
-      def_mstart = 0
-      def_mend = 0
+      def_mstart = 0.0
+      def_mend = 0.0
       def_dept = ""
       def_rem = ""
 
     with st.form("duty_form"):
       c1, c2, c3 = st.columns(3)
-      s_time = c1.text_input("Shift Start Time", def_start)
-      e_time = c2.text_input("Shift End Time (OT applies after 06:00 PM)", def_end)
-      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=def_bd, step=0.5)
+      s_time = c1.text_input("Shift Start Time (e.g. 08:00 AM)", def_start if def_start != "-" else "08:00 AM")
+      e_time = c2.text_input("Shift End Time (e.g. 06:00 PM)", def_end if def_end != "-" else "06:00 PM")
+      bd_hrs = c3.number_input("Breakdown Duration (Hours)", value=float(def_bd), step=0.5)
 
       c4, c5, c6 = st.columns(3)
-      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=def_mstart, min_value=0)
-      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=def_mend, min_value=0)
-      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept)
+      m_start = c4.number_input("Odometer / Hour Meter Start Reading", value=float(def_mstart), min_value=0.0)
+      m_end = c5.number_input("Odometer / Hour Meter End Reading", value=float(def_mend), min_value=0.0)
+      dept = c6.text_input("Site Indentor / Dept (Optional)", def_dept if def_dept != "-" else "")
 
-      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem)
+      remarks = st.text_input("Operation Remarks (SUNDAY / NORMAL / BREAKDOWN / IDLE)", def_rem if def_rem != "-" else "")
 
       btn_label = "Update / Override Existing Entry" if is_already_submitted else "Submit & Log Duty Slip"
       if st.form_submit_button(btn_label):
@@ -902,15 +1021,15 @@ with tabs[0]:
             "Vehicle_No": selected_veh,
             "SL_NO": str(day_num),
             "DATE": d_date_str,
-            "START_TIME": s_time,
-            "END_TIME": e_time,
+            "START_TIME": format_12hr_time(s_time),
+            "END_TIME": format_12hr_time(e_time),
             "NO_OF_SHIFTS": disp_s,
-            "OVERTIME_HRS": str(ot) if ot > 0 else "0",
-            "METER_START": str(m_start),
-            "METER_END": str(m_end),
-            "TOTAL_RUNNING_KM": str(r_units),
-            "ACTUAL_WORK_HRS": str(round(act_hrs, 2)),
-            "BREAKDOWN_TIME_HRS": str(bd_hrs),
+            "OVERTIME_HRS": f"{ot:.2f}" if ot > 0 else "0",
+            "METER_START": f"{m_start:.1f}",
+            "METER_END": f"{m_end:.1f}",
+            "TOTAL_RUNNING_KM": f"{r_units:.2f}",
+            "ACTUAL_WORK_HRS": f"{act_hrs:.2f}",
+            "BREAKDOWN_TIME_HRS": f"{bd_hrs:.1f}",
             "INVOLVEMENT": dept,
             "REMARKS": remarks,
         }
@@ -957,8 +1076,6 @@ with tabs[1]:
 
     veh_full_statements = {}
     veh_fuel_meta = {}
-
-    # Structure to hold per-vehicle metrics
     veh_metrics = {}
 
     for v in assigned_vehs:
@@ -1000,20 +1117,32 @@ with tabs[1]:
       v_ot = 0.0
       v_run_units = 0.0
       v_work_hours = 0.0
+      v_bd_hours = 0.0
+
       for _, r in v_statement.iterrows():
-        _, ot_val, run_u, b_shift, act_h = compute_shift_and_ot(
-            r["DATE"],
-            r["START_TIME"],
-            r["END_TIME"],
-            r["METER_START"],
-            r["METER_END"],
-            r["BREAKDOWN_TIME_HRS"],
-            r["REMARKS"],
-        )
-        v_shifts += b_shift
-        v_ot += ot_val
-        v_run_units += run_u
-        v_work_hours += act_h
+        s_val = str(r.get("NO_OF_SHIFTS", "")).strip()
+        if s_val == "1":
+          v_shifts += 1.0
+
+        try:
+          v_ot += float(r.get("OVERTIME_HRS", 0) or 0)
+        except Exception:
+          pass
+
+        try:
+          v_run_units += float(r.get("TOTAL_RUNNING_KM", 0) or 0)
+        except Exception:
+          pass
+
+        try:
+          v_work_hours += float(r.get("ACTUAL_WORK_HRS", 0) or 0)
+        except Exception:
+          pass
+
+        try:
+          v_bd_hours += float(r.get("BREAKDOWN_TIME_HRS", 0) or 0)
+        except Exception:
+          pass
 
       # Monthly prorata out of 26 working shifts
       v_month_qty = round(v_shifts / 26.0, 3)
@@ -1031,6 +1160,7 @@ with tabs[1]:
           "ot_hours": v_ot,
           "run_units": v_run_units,
           "work_hours": v_work_hours,
+          "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
       }
 
@@ -1048,7 +1178,6 @@ with tabs[1]:
 
       col_st1, col_st2 = st.columns(2)
       if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh)):
-        # Remove existing rows for this vehicle and month
         df_logs["parsed_dt_save"] = df_logs["DATE"].apply(parse_any_date)
         df_logs = df_logs[
             ~(
@@ -1084,7 +1213,6 @@ with tabs[1]:
       desc = str(row.get("Description", "")).upper()
       do_fam = str(row.get("Equipment_Family", "")).upper()
 
-      # Find matching vehicles for this line item based on equipment category
       matching_v_metrics = [
           m for v_name, m in veh_metrics.items()
           if (m["family"].upper() in desc)
@@ -1092,7 +1220,6 @@ with tabs[1]:
           or (any(word in desc for word in m["family"].upper().split() if len(word) > 2))
       ]
 
-      # If only 1 vehicle in DO or no specific match, assign to all vehicles in DO
       if not matching_v_metrics:
         matching_v_metrics = list(veh_metrics.values())
 
@@ -1144,7 +1271,7 @@ with tabs[1]:
         use_container_width=True,
     )
 
-    in_words = num2words(int(total_this_bill), lang="en_IN").upper()
+    in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
     st.write("**Net Invoice Value:** ₹{:,.2f} | **In Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
     col_btn1, col_btn2, col_btn3 = st.columns(3)
