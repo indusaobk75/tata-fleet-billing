@@ -556,7 +556,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   elements.append(t_abs)
   elements.append(Spacer(1, 4))
 
-  # HOLD RESTRICTION AUDIT NOTE CALLOUT
   if hold_notes:
     for hn in hold_notes:
       elements.append(Paragraph(f"⚠️ <b>DO RESTRICTION HOLD:</b> {hn}", hold_style))
@@ -594,8 +593,17 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
+    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh, "hold_qty": 0.0})
+    f_type = meta_info.get("type", "KM_BASED")
+    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
+    m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
+    ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
+    veh_desc = meta_info.get("desc", veh)
+    v_hold_qty = float(meta_info.get("hold_qty", 0.0) or 0.0)
+
+    # Title with equipment category tag
     elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=11, spaceAfter=1)))
-    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh}", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
+    elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh} [{veh_desc}]", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=3)))
 
     v_working_shifts = 0
@@ -623,14 +631,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       except Exception:
         pass
 
-    meta_info = veh_fuel_meta.get(veh, {"type": "KM_BASED", "factor": 0.0, "m_rate": 0.0, "ot_rate": 0.0, "desc": veh, "hold_qty": 0.0})
-    f_type = meta_info.get("type", "KM_BASED")
-    f_factor = float(meta_info.get("factor", 0.0) or 0.0)
-    m_rate = float(meta_info.get("m_rate", 0.0) or 0.0)
-    ot_rate = float(meta_info.get("ot_rate", 0.0) or 0.0)
-    veh_desc = meta_info.get("desc", veh)
-    v_hold_qty = float(meta_info.get("hold_qty", 0.0) or 0.0)
-
     # 1. TOP AUDIT SUMMARY STRIP
     if f_type == "HOUR_BASED":
       v_litres = round(v_meter_run_units * f_factor, 2)
@@ -646,7 +646,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
 
     v_summary_data = [
         [
-            Paragraph(f"<b>Vehicle ID:</b> {veh}", cell_l),
+            Paragraph(f"<b>Equipment ID:</b> {veh} ({veh_desc})", cell_l),
             Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
             Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
             Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.2f} Hrs", cell_l),
@@ -654,7 +654,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
             Paragraph(col6_text, cell_bold_r),
         ]
     ]
-    t_v_sum = Table(v_summary_data, colWidths=[120, 120, 110, 110, 120, 230])
+    t_v_sum = Table(v_summary_data, colWidths=[130, 110, 110, 110, 120, 230])
     t_v_sum.setStyle(TableStyle([
         ('BOX', (0,0), (-1,-1), 1, c_blue),
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EBF8FF")),
@@ -697,7 +697,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_stmt)
     elements.append(Spacer(1, 4))
 
-    # 3. BOTTOM MINI BILLING ABSTRACT TABLE (WITH HOLD QUANTITY IF APPLICABLE)
+    # 3. BOTTOM MINI BILLING ABSTRACT TABLE
     v_actual_month_qty = round(v_working_shifts / 26.0, 3)
     v_billed_month_qty = max(0.0, round(v_actual_month_qty - v_hold_qty, 3))
     v_hire_amt = round(v_billed_month_qty * m_rate, 2)
@@ -751,7 +751,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ],
         [
             Paragraph("<b>TOTAL</b>", cell_d),
-            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} (Shifts: {v_working_shifts}/26, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
+            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} ({veh_desc}) (Shifts: {v_working_shifts}/26, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
@@ -836,11 +836,19 @@ with tabs[0]:
     st.markdown("##### 1. Generate Pre-Filled Monthly Calendar Template")
     col_sel_v, col_sel_m, col_sel_y = st.columns(3)
     
-    active_vehs_list = df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""]["Vehicle_No"].unique().tolist()
-    if not active_vehs_list:
-      active_vehs_list = ["NL01DA1034(ROLLER)", "JH02BY7955"]
+    # Format equipment dropdown with classification label
+    vehs_options = {}
+    if not df_vehs.empty and "Vehicle_No" in df_vehs.columns:
+      for _, vr in df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""].iterrows():
+        v_id = str(vr["Vehicle_No"]).strip()
+        v_f = str(vr.get("Equipment_Family", "")).strip()
+        disp_txt = f"{v_id} [{v_f}]" if v_f else v_id
+        vehs_options[v_id] = disp_txt
 
-    tpl_veh = col_sel_v.selectbox("Target Equipment / Vehicle ID", active_vehs_list, key="tpl_veh_select")
+    if not vehs_options:
+      vehs_options = {"NL01DA1034(ROLLER)": "NL01DA1034(ROLLER) [Vibratory Roller]", "JH02BY7955": "JH02BY7955 [Trailer 40MT]"}
+
+    selected_tpl_key = col_sel_v.selectbox("Target Equipment", options=list(vehs_options.keys()), format_func=lambda x: vehs_options[x], key="tpl_veh_select")
     today = datetime.date.today()
     tpl_month = col_sel_m.selectbox("Billing Month", list(range(1, 13)), index=today.month - 1, key="tpl_month_select")
     tpl_year = col_sel_y.selectbox("Billing Year", [2025, 2026, 2027], index=1, key="tpl_year_select")
@@ -853,7 +861,7 @@ with tabs[0]:
       is_sun = d_obj.weekday() == 6
       template_rows.append({
           "SL_NO": day,
-          "Vehicle_No": tpl_veh,
+          "Vehicle_No": selected_tpl_key,
           "DATE": d_str,
           "START_TIME": "-" if is_sun else "08:00 AM",
           "END_TIME": "-" if is_sun else "06:00 PM",
@@ -866,13 +874,13 @@ with tabs[0]:
 
     buf_tpl = io.BytesIO()
     with pd.ExcelWriter(buf_tpl, engine="openpyxl") as writer:
-      pd.DataFrame(template_rows).to_excel(writer, sheet_name=f"{tpl_veh[:15]}_Logsheet", index=False)
+      pd.DataFrame(template_rows).to_excel(writer, sheet_name=f"{selected_tpl_key[:15]}_Logsheet", index=False)
 
     m_name_tpl = calendar.month_name[tpl_month].upper()
     st.download_button(
-        f"📥 Download Structured Excel Template ({tpl_veh} - {m_name_tpl} {tpl_year})",
+        f"📥 Download Structured Excel Template ({selected_tpl_key} - {m_name_tpl} {tpl_year})",
         data=buf_tpl.getvalue(),
-        file_name=f"Logsheet_Template_{tpl_veh}_{m_name_tpl}_{tpl_year}.xlsx",
+        file_name=f"Logsheet_Template_{selected_tpl_key}_{m_name_tpl}_{tpl_year}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     st.caption("The template automatically populates sequential calendar days (1 to 30/31). Enter meter readings and operational remarks directly.")
@@ -948,7 +956,12 @@ with tabs[0]:
     st.warning("No vehicles registered. Please configure fleet entries under the 'Vehicle Fleet Master Mapping' tab.")
   else:
     col_t1, col_t2 = st.columns(2)
-    selected_veh = col_t1.selectbox("Select Equipment / Vehicle ID", active_vehs["Vehicle_No"].unique(), key="daily_form_veh")
+    selected_veh = col_t1.selectbox(
+        "Select Equipment Asset",
+        options=list(vehs_options.keys()),
+        format_func=lambda x: vehs_options.get(x, x),
+        key="daily_form_veh"
+    )
     selected_date = col_t2.date_input("Operating Date", datetime.date.today(), key="daily_form_date")
     d_date_str = "{:02d}-{:02d}-{}".format(selected_date.day, selected_date.month, selected_date.year)
 
@@ -1066,7 +1079,9 @@ with tabs[1]:
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
 
-    st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_vehs) if assigned_vehs else "None"))
+    # Formatted display labels for attached vehicles
+    assigned_labels = [f"{v} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==v].iloc[0].get('Equipment_Family', '')}]" for v in assigned_vehs]
+    st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_labels) if assigned_labels else "None"))
 
     live_do_view = get_live_do_position(df_master_do, df_ledger, chosen_do, target_ra_bill_no=ra_bill_num)
 
@@ -1128,7 +1143,6 @@ with tabs[1]:
 
       v_month_qty = round(v_shifts / 26.0, 3)
 
-      # Fuel calculation strictly on METER RUN (KM or Engine Hours)
       if f_type == "HOUR_BASED":
         v_fuel_cost = round(v_meter_run * f_factor * market_diesel_rate, 2)
       else:
@@ -1156,7 +1170,11 @@ with tabs[1]:
 
     if assigned_vehs:
       st.markdown("---")
-      chosen_view_veh = st.selectbox("Select Equipment Duty Log to Audit & Edit:", assigned_vehs)
+      chosen_view_veh = st.selectbox(
+          "Select Equipment Duty Log to Audit & Edit:",
+          options=assigned_vehs,
+          format_func=lambda x: f"{x} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==x].iloc[0].get('Equipment_Family', '')}]" if not assigned_vehs_df[assigned_vehs_df['Vehicle_No']==x].empty else x
+      )
       st.info("Reviewing sequential calendar logsheet (Days 1 to {}) for {}.".format(num_days, chosen_view_veh))
 
       edited_stmt = st.data_editor(
@@ -1224,12 +1242,10 @@ with tabs[1]:
 
       if "MONTH" in unit:
         computed_qty = round(line_shifts_qty, 3)
-        # Check DO Balance Cap
         if balance_boq > 0 and computed_qty > balance_boq:
           this_qty = round(balance_boq, 3)
           hold_qty_for_line = round(computed_qty - balance_boq, 3)
           hold_notes.append(f"Line {sl} ({row.get('Description')}): Actual Qty {computed_qty:.3f} exceeded available DO balance {balance_boq:.3f}. Billed: {this_qty:.3f} | {hold_qty_for_line:.3f} HOLD due to insufficient DO quantity.")
-          # Assign hold qty to matching vehicles
           for v_name, _ in matching_v_entries:
             if v_name in veh_fuel_meta:
               veh_fuel_meta[v_name]["hold_qty"] = hold_qty_for_line
@@ -1297,7 +1313,7 @@ with tabs[1]:
     in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
     st.write("**Net Invoice Value:** ₹{:,.2f} | **Amount in Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
 
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
@@ -1307,7 +1323,7 @@ with tabs[1]:
 
     clean_do = str(chosen_do).replace("/", "_")
     col_btn1.download_button(
-        "📊 Export Full Billing Workbook (Excel)",
+        "📊 Export Excel Workbook",
         data=buf_xl.getvalue(),
         file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1315,13 +1331,13 @@ with tabs[1]:
 
     pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, hold_notes)
     col_btn2.download_button(
-        "📄 Generate Official Client PDF Package",
+        "📄 Generate Official PDF",
         data=pdf_bytes,
         file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
         mime="application/pdf",
     )
 
-    if col_btn3.button("Finalize & Lock RA Bill {}".format(ra_bill_num)):
+    if col_btn3.button("🔒 Finalize & Lock Bill {}".format(ra_bill_num)):
       df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
       new_entries = []
       for _, r in abs_df.iterrows():
@@ -1336,8 +1352,19 @@ with tabs[1]:
         })
       df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
       if save_sheet_df("ra_bills_ledger", df_ledger):
-        st.success("RA Bill committed and locked in commercial ledger.")
+        st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
         st.rerun()
+
+    # DIRECT BILL DELETE / UNLOCK BUTTON
+    if col_btn4.button("🗑️ Delete / Unlock Bill {}".format(ra_bill_num), help="Delete this RA bill records from the commercial ledger."):
+      if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
+        initial_len = len(df_ledger)
+        df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+        if save_sheet_df("ra_bills_ledger", df_ledger):
+          st.success(f"RA Bill {ra_bill_num} successfully deleted from ledger.")
+          st.rerun()
+      else:
+        st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
 # --- TAB 3: DO UPLOAD ---
