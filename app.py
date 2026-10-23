@@ -91,7 +91,7 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_sheet_df(worksheet_name):
   for attempt in range(3):
     try:
@@ -120,7 +120,7 @@ def save_sheet_df(worksheet_name, df):
         ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
       ws.clear()
       df_clean = df.fillna("")
-      ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
+      ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist(), value_input_option="USER_ENTERED")
       st.cache_data.clear()
       return True
     except Exception as e:
@@ -395,9 +395,9 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
       prior_qty = prior_bills["Billed_Qty"].astype(float).sum()
       prior_amt = prior_bills["Billed_Amt"].astype(float).sum()
 
-    prev_qty = init_qty + prior_qty
-    prev_amt = init_amt + prior_amt
-    balance_qty = boq_qty - prev_qty
+    prev_qty = round(init_qty + prior_qty, 3)
+    prev_amt = round(init_amt + prior_amt, 2)
+    balance_qty = round(boq_qty - prev_qty, 3)
 
     positions.append({
         "DO_No": do_no,
@@ -409,9 +409,9 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
         "Rate": float(row.get("Rate", 0.0) or 0.0),
         "OT_Rate": float(row.get("OT_Rate", 0.0) or 0.0),
         "Fuel_Rate_KM": float(row.get("Fuel_Rate_KM", 0.0) or 0.0),
-        "Prev_Qty": round(prev_qty, 3),
-        "Prev_Amt": round(prev_amt, 2),
-        "Balance_BOQ_Qty": round(balance_qty, 3),
+        "Prev_Qty": prev_qty,
+        "Prev_Amt": prev_amt,
+        "Balance_BOQ_Qty": balance_qty,
     })
 
   return pd.DataFrame(positions)
@@ -535,12 +535,12 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         Paragraph(str(r["Description"]), cell_l),
         Paragraph(str(r["Unit"]), cell_d),
         Paragraph(f"{float(r['BOQ Rate']):,.2f}", cell_r),
-        Paragraph(f"{float(r['BOQ Qty']):,.2f}", cell_d),
-        Paragraph(f"{float(r['Prev Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['BOQ Qty']):,.3f}", cell_d),
+        Paragraph(f"{float(r['Prev Qty']):,.3f}", cell_d),
         Paragraph(f"{float(r['Prev Amount']):,.2f}", cell_r),
-        Paragraph(f"{float(r['This Bill Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['This Bill Qty']):,.3f}", cell_d),
         Paragraph(f"{float(r['This Bill Amount']):,.2f}", cell_bold_r),
-        Paragraph(f"{float(r['Cumulative Qty']):,.2f}", cell_d),
+        Paragraph(f"{float(r['Cumulative Qty']):,.3f}", cell_d),
         Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
     ])
 
@@ -1110,15 +1110,6 @@ with tabs[1]:
         if not ot_row.empty:
           ot_rate_val = float(ot_row.iloc[0].get("Rate", 0.0) or 0.0)
 
-      veh_fuel_meta[v] = {
-          "type": f_type,
-          "factor": f_factor,
-          "m_rate": m_rate_val,
-          "ot_rate": ot_rate_val,
-          "desc": v_fam if v_fam != "General" else v,
-          "hold_qty": 0.0,
-      }
-
       v_shifts = 0.0
       v_ot = 0.0
       v_meter_run = 0.0
@@ -1159,6 +1150,15 @@ with tabs[1]:
           "run_units": v_meter_run,
           "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
+          "hold_qty": 0.0,
+      }
+
+      veh_fuel_meta[v] = {
+          "type": f_type,
+          "factor": f_factor,
+          "m_rate": m_rate_val,
+          "ot_rate": ot_rate_val,
+          "desc": v_fam if v_fam != "General" else v,
           "hold_qty": 0.0,
       }
 
@@ -1208,6 +1208,7 @@ with tabs[1]:
     total_this_bill = 0.0
     hold_notes = []
 
+    # Match each DO line item to its specific equipment & APPLY DO QUANTITY CEILING
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
@@ -1414,21 +1415,20 @@ with tabs[2]:
 
   st.markdown("---")
   st.subheader("2. Opening Baseline & Rate Ledger Configuration")
-  st.caption("Review BOQ values, baseline quantities, and rates across contract line items. Decimal inputs (e.g., 0.869) are fully supported:")
+  st.caption("Review BOQ values, baseline quantities, and rates across contract line items. Decimal inputs (e.g., 8.072) are fully supported:")
 
-  # Explicit float column types to allow 3-decimal entry
   baseline_columns = [
       "DO_No", "SrvLnNo", "Equipment_Family", "Description", "Unit",
       "BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"
   ]
   for col in baseline_columns:
     if col not in df_master_do.columns:
-      df_master_do[col] = 0.0 if "Qty" in col or "Amt" in col or "Rate" in col else ""
+      df_master_do[col] = 0.0 if ("Qty" in col or "Amt" in col or "Rate" in col) else ""
 
-  # Ensure numeric columns are cast to float before entering editor
+  # Ensure all numeric columns are strictly float
   num_cols = ["BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"]
   for c in num_cols:
-    df_master_do[c] = pd.to_numeric(df_master_do[c], errors="coerce").fillna(0.0)
+    df_master_do[c] = pd.to_numeric(df_master_do[c].astype(str).str.replace(",", ""), errors="coerce").fillna(0.0).astype(float)
 
   edited_master = st.data_editor(
       df_master_do[baseline_columns],
@@ -1451,11 +1451,40 @@ with tabs[2]:
   )
 
   if st.button("💾 Save Contract Baseline Updates", type="primary"):
-    # Ensure values are stored as floats
+    # 1. Cast every numerical column to exact float
     for c in num_cols:
-      edited_master[c] = pd.to_numeric(edited_master[c], errors="coerce").fillna(0.0)
-    if save_sheet_df("master_do_items", edited_master):
-      st.success("Contract baseline updated successfully in Google Sheets with decimal precision.")
+      edited_master[c] = pd.to_numeric(edited_master[c].astype(str).str.replace(",", ""), errors="coerce").fillna(0.0).astype(float)
+
+    # 2. AUTO-CALCULATE BASELINE AMOUNT: Amount = Baseline Qty * Rate
+    for idx in edited_master.index:
+      b_qty = float(edited_master.at[idx, "Initial_Baseline_Qty"])
+      b_rate = float(edited_master.at[idx, "Rate"])
+      b_unit = str(edited_master.at[idx, "Unit"]).strip().upper()
+      curr_amt = float(edited_master.at[idx, "Initial_Baseline_Amt"])
+
+      if b_qty > 0:
+        if "MONTH" in b_unit or "HOUR" in b_unit:
+          # Automatically calculate Amount = Qty * Rate
+          edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
+        elif "LUMPSUM" in b_unit or "KM" in b_unit:
+          # If rate is 1.0 (Lumpsum reimb), Amount = Qty, else Qty * Rate
+          if b_rate == 1.0 or b_rate == 0.0:
+            if curr_amt == 0.0:
+              edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty, 2)
+          else:
+            edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
+
+    # 3. Format float numbers as clean strings with exact decimals for Google Sheets
+    clean_save_df = edited_master.copy()
+    clean_save_df["BOQ_Qty"] = clean_save_df["BOQ_Qty"].apply(lambda x: f"{float(x):.3f}")
+    clean_save_df["Initial_Baseline_Qty"] = clean_save_df["Initial_Baseline_Qty"].apply(lambda x: f"{float(x):.3f}")
+    clean_save_df["Rate"] = clean_save_df["Rate"].apply(lambda x: f"{float(x):.2f}")
+    clean_save_df["OT_Rate"] = clean_save_df["OT_Rate"].apply(lambda x: f"{float(x):.2f}")
+    clean_save_df["Fuel_Rate_KM"] = clean_save_df["Fuel_Rate_KM"].apply(lambda x: f"{float(x):.2f}")
+    clean_save_df["Initial_Baseline_Amt"] = clean_save_df["Initial_Baseline_Amt"].apply(lambda x: f"{float(x):.2f}")
+
+    if save_sheet_df("master_do_items", clean_save_df):
+      st.success("Contract baseline updated successfully! Amounts automatically computed and 3-decimal precision saved.")
       st.rerun()
 
 
