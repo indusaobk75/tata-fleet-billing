@@ -601,7 +601,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     veh_desc = meta_info.get("desc", veh)
     v_hold_qty = float(meta_info.get("hold_qty", 0.0) or 0.0)
 
-    # Title with equipment category tag
     elements.append(Paragraph("M/S INDU SAO", ParagraphStyle('VPTitle', parent=comp_title, fontSize=11, spaceAfter=1)))
     elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh} [{veh_desc}]", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=3)))
@@ -631,7 +630,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       except Exception:
         pass
 
-    # 1. TOP AUDIT SUMMARY STRIP
     if f_type == "HOUR_BASED":
       v_litres = round(v_meter_run_units * f_factor, 2)
       v_fuel_claim = round(v_litres * market_diesel_rate, 2)
@@ -665,7 +663,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_v_sum)
     elements.append(Spacer(1, 3))
 
-    # 2. SEQUENTIAL CALENDAR STATEMENT TABLE
     st_headers = ["SL", "Date", "Shift Start", "Shift End", "Shift", "OT (Hrs)", "Meter In", "Meter Out", run_col_header, "B/D (Hrs)", "Involvement", "Remarks"]
     st_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in st_headers]]
 
@@ -697,7 +694,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_stmt)
     elements.append(Spacer(1, 4))
 
-    # 3. BOTTOM MINI BILLING ABSTRACT TABLE
     v_actual_month_qty = round(v_working_shifts / 26.0, 3)
     v_billed_month_qty = max(0.0, round(v_actual_month_qty - v_hold_qty, 3))
     v_hire_amt = round(v_billed_month_qty * m_rate, 2)
@@ -836,7 +832,6 @@ with tabs[0]:
     st.markdown("##### 1. Generate Pre-Filled Monthly Calendar Template")
     col_sel_v, col_sel_m, col_sel_y = st.columns(3)
     
-    # Format equipment dropdown with classification label
     vehs_options = {}
     if not df_vehs.empty and "Vehicle_No" in df_vehs.columns:
       for _, vr in df_vehs[df_vehs["Vehicle_No"].astype(str).str.strip() != ""].iterrows():
@@ -1079,7 +1074,6 @@ with tabs[1]:
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
 
-    # Formatted display labels for attached vehicles
     assigned_labels = [f"{v} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==v].iloc[0].get('Equipment_Family', '')}]" for v in assigned_vehs]
     st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_labels) if assigned_labels else "None"))
 
@@ -1115,6 +1109,15 @@ with tabs[1]:
         ot_row = live_do_view[live_do_view["Unit"].astype(str).str.upper().str.contains("HOUR")]
         if not ot_row.empty:
           ot_rate_val = float(ot_row.iloc[0].get("Rate", 0.0) or 0.0)
+
+      veh_fuel_meta[v] = {
+          "type": f_type,
+          "factor": f_factor,
+          "m_rate": m_rate_val,
+          "ot_rate": ot_rate_val,
+          "desc": v_fam if v_fam != "General" else v,
+          "hold_qty": 0.0,
+      }
 
       v_shifts = 0.0
       v_ot = 0.0
@@ -1156,15 +1159,6 @@ with tabs[1]:
           "run_units": v_meter_run,
           "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
-          "hold_qty": 0.0,
-      }
-
-      veh_fuel_meta[v] = {
-          "type": f_type,
-          "factor": f_factor,
-          "m_rate": m_rate_val,
-          "ot_rate": ot_rate_val,
-          "desc": v_fam if v_fam != "General" else v,
           "hold_qty": 0.0,
       }
 
@@ -1214,7 +1208,6 @@ with tabs[1]:
     total_this_bill = 0.0
     hold_notes = []
 
-    # Match each DO line item to its specific equipment & APPLY DO QUANTITY CEILING
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
@@ -1355,10 +1348,8 @@ with tabs[1]:
         st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
         st.rerun()
 
-    # DIRECT BILL DELETE / UNLOCK BUTTON
     if col_btn4.button("🗑️ Delete / Unlock Bill {}".format(ra_bill_num), help="Delete this RA bill records from the commercial ledger."):
       if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
-        initial_len = len(df_ledger)
         df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
         if save_sheet_df("ra_bills_ledger", df_ledger):
           st.success(f"RA Bill {ra_bill_num} successfully deleted from ledger.")
@@ -1367,7 +1358,7 @@ with tabs[1]:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
-# --- TAB 3: DO UPLOAD ---
+# --- TAB 3: DO UPLOAD & BASELINE SETUP ---
 with tabs[2]:
   st.subheader("1. Register / Amend SAP Delivery Order (DO) Contract")
   uploaded_pdf = st.file_uploader("Upload Official Tata Steel Work Order (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
@@ -1423,11 +1414,48 @@ with tabs[2]:
 
   st.markdown("---")
   st.subheader("2. Opening Baseline & Rate Ledger Configuration")
-  st.caption("Review BOQ values, baseline quantities, and rates across contract line items:")
-  edited_master = st.data_editor(df_master_do, num_rows="dynamic", key="baseline_editor_clean")
-  if st.button("Save Contract Baseline"):
+  st.caption("Review BOQ values, baseline quantities, and rates across contract line items. Decimal inputs (e.g., 0.869) are fully supported:")
+
+  # Explicit float column types to allow 3-decimal entry
+  baseline_columns = [
+      "DO_No", "SrvLnNo", "Equipment_Family", "Description", "Unit",
+      "BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"
+  ]
+  for col in baseline_columns:
+    if col not in df_master_do.columns:
+      df_master_do[col] = 0.0 if "Qty" in col or "Amt" in col or "Rate" in col else ""
+
+  # Ensure numeric columns are cast to float before entering editor
+  num_cols = ["BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"]
+  for c in num_cols:
+    df_master_do[c] = pd.to_numeric(df_master_do[c], errors="coerce").fillna(0.0)
+
+  edited_master = st.data_editor(
+      df_master_do[baseline_columns],
+      num_rows="dynamic",
+      use_container_width=True,
+      key="baseline_editor_clean",
+      column_config={
+          "DO_No": st.column_config.TextColumn("DO Reference", required=True),
+          "SrvLnNo": st.column_config.NumberColumn("Line No", step=10),
+          "Equipment_Family": st.column_config.TextColumn("Category"),
+          "Description": st.column_config.TextColumn("Description"),
+          "Unit": st.column_config.TextColumn("Unit"),
+          "BOQ_Qty": st.column_config.NumberColumn("BOQ Quantity", step=0.001, format="%.3f"),
+          "Rate": st.column_config.NumberColumn("Contract Rate (₹)", step=0.01, format="%.2f"),
+          "OT_Rate": st.column_config.NumberColumn("OT Rate (₹)", step=0.01, format="%.2f"),
+          "Fuel_Rate_KM": st.column_config.NumberColumn("Fuel Rate (₹/KM)", step=0.01, format="%.2f"),
+          "Initial_Baseline_Qty": st.column_config.NumberColumn("Prior Billed Qty (Baseline)", step=0.001, format="%.3f"),
+          "Initial_Baseline_Amt": st.column_config.NumberColumn("Prior Billed Amt (Baseline)", step=0.01, format="%.2f"),
+      }
+  )
+
+  if st.button("💾 Save Contract Baseline Updates", type="primary"):
+    # Ensure values are stored as floats
+    for c in num_cols:
+      edited_master[c] = pd.to_numeric(edited_master[c], errors="coerce").fillna(0.0)
     if save_sheet_df("master_do_items", edited_master):
-      st.success("Contract baseline updated successfully.")
+      st.success("Contract baseline updated successfully in Google Sheets with decimal precision.")
       st.rerun()
 
 
@@ -1454,7 +1482,7 @@ with tabs[3]:
       new_do = col_v3.text_input("Delivery Order Reference (e.g., 3700991558/109)").strip()
 
     new_f_type = col_v4.selectbox("Fuel Computation Basis", ["KM_BASED", "HOUR_BASED"], index=0 if preset_mode == "KM_BASED" else 1)
-    new_f_factor = col_v5.number_input("Consumption Factor (₹/KM or Ltr/Hr)", value=float(preset_factor), step=0.5)
+    new_f_factor = col_v5.number_input("Consumption Factor (₹/KM or Ltr/Hr)", value=float(preset_factor), step=0.1, format="%.2f")
 
     if st.button("Register Equipment Asset"):
       if not new_v_no:
@@ -1477,11 +1505,22 @@ with tabs[3]:
   st.markdown("---")
   st.write("**Registered Fleet Master Registry (Inline Table Editor):**")
 
+  for col in ["Consumption_Factor"]:
+    if col in df_vehs.columns:
+      df_vehs[col] = pd.to_numeric(df_vehs[col], errors="coerce").fillna(0.0)
+
   v_editor = st.data_editor(
       df_vehs[req_veh_cols],
       num_rows="dynamic",
       use_container_width=True,
       key="vehicle_mapper_clean",
+      column_config={
+          "Vehicle_No": st.column_config.TextColumn("Asset ID / Reg No", required=True),
+          "Equipment_Family": st.column_config.TextColumn("Category"),
+          "Mapped_DO_No": st.column_config.TextColumn("Contract DO"),
+          "Fuel_Type": st.column_config.SelectboxColumn("Fuel Mode", options=["KM_BASED", "HOUR_BASED"]),
+          "Consumption_Factor": st.column_config.NumberColumn("Factor (₹/Km or Ltr/Hr)", step=0.1, format="%.2f"),
+      }
   )
 
   if st.button("Save Fleet Registry Updates"):
@@ -1499,6 +1538,10 @@ with tabs[4]:
       "Modifications saved here are automatically applied to subsequent billing calculations."
   )
 
+  for col in ["Monthly_Rate", "OT_Rate", "Fuel_Factor"]:
+    if col in df_rates.columns:
+      df_rates[col] = pd.to_numeric(df_rates[col], errors="coerce").fillna(0.0)
+
   edited_rates = st.data_editor(
       df_rates,
       num_rows="dynamic",
@@ -1506,10 +1549,10 @@ with tabs[4]:
       key="rate_master_editor_live",
       column_config={
           "Category_Name": st.column_config.TextColumn("Equipment Description", required=True),
-          "Monthly_Rate": st.column_config.NumberColumn("Monthly Hiring (₹)", format="₹%d"),
-          "OT_Rate": st.column_config.NumberColumn("Overtime Rate (₹/Hr)", format="₹%.2f"),
+          "Monthly_Rate": st.column_config.NumberColumn("Monthly Hiring (₹)", format="₹%.2f", step=100.0),
+          "OT_Rate": st.column_config.NumberColumn("Overtime Rate (₹/Hr)", format="₹%.2f", step=1.0),
           "Fuel_Mode": st.column_config.SelectboxColumn("Fuel Mode", options=["KM_BASED", "HOUR_BASED"], required=True),
-          "Fuel_Factor": st.column_config.NumberColumn("Consumption Factor (₹/Km or Ltr/Hr)", format="%.2f"),
+          "Fuel_Factor": st.column_config.NumberColumn("Consumption Factor (₹/Km or Ltr/Hr)", format="%.2f", step=0.1),
           "Unit_Display": st.column_config.TextColumn("Unit Description"),
       }
   )
