@@ -1071,6 +1071,20 @@ with tabs[1]:
     bill_period = "01-{}-{} TO {:02d}-{}-{}".format(m_name[:3], bill_y, num_days, m_name[:3], bill_y)
 
     norm_chosen_do = normalize_do(chosen_do)
+
+    # CHECK IF CURRENT RA BILL IS ALREADY LOCKED IN LEDGER
+    is_bill_already_locked = False
+    if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
+      locked_match = df_ledger[
+          (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
+          & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num))
+          & (df_ledger["Status"] == "Approved")
+      ]
+      is_bill_already_locked = not locked_match.empty
+
+    if is_bill_already_locked:
+      st.error(f"🔒 **LOCKED COMMERCIAL RECORD**: RA Bill **{ra_bill_num}** for Order **{chosen_do}** is already finalized and committed to the ledger. Regeneration is blocked unless this bill is first Unlocked/Deleted.")
+
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
 
@@ -1176,10 +1190,11 @@ with tabs[1]:
           num_rows="fixed",
           use_container_width=True,
           key="stmt_edit_{}".format(chosen_view_veh),
+          disabled=is_bill_already_locked,
       )
 
       col_st1, col_st2 = st.columns(2)
-      if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh)):
+      if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh), disabled=is_bill_already_locked):
         df_logs["parsed_dt_save"] = df_logs["DATE"].apply(parse_any_date)
         df_logs = df_logs[
             ~(
@@ -1208,7 +1223,6 @@ with tabs[1]:
     total_this_bill = 0.0
     hold_notes = []
 
-    # Match each DO line item to its specific equipment & APPLY DO QUANTITY CEILING
     for _, row in live_do_view.iterrows():
       sl = row["SrvLnNo"]
       unit = str(row.get("Unit", "")).strip().upper()
@@ -1307,31 +1321,9 @@ with tabs[1]:
     in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
     st.write("**Net Invoice Value:** ₹{:,.2f} | **Amount in Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
 
-    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
-
-    buf_xl = io.BytesIO()
-    with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
-      abs_df.to_excel(writer, sheet_name="Page1_Abstract", index=False)
-      for v, s_df in veh_full_statements.items():
-        s_df.to_excel(writer, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
-
-    clean_do = str(chosen_do).replace("/", "_")
-    col_btn1.download_button(
-        "📊 Export Excel Workbook",
-        data=buf_xl.getvalue(),
-        file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-    pdf_bytes = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, hold_notes)
-    col_btn2.download_button(
-        "📄 Generate Official PDF",
-        data=pdf_bytes,
-        file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
-        mime="application/pdf",
-    )
-
-    if col_btn3.button("🔒 Finalize & Lock Bill {}".format(ra_bill_num)):
+    # Helper function to lock RA Bill in Google Sheets
+    def commit_and_lock_bill():
+      global df_ledger
       df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
       new_entries = []
       for _, r in abs_df.iterrows():
@@ -1345,15 +1337,77 @@ with tabs[1]:
             "Status": "Approved",
         })
       df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
-      if save_sheet_df("ra_bills_ledger", df_ledger):
-        st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
+      save_sheet_df("ra_bills_ledger", df_ledger)
+
+    # PRE-GENERATE ARTIFACTS
+    clean_do = str(chosen_do).replace("/", "_")
+    buf_xl = io.BytesIO()
+    with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
+      abs_df.to_excel(writer, sheet_name="Page1_Abstract", index=False)
+      for v, s_df in veh_full_statements.items():
+        s_df.to_excel(writer, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
+    excel_payload = buf_xl.getvalue()
+
+    pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, hold_notes)
+
+    # AUTO-LOCK DOWNLOAD INTERCEPTOR DIALOG
+    @st.dialog("Commercial Audit: Lock RA Bill & Release Download")
+    def confirm_lock_and_download_modal(doc_type):
+      st.markdown(f"### 🔒 Authorize Final Billing Lock")
+      st.write(
+          f"You are requesting to download the **{doc_type}** for **RA Bill {ra_bill_num}** ({chosen_do}).\n\n"
+          "Per contract governance, downloading official client statements requires this bill to be **Committed & Locked** into the commercial ledger to prevent audit discrepancies.\n\n"
+          "Once locked, editing this bill will be blocked unless explicitly rejected or unlocked."
+      )
+      col_m1, col_m2 = st.columns(2)
+      if col_m1.button("❌ Cancel (Keep Editing)", use_container_width=True):
         st.rerun()
 
-    if col_btn4.button("🗑️ Delete / Unlock Bill {}".format(ra_bill_num), help="Delete this RA bill records from the commercial ledger."):
+      if col_m2.button("🔒 Confirm Lock & Download", type="primary", use_container_width=True):
+        commit_and_lock_bill()
+        st.session_state[f"release_dl_{doc_type}_{ra_bill_num}"] = True
+        st.success(f"RA Bill {ra_bill_num} committed to ledger! Click the download button below.")
+        st.rerun()
+
+    # ACTION BUTTONS
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+
+    # Excel Download Button / Interceptor
+    if is_bill_already_locked:
+      col_btn1.download_button(
+          "📊 Download Excel Workbook",
+          data=excel_payload,
+          file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
+          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      )
+    else:
+      if col_btn1.button("📊 Export Excel Workbook"):
+        confirm_lock_and_download_modal("Excel Workbook")
+
+    # PDF Download Button / Interceptor
+    if is_bill_already_locked:
+      col_btn2.download_button(
+          "📄 Download Official PDF",
+          data=pdf_payload,
+          file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
+          mime="application/pdf",
+      )
+    else:
+      if col_btn2.button("📄 Generate Official PDF"):
+        confirm_lock_and_download_modal("Official PDF")
+
+    # Manual Lock Button
+    if col_btn3.button("🔒 Finalize & Lock Bill", disabled=is_bill_already_locked):
+      commit_and_lock_bill()
+      st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
+      st.rerun()
+
+    # Delete / Unlock Button (To allow regeneration after rejection)
+    if col_btn4.button("🗑️ Delete / Unlock Bill", help="Unlock this bill from ledger to allow modifications or re-billing."):
       if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
         df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
         if save_sheet_df("ra_bills_ledger", df_ledger):
-          st.success(f"RA Bill {ra_bill_num} successfully deleted from ledger.")
+          st.success(f"RA Bill {ra_bill_num} unlocked and removed from ledger.")
           st.rerun()
       else:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
@@ -1425,7 +1479,6 @@ with tabs[2]:
     if col not in df_master_do.columns:
       df_master_do[col] = 0.0 if ("Qty" in col or "Amt" in col or "Rate" in col) else ""
 
-  # Ensure all numeric columns are strictly float
   num_cols = ["BOQ_Qty", "Rate", "OT_Rate", "Fuel_Rate_KM", "Initial_Baseline_Qty", "Initial_Baseline_Amt"]
   for c in num_cols:
     df_master_do[c] = pd.to_numeric(df_master_do[c].astype(str).str.replace(",", ""), errors="coerce").fillna(0.0).astype(float)
@@ -1451,11 +1504,10 @@ with tabs[2]:
   )
 
   if st.button("💾 Save Contract Baseline Updates", type="primary"):
-    # 1. Cast every numerical column to exact float
     for c in num_cols:
       edited_master[c] = pd.to_numeric(edited_master[c].astype(str).str.replace(",", ""), errors="coerce").fillna(0.0).astype(float)
 
-    # 2. AUTO-CALCULATE BASELINE AMOUNT: Amount = Baseline Qty * Rate
+    # AUTO-CALCULATE BASELINE AMOUNT: Amount = Baseline Qty * Rate
     for idx in edited_master.index:
       b_qty = float(edited_master.at[idx, "Initial_Baseline_Qty"])
       b_rate = float(edited_master.at[idx, "Rate"])
@@ -1464,17 +1516,14 @@ with tabs[2]:
 
       if b_qty > 0:
         if "MONTH" in b_unit or "HOUR" in b_unit:
-          # Automatically calculate Amount = Qty * Rate
           edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
         elif "LUMPSUM" in b_unit or "KM" in b_unit:
-          # If rate is 1.0 (Lumpsum reimb), Amount = Qty, else Qty * Rate
           if b_rate == 1.0 or b_rate == 0.0:
             if curr_amt == 0.0:
               edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty, 2)
           else:
             edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
 
-    # 3. Format float numbers as clean strings with exact decimals for Google Sheets
     clean_save_df = edited_master.copy()
     clean_save_df["BOQ_Qty"] = clean_save_df["BOQ_Qty"].apply(lambda x: f"{float(x):.3f}")
     clean_save_df["Initial_Baseline_Qty"] = clean_save_df["Initial_Baseline_Qty"].apply(lambda x: f"{float(x):.3f}")
