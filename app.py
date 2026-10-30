@@ -509,7 +509,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
-  # ================= PAGE 1: RE-ENGINEERED CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -539,7 +538,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   elements.append(t_meta)
   elements.append(Spacer(1, 4))
 
-  # Ensure abstract rows are neatly sorted by W.O SrL No (10, 20, 30...)
   sorted_abs_df = abs_df.copy()
   if "W.O SrL No" in sorted_abs_df.columns:
     sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
@@ -563,7 +561,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
     ])
 
-  # Perfected column width distribution (Sum = 810 pt = Exact A4 Landscape width)
   t_abs = Table(abs_table_data, colWidths=[26, 218, 44, 56, 46, 46, 78, 46, 80, 50, 120])
   t_abs.setStyle(TableStyle([
       ('BACKGROUND', (0,0), (-1,0), c_navy),
@@ -597,7 +594,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   ]))
   elements.append(t_tot)
 
-  # GENEROUS GAP FOR PHYSICAL STAMPS & SIGNATURES (48 PT GAP)
   elements.append(Spacer(1, 48))
 
   sig_data = [
@@ -1356,8 +1352,8 @@ with tabs[1]:
       for hn in hold_notes:
         st.warning(hn)
 
-    in_words = num2words(int(round(total_bill_amt)), lang="en_IN").upper()
-    st.write(f"**Net Invoice Value:** ₹{total_bill_amt:,.2f} | **Amount in Words:** {in_words} RUPEES ONLY")
+    in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
+    st.write(f"**Net Invoice Value:** ₹{total_this_bill:,.2f} | **Amount in Words:** {in_words} RUPEES ONLY")
 
     def commit_and_lock_bill():
       global df_ledger
@@ -1384,7 +1380,7 @@ with tabs[1]:
         s_df.to_excel(writer, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
     excel_payload = buf_xl.getvalue()
 
-    pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_bill_amt, veh_full_statements, veh_fuel_meta, market_diesel_rate, base_shifts=base_billable_shifts, hold_notes=hold_notes)
+    pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, base_shifts=base_billable_shifts, hold_notes=hold_notes)
 
     @st.dialog("Commercial Audit: Lock RA Bill & Release Download")
     def confirm_lock_and_download_modal(doc_type):
