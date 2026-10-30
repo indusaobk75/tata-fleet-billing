@@ -62,11 +62,12 @@ def check_access():
 
 check_access()
 
+# TARGETED CSS (DOES NOT BREAK DATEPICKER MONTH/YEAR HEADERS)
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    header[data-testid="stHeader"] {visibility: hidden;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -1064,7 +1065,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & MONTHLY STATEMENT (START DATE & END DATE WITH DYNAMIC SHIFTS) ---
+# --- TAB 2: BILLING & MONTHLY STATEMENT (WITH DIRECT MONTH & YEAR DROPDOWNS + DATE RANGE) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1072,23 +1073,45 @@ with tabs[1]:
   if len(available_dos) == 0:
     st.info("No active Delivery Orders available. Please upload a contract under 'Delivery Order Management'.")
   else:
-    col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([1.5, 1.0, 1.2, 1.2, 1.3])
+    # Row 1: Basic Contract & Quick Month/Year Selection
+    col_d1, col_d2, col_m_pick, col_y_pick = st.columns([1.5, 1.0, 1.2, 1.0])
     chosen_do = col_d1.selectbox("Work Order / DO Selection", available_dos)
     ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
 
     today = datetime.date.today()
-    default_start = today.replace(day=1)
-    last_day_num = calendar.monthrange(today.year, today.month)[1]
-    default_end = today.replace(day=last_day_num)
+    month_names_list = [calendar.month_name[i] for i in range(1, 13)]
+    
+    selected_m_name = col_m_pick.selectbox("Billing Month", month_names_list, index=today.month - 1)
+    sel_m_int = month_names_list.index(selected_m_name) + 1
+    sel_y_int = col_y_pick.selectbox("Billing Year", [2025, 2026, 2027], index=1)
 
-    start_date_input = col_d3.date_input("Start Date", default_start)
-    end_date_input = col_d4.date_input("End Date", default_end)
+    # Calculate Default Start and End Date from chosen Month & Year
+    last_day_in_chosen_m = calendar.monthrange(sel_y_int, sel_m_int)[1]
+    default_start_dt = datetime.date(sel_y_int, sel_m_int, 1)
+    default_end_dt = datetime.date(sel_y_int, sel_m_int, last_day_in_chosen_m)
+
+    # Row 2: Date Pickers & Diesel Rate
+    col_dt1, col_dt2, col_dt3 = st.columns([1.2, 1.2, 1.3])
+    start_date_input = col_dt1.date_input(
+        "Start Date",
+        value=default_start_dt,
+        min_value=datetime.date(2025, 1, 1),
+        max_value=datetime.date(2027, 12, 31),
+        key=f"start_dt_{sel_m_int}_{sel_y_int}"
+    )
+    end_date_input = col_dt2.date_input(
+        "End Date",
+        value=default_end_dt,
+        min_value=datetime.date(2025, 1, 1),
+        max_value=datetime.date(2027, 12, 31),
+        key=f"end_dt_{sel_m_int}_{sel_y_int}"
+    )
 
     if start_date_input > end_date_input:
       st.error("Error: Start Date must be on or before End Date.")
       st.stop()
 
-    market_diesel_rate = col_d5.number_input(
+    market_diesel_rate = col_dt3.number_input(
         "1st Day Diesel Rate (₹/Ltr)",
         value=101.06,
         step=0.25,
