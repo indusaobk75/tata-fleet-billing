@@ -1069,7 +1069,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & STATEMENT (PURE CLEAN DATE PICKERS + DYNAMIC SHIFTS) ---
+# --- TAB 2: BILLING & STATEMENT (PURE CLEAN DATE PICKERS + RELIABLE DOWNLOADS) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1362,7 +1362,6 @@ with tabs[1]:
 
     def commit_and_lock_bill():
       global df_ledger
-      # Ensure df_ledger has valid structure
       if df_ledger.empty or "DO_No" not in df_ledger.columns:
         df_ledger = pd.DataFrame(columns=required_ledger_cols)
       else:
@@ -1392,27 +1391,55 @@ with tabs[1]:
 
     pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, base_shifts=base_billable_shifts, hold_notes=hold_notes)
 
+    # RELIABLE AUTO-LOCK & DOWNLOAD MODAL
     @st.dialog("Commercial Audit: Lock RA Bill & Release Download")
     def confirm_lock_and_download_modal(doc_type):
       st.markdown(f"### 🔒 Authorize Final Billing Lock")
       st.write(
-          f"You are requesting to download the **{doc_type}** for **RA Bill {ra_bill_num}** ({chosen_do}).\n\n"
+          f"You are downloading the **{doc_type}** for **RA Bill {ra_bill_num}** ({chosen_do}).\n\n"
           f"**Tenure:** `{bill_period}` ({base_billable_shifts} Base Working Shifts)\n\n"
-          "Per Tata Steel contract governance, downloading official client statements requires this bill to be **Committed & Locked** into the commercial ledger to prevent audit discrepancies.\n\n"
-          "Once locked, editing this tenure will be blocked unless explicitly unlocked."
+          "Per Tata Steel contract governance, this bill will be **Committed & Locked** in the commercial ledger to prevent audit discrepancies."
       )
-      col_m1, col_m2 = st.columns(2)
-      if col_m1.button("❌ Cancel (Keep Editing)", use_container_width=True):
-        st.rerun()
 
-      if col_m2.button("🔒 Confirm Lock & Download", type="primary", use_container_width=True):
-        commit_and_lock_bill()
-        st.session_state[f"release_dl_{doc_type}_{ra_bill_num}"] = True
-        st.success(f"RA Bill {ra_bill_num} committed to ledger! Click the download button below.")
-        st.rerun()
+      # Check state inside modal
+      modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
+      if modal_state_key not in st.session_state:
+        st.session_state[modal_state_key] = False
+
+      if not st.session_state[modal_state_key]:
+        col_m1, col_m2 = st.columns(2)
+        if col_m1.button("❌ Cancel (Keep Editing)", use_container_width=True):
+          st.rerun()
+
+        if col_m2.button("🔒 Confirm Lock & Prepare File", type="primary", use_container_width=True):
+          commit_and_lock_bill()
+          st.session_state[modal_state_key] = True
+          st.rerun()
+      else:
+        st.success("✅ Bill has been locked in the commercial ledger!")
+        if doc_type == "Official PDF":
+          st.download_button(
+              "⬇️ Click Here to Download Official PDF",
+              data=pdf_payload,
+              file_name=f"Tata_Official_RA_Bill_{ra_bill_num}_{clean_do}.pdf",
+              mime="application/pdf",
+              use_container_width=True,
+              type="primary"
+          )
+        else:
+          st.download_button(
+              "⬇️ Click Here to Download Excel Workbook",
+              data=excel_payload,
+              file_name=f"Tata_RA_Bill_{ra_bill_num}_{clean_do}.xlsx",
+              mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              use_container_width=True,
+              type="primary"
+          )
+        st.caption("You can now close this dialog.")
 
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
 
+    # 1. Excel Workbook Export
     if is_bill_already_locked:
       col_btn1.download_button(
           "📊 Download Excel Workbook",
@@ -1424,6 +1451,7 @@ with tabs[1]:
       if col_btn1.button("📊 Export Excel Workbook"):
         confirm_lock_and_download_modal("Excel Workbook")
 
+    # 2. PDF Export
     if is_bill_already_locked:
       col_btn2.download_button(
           "📄 Download Official PDF",
@@ -1435,15 +1463,21 @@ with tabs[1]:
       if col_btn2.button("📄 Generate Official PDF"):
         confirm_lock_and_download_modal("Official PDF")
 
+    # 3. Manual Lock
     if col_btn3.button("🔒 Finalize & Lock Bill", disabled=is_bill_already_locked):
       commit_and_lock_bill()
       st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
       st.rerun()
 
+    # 4. Delete / Unlock
     if col_btn4.button("🗑️ Delete / Unlock Bill", help="Unlock this bill from ledger to allow modifications or re-billing."):
       if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
         df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
         if save_sheet_df("ra_bills_ledger", df_ledger):
+          # Reset modal state
+          modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
+          if modal_state_key in st.session_state:
+            del st.session_state[modal_state_key]
           st.success(f"RA Bill {ra_bill_num} unlocked and removed from ledger.")
           st.rerun()
       else:
