@@ -62,7 +62,7 @@ def check_access():
 
 check_access()
 
-# TARGETED CSS (DOES NOT BREAK DATEPICKER MONTH/YEAR HEADERS)
+# CLEAN CSS: HIDES MAIN MENU AND FOOTER WITHOUT AFFECTING CALENDAR DATEPICKER HEADERS
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -814,6 +814,10 @@ required_log_cols = ["Vehicle_No", "SL_NO", "DATE", "START_TIME", "END_TIME", "N
 if df_logs.empty or "Vehicle_No" not in df_logs.columns:
   df_logs = pd.DataFrame(columns=required_log_cols)
 
+required_ledger_cols = ["DO_No", "RA_Bill_No", "Bill_Period", "SrvLnNo", "Billed_Qty", "Billed_Amt", "Status"]
+if df_ledger.empty or "DO_No" not in df_ledger.columns:
+  df_ledger = pd.DataFrame(columns=required_ledger_cols)
+
 if df_rates.empty or "Category_Name" not in df_rates.columns:
   default_schedule = [
       {"Category_Name": "Backhoe / JCB", "Monthly_Rate": 100000.0, "OT_Rate": 299.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 5.50, "Unit_Display": "Ltr/Hr"},
@@ -1065,7 +1069,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & MONTHLY STATEMENT (WITH DIRECT MONTH & YEAR DROPDOWNS + DATE RANGE) ---
+# --- TAB 2: BILLING & STATEMENT (PURE CLEAN DATE PICKERS + DYNAMIC SHIFTS) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1073,45 +1077,23 @@ with tabs[1]:
   if len(available_dos) == 0:
     st.info("No active Delivery Orders available. Please upload a contract under 'Delivery Order Management'.")
   else:
-    # Row 1: Basic Contract & Quick Month/Year Selection
-    col_d1, col_d2, col_m_pick, col_y_pick = st.columns([1.5, 1.0, 1.2, 1.0])
+    col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([1.5, 1.0, 1.2, 1.2, 1.3])
     chosen_do = col_d1.selectbox("Work Order / DO Selection", available_dos)
     ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
 
     today = datetime.date.today()
-    month_names_list = [calendar.month_name[i] for i in range(1, 13)]
-    
-    selected_m_name = col_m_pick.selectbox("Billing Month", month_names_list, index=today.month - 1)
-    sel_m_int = month_names_list.index(selected_m_name) + 1
-    sel_y_int = col_y_pick.selectbox("Billing Year", [2025, 2026, 2027], index=1)
+    default_start_dt = today.replace(day=1)
+    last_day_m = calendar.monthrange(today.year, today.month)[1]
+    default_end_dt = today.replace(day=last_day_m)
 
-    # Calculate Default Start and End Date from chosen Month & Year
-    last_day_in_chosen_m = calendar.monthrange(sel_y_int, sel_m_int)[1]
-    default_start_dt = datetime.date(sel_y_int, sel_m_int, 1)
-    default_end_dt = datetime.date(sel_y_int, sel_m_int, last_day_in_chosen_m)
-
-    # Row 2: Date Pickers & Diesel Rate
-    col_dt1, col_dt2, col_dt3 = st.columns([1.2, 1.2, 1.3])
-    start_date_input = col_dt1.date_input(
-        "Start Date",
-        value=default_start_dt,
-        min_value=datetime.date(2025, 1, 1),
-        max_value=datetime.date(2027, 12, 31),
-        key=f"start_dt_{sel_m_int}_{sel_y_int}"
-    )
-    end_date_input = col_dt2.date_input(
-        "End Date",
-        value=default_end_dt,
-        min_value=datetime.date(2025, 1, 1),
-        max_value=datetime.date(2027, 12, 31),
-        key=f"end_dt_{sel_m_int}_{sel_y_int}"
-    )
+    start_date_input = col_d3.date_input("Start Date", value=default_start_dt)
+    end_date_input = col_d4.date_input("End Date", value=default_end_dt)
 
     if start_date_input > end_date_input:
       st.error("Error: Start Date must be on or before End Date.")
       st.stop()
 
-    market_diesel_rate = col_dt3.number_input(
+    market_diesel_rate = col_d5.number_input(
         "1st Day Diesel Rate (₹/Ltr)",
         value=101.06,
         step=0.25,
@@ -1380,7 +1362,12 @@ with tabs[1]:
 
     def commit_and_lock_bill():
       global df_ledger
-      df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+      # Ensure df_ledger has valid structure
+      if df_ledger.empty or "DO_No" not in df_ledger.columns:
+        df_ledger = pd.DataFrame(columns=required_ledger_cols)
+      else:
+        df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+
       new_entries = []
       for _, r in abs_df.iterrows():
         new_entries.append({
