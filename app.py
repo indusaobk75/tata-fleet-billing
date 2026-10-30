@@ -271,9 +271,19 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   return disp_shift, ot_hours, run_units, billable_shift, actual_working_hours
 
 
-def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
-  num_days = calendar.monthrange(year, month)[1]
+def get_tenure_calendar_metrics(start_dt, end_dt):
+  total_days = (end_dt - start_dt).days + 1
+  sundays_count = 0
+  curr = start_dt
+  while curr <= end_dt:
+    if curr.weekday() == 6:
+      sundays_count += 1
+    curr += datetime.timedelta(days=1)
+  base_shifts = max(1, total_days - sundays_count)
+  return total_days, sundays_count, base_shifts
 
+
+def generate_tenure_statement(vehicle_no, start_dt, end_dt, raw_logs_df):
   if raw_logs_df is None or raw_logs_df.empty or "Vehicle_No" not in raw_logs_df.columns:
     veh_logs = pd.DataFrame()
   else:
@@ -283,14 +293,15 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
       veh_logs["parsed_dt"] = veh_logs["DATE"].apply(parse_any_date)
 
   full_rows = []
-  for day in range(1, num_days + 1):
-    d_obj = datetime.date(year, month, day)
-    d_str = d_obj.strftime("%d-%m-%Y")
-    is_sun = d_obj.weekday() == 6
+  curr = start_dt
+  day_idx = 1
+  while curr <= end_dt:
+    d_str = curr.strftime("%d-%m-%Y")
+    is_sun = curr.weekday() == 6
 
     match = pd.DataFrame()
     if not veh_logs.empty and "parsed_dt" in veh_logs.columns:
-      match = veh_logs[veh_logs["parsed_dt"] == d_obj]
+      match = veh_logs[veh_logs["parsed_dt"] == curr]
 
     if not match.empty:
       r = match.iloc[0]
@@ -332,7 +343,7 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
 
       full_rows.append({
           "Vehicle_No": vehicle_no,
-          "SL_NO": str(day),
+          "SL_NO": str(day_idx),
           "DATE": d_str,
           "START_TIME": s_12hr,
           "END_TIME": e_12hr,
@@ -349,7 +360,7 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
     else:
       full_rows.append({
           "Vehicle_No": vehicle_no,
-          "SL_NO": str(day),
+          "SL_NO": str(day_idx),
           "DATE": d_str,
           "START_TIME": "-",
           "END_TIME": "-",
@@ -363,6 +374,8 @@ def generate_full_month_statement(vehicle_no, year, month, raw_logs_df):
           "INVOLVEMENT": "-",
           "REMARKS": "SUNDAY" if is_sun else "-",
       })
+    curr += datetime.timedelta(days=1)
+    day_idx += 1
 
   return pd.DataFrame(full_rows)
 
@@ -464,8 +477,8 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
-def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, hold_notes=[]):
+# ----------------- 3. RE-DESIGNED PROFESSIONAL PDF GENERATOR -----------------
+def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
   doc = SimpleDocTemplate(
@@ -482,21 +495,21 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   c_navy = colors.HexColor("#1A365D")
   c_blue = colors.HexColor("#2B6CB0")
   c_border = colors.HexColor("#CBD5E0")
-  c_row_alt = colors.HexColor("#F7FAFC")
+  c_row_alt = colors.HexColor("#F8FAFC")
 
   comp_title = ParagraphStyle('CompTitle', fontName='Helvetica-Bold', fontSize=15, alignment=1, spaceAfter=2, textColor=c_navy)
-  abstract_heading = ParagraphStyle('AbsHeading', fontName='Helvetica-Bold', fontSize=11, alignment=1, spaceAfter=4, textColor=colors.HexColor("#2D3748"))
-  sub_meta = ParagraphStyle('SubMeta', fontName='Helvetica', fontSize=7.5, alignment=1, spaceAfter=6, textColor=colors.HexColor("#4A5568"))
+  abstract_heading = ParagraphStyle('AbsHeading', fontName='Helvetica-Bold', fontSize=11, alignment=1, spaceAfter=3, textColor=colors.HexColor("#2D3748"))
+  sub_meta = ParagraphStyle('SubMeta', fontName='Helvetica', fontSize=7.5, alignment=1, spaceAfter=5, textColor=colors.HexColor("#4A5568"))
 
-  cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=8, alignment=1, textColor=colors.white, leading=9.5)
-  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=1)
-  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=0)
-  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.5, leading=8.5, alignment=2)
-  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.5, leading=8.5, alignment=2)
+  cell_h = ParagraphStyle('CellH', fontName='Helvetica-Bold', fontSize=7.5, alignment=1, textColor=colors.white, leading=9)
+  cell_d = ParagraphStyle('CellD', fontName='Helvetica', fontSize=7.2, leading=8.5, alignment=1)
+  cell_l = ParagraphStyle('CellL', fontName='Helvetica', fontSize=7.2, leading=8.5, alignment=0)
+  cell_r = ParagraphStyle('CellR', fontName='Helvetica', fontSize=7.2, leading=8.5, alignment=2)
+  cell_bold_r = ParagraphStyle('CellBR', fontName='Helvetica-Bold', fontSize=7.2, leading=8.5, alignment=2)
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
-  # ================= PAGE 1: CONSOLIDATED ABSTRACT =================
+  # ================= PAGE 1: RE-ENGINEERED CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -511,7 +524,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       [
           Paragraph("<b>Vendor Code:</b> ID47", cell_l),
           Paragraph("<b>Scope:</b> Heavy Equipment & Fleet Hiring", cell_l),
-          Paragraph("<b>Location:</b> West Bokaro Division", cell_l),
+          Paragraph(f"<b>Location:</b> West Bokaro Division (Base Shifts: <b>{base_shifts}</b>)", cell_l),
           Paragraph("<b>Diesel Rate (1st Day):</b> ₹{:,.2f} / Ltr".format(market_diesel_rate) if market_diesel_rate > 0 else "<b>Contract Rate Basis</b>", cell_l),
       ]
   ]
@@ -520,16 +533,22 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('BOX', (0,0), (-1,-1), 1, c_navy),
       ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#EDF2F7")),
       ('GRID', (0,0), (-1,-1), 0.5, c_border),
-      ('TOPPADDING', (0,0), (-1,-1), 3),
-      ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+      ('TOPPADDING', (0,0), (-1,-1), 2.5),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
   ]))
   elements.append(t_meta)
-  elements.append(Spacer(1, 6))
+  elements.append(Spacer(1, 4))
+
+  # Ensure abstract rows are neatly sorted by W.O SrL No (10, 20, 30...)
+  sorted_abs_df = abs_df.copy()
+  if "W.O SrL No" in sorted_abs_df.columns:
+    sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
+    sorted_abs_df = sorted_abs_df.sort_values(by="srl_sort").drop(columns=["srl_sort"])
 
   headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
   abs_table_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in headers]]
 
-  for _, r in abs_df.iterrows():
+  for _, r in sorted_abs_df.iterrows():
     abs_table_data.append([
         Paragraph(str(r["W.O SrL No"]), cell_d),
         Paragraph(str(r["Description"]), cell_l),
@@ -544,13 +563,14 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
     ])
 
-  t_abs = Table(abs_table_data, colWidths=[28, 222, 45, 55, 45, 45, 75, 45, 80, 50, 90])
+  # Perfected column width distribution (Sum = 810 pt = Exact A4 Landscape width)
+  t_abs = Table(abs_table_data, colWidths=[26, 218, 44, 56, 46, 46, 78, 46, 80, 50, 120])
   t_abs.setStyle(TableStyle([
       ('BACKGROUND', (0,0), (-1,0), c_navy),
       ('GRID', (0,0), (-1,-1), 0.5, c_border),
       ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-      ('TOPPADDING', (0,0), (-1,-1), 4),
-      ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+      ('TOPPADDING', (0,0), (-1,-1), 3.0),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 3.0),
       ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
   ]))
   elements.append(t_abs)
@@ -568,25 +588,30 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(f"<b>NET INVOICE VALUE: ₹{total_bill_amt:,.2f}</b>", ParagraphStyle('TotNet', parent=cell_bold_r, fontSize=8.5, textColor=c_navy))
       ]
   ]
-  t_tot = Table(total_box, colWidths=[580, 230])
+  t_tot = Table(total_box, colWidths=[570, 240])
   t_tot.setStyle(TableStyle([
       ('BOX', (0,0), (-1,-1), 1, c_navy),
       ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#E2E8F0")),
-      ('TOPPADDING', (0,0), (-1,-1), 5),
-      ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+      ('TOPPADDING', (0,0), (-1,-1), 4.5),
+      ('BOTTOMPADDING', (0,0), (-1,-1), 4.5),
   ]))
   elements.append(t_tot)
-  elements.append(Spacer(1, 25))
+
+  # GENEROUS GAP FOR PHYSICAL STAMPS & SIGNATURES (48 PT GAP)
+  elements.append(Spacer(1, 48))
 
   sig_data = [
       [
-          Paragraph("____________________________<br/><b>Prepared By</b><br/>Site Supervisor", cell_d),
-          Paragraph("____________________________<br/><b>For M/S INDU SAO</b><br/>Authorized Signatory", cell_d),
-          Paragraph("____________________________<br/><b>Verified & Certified By</b><br/>Engineer-in-Charge (Tata Steel Ltd)", cell_d)
+          Paragraph("___________________________________<br/><b>Prepared By</b><br/>Site Supervisor", cell_d),
+          Paragraph("___________________________________<br/><b>For M/S INDU SAO</b><br/>Authorized Signatory", cell_d),
+          Paragraph("___________________________________<br/><b>Verified & Certified By</b><br/>Engineer-in-Charge (Tata Steel Ltd)", cell_d)
       ]
   ]
   t_sig = Table(sig_data, colWidths=[265, 280, 265])
-  t_sig.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+  t_sig.setStyle(TableStyle([
+      ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+      ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+  ]))
   elements.append(t_sig)
 
   # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS =================
@@ -645,7 +670,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     v_summary_data = [
         [
             Paragraph(f"<b>Equipment ID:</b> {veh} ({veh_desc})", cell_l),
-            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / 26", cell_l),
+            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / {base_shifts}", cell_l),
             Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
             Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.2f} Hrs", cell_l),
             Paragraph(col5_text, cell_l),
@@ -694,7 +719,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(t_stmt)
     elements.append(Spacer(1, 4))
 
-    v_actual_month_qty = round(v_working_shifts / 26.0, 3)
+    v_actual_month_qty = round(v_working_shifts / float(base_shifts), 3)
     v_billed_month_qty = max(0.0, round(v_actual_month_qty - v_hold_qty, 3))
     v_hire_amt = round(v_billed_month_qty * m_rate, 2)
     v_ot_amt = round(v_ot_hrs * ot_rate, 2)
@@ -747,7 +772,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ],
         [
             Paragraph("<b>TOTAL</b>", cell_d),
-            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} ({veh_desc}) (Shifts: {v_working_shifts}/26, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
+            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} ({veh_desc}) (Shifts: {v_working_shifts}/{base_shifts}, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
@@ -1043,36 +1068,45 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & MONTHLY STATEMENT ---
+# --- TAB 2: BILLING & MONTHLY STATEMENT (START DATE & END DATE WITH DYNAMIC SHIFTS) ---
 with tabs[1]:
-  st.subheader("Monthly Statement Generation & Financial Abstract")
+  st.subheader("Billing Statement & Financial Abstract Generation")
 
   available_dos = df_master_do["DO_No"].dropna().unique() if not df_master_do.empty else []
   if len(available_dos) == 0:
     st.info("No active Delivery Orders available. Please upload a contract under 'Delivery Order Management'.")
   else:
-    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+    col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([1.5, 1.0, 1.2, 1.2, 1.3])
     chosen_do = col_d1.selectbox("Work Order / DO Selection", available_dos)
     ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
 
     today = datetime.date.today()
-    bill_m = col_d3.selectbox("Billing Month", list(range(1, 13)), index=today.month - 1)
-    bill_y = col_d3.selectbox("Billing Year", [2025, 2026, 2027], index=1)
+    default_start = today.replace(day=1)
+    last_day_num = calendar.monthrange(today.year, today.month)[1]
+    default_end = today.replace(day=last_day_num)
 
-    market_diesel_rate = col_d4.number_input(
-        "Official 1st Day Diesel Rate (₹/Ltr)",
+    start_date_input = col_d3.date_input("Start Date", default_start)
+    end_date_input = col_d4.date_input("End Date", default_end)
+
+    if start_date_input > end_date_input:
+      st.error("Error: Start Date must be on or before End Date.")
+      st.stop()
+
+    market_diesel_rate = col_d5.number_input(
+        "1st Day Diesel Rate (₹/Ltr)",
         value=101.06,
         step=0.25,
-        help="IOCL prevailing rate applicable for heavy machinery fuel claims."
+        help="IOCL prevailing rate on tenure start date applicable for heavy machinery fuel claims."
     )
 
-    m_name = calendar.month_name[bill_m].upper()
-    num_days = calendar.monthrange(bill_y, bill_m)[1]
-    bill_period = "01-{}-{} TO {:02d}-{}-{}".format(m_name[:3], bill_y, num_days, m_name[:3], bill_y)
+    p_days, p_sundays, base_billable_shifts = get_tenure_calendar_metrics(start_date_input, end_date_input)
+    bill_period = "{} TO {}".format(
+        start_date_input.strftime("%d-%b-%Y").upper(),
+        end_date_input.strftime("%d-%b-%Y").upper()
+    )
 
     norm_chosen_do = normalize_do(chosen_do)
 
-    # CHECK IF CURRENT RA BILL IS ALREADY LOCKED IN LEDGER
     is_bill_already_locked = False
     if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
       locked_match = df_ledger[
@@ -1083,13 +1117,17 @@ with tabs[1]:
       is_bill_already_locked = not locked_match.empty
 
     if is_bill_already_locked:
-      st.error(f"🔒 **LOCKED COMMERCIAL RECORD**: RA Bill **{ra_bill_num}** for Order **{chosen_do}** is already finalized and committed to the ledger. Regeneration is blocked unless this bill is first Unlocked/Deleted.")
+      st.error(f"🔒 **LOCKED COMMERCIAL RECORD**: RA Bill **{ra_bill_num}** for Order **{chosen_do}** is already finalized and committed to the ledger. Editing or regenerating is blocked unless this bill is first Unlocked/Deleted.")
 
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
 
     assigned_labels = [f"{v} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==v].iloc[0].get('Equipment_Family', '')}]" for v in assigned_vehs]
-    st.write("**Billing Tenure:** `{}` | **Attached Equipment Units:** {}".format(bill_period, ", ".join(assigned_labels) if assigned_labels else "None"))
+    
+    st.info(
+        f"📅 **Tenure:** `{bill_period}` | **Duration:** {p_days} Days | **Sundays Deducted:** {p_sundays} | **Standard Base Shifts:** **{base_billable_shifts} Shifts**\n\n"
+        f"🚜 **Attached Equipment Units:** {', '.join(assigned_labels) if assigned_labels else 'None'}"
+    )
 
     live_do_view = get_live_do_position(df_master_do, df_ledger, chosen_do, target_ra_bill_no=ra_bill_num)
 
@@ -1098,7 +1136,7 @@ with tabs[1]:
     veh_metrics = {}
 
     for v in assigned_vehs:
-      v_statement = generate_full_month_statement(v, bill_y, bill_m, df_logs)
+      v_statement = generate_tenure_statement(v, start_date_input, end_date_input, df_logs)
       veh_full_statements[v] = v_statement
 
       v_row_match = assigned_vehs_df[assigned_vehs_df["Vehicle_No"] == v]
@@ -1149,7 +1187,7 @@ with tabs[1]:
         except Exception:
           pass
 
-      v_month_qty = round(v_shifts / 26.0, 3)
+      v_month_qty = round(v_shifts / float(base_billable_shifts), 3)
 
       if f_type == "HOUR_BASED":
         v_fuel_cost = round(v_meter_run * f_factor * market_diesel_rate, 2)
@@ -1183,23 +1221,23 @@ with tabs[1]:
           options=assigned_vehs,
           format_func=lambda x: f"{x} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==x].iloc[0].get('Equipment_Family', '')}]" if not assigned_vehs_df[assigned_vehs_df['Vehicle_No']==x].empty else x
       )
-      st.info("Reviewing sequential calendar logsheet (Days 1 to {}) for {}.".format(num_days, chosen_view_veh))
+      st.write(f"Displaying sequential calendar entries ({start_date_input.strftime('%d-%b')} to {end_date_input.strftime('%d-%b-%Y')}) for **{chosen_view_veh}**.")
 
       edited_stmt = st.data_editor(
           veh_full_statements[chosen_view_veh],
           num_rows="fixed",
           use_container_width=True,
-          key="stmt_edit_{}".format(chosen_view_veh),
+          key=f"stmt_edit_{chosen_view_veh}",
           disabled=is_bill_already_locked,
       )
 
       col_st1, col_st2 = st.columns(2)
-      if col_st1.button("Save Verified Adjustments for {}".format(chosen_view_veh), disabled=is_bill_already_locked):
+      if col_st1.button(f"Save Verified Adjustments for {chosen_view_veh}", disabled=is_bill_already_locked):
         df_logs["parsed_dt_save"] = df_logs["DATE"].apply(parse_any_date)
         df_logs = df_logs[
             ~(
                 (df_logs["Vehicle_No"] == chosen_view_veh)
-                & (df_logs["parsed_dt_save"].apply(lambda d: d.year == bill_y and d.month == bill_m if d else False))
+                & (df_logs["parsed_dt_save"].apply(lambda d: start_date_input <= d <= end_date_input if d else False))
             )
         ]
         if "parsed_dt_save" in df_logs.columns:
@@ -1308,7 +1346,7 @@ with tabs[1]:
     abs_df = pd.DataFrame(abstract_rows)
 
     st.markdown("---")
-    st.subheader("Consolidated Billing Abstract (RA Bill {})".format(ra_bill_num))
+    st.subheader(f"Consolidated Billing Abstract (RA Bill {ra_bill_num})")
     st.dataframe(
         abs_df[["W.O SrL No", "Description", "Unit", "Prev Amount", "This Bill Amount", "Cumulative Amount"]],
         use_container_width=True,
@@ -1318,10 +1356,9 @@ with tabs[1]:
       for hn in hold_notes:
         st.warning(hn)
 
-    in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
-    st.write("**Net Invoice Value:** ₹{:,.2f} | **Amount in Words:** {} RUPEES ONLY".format(total_this_bill, in_words))
+    in_words = num2words(int(round(total_bill_amt)), lang="en_IN").upper()
+    st.write(f"**Net Invoice Value:** ₹{total_bill_amt:,.2f} | **Amount in Words:** {in_words} RUPEES ONLY")
 
-    # Helper function to lock RA Bill in Google Sheets
     def commit_and_lock_bill():
       global df_ledger
       df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
@@ -1339,7 +1376,6 @@ with tabs[1]:
       df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
       save_sheet_df("ra_bills_ledger", df_ledger)
 
-    # PRE-GENERATE ARTIFACTS
     clean_do = str(chosen_do).replace("/", "_")
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine="openpyxl") as writer:
@@ -1348,16 +1384,16 @@ with tabs[1]:
         s_df.to_excel(writer, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
     excel_payload = buf_xl.getvalue()
 
-    pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, hold_notes)
+    pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_bill_amt, veh_full_statements, veh_fuel_meta, market_diesel_rate, base_shifts=base_billable_shifts, hold_notes=hold_notes)
 
-    # AUTO-LOCK DOWNLOAD INTERCEPTOR DIALOG
     @st.dialog("Commercial Audit: Lock RA Bill & Release Download")
     def confirm_lock_and_download_modal(doc_type):
       st.markdown(f"### 🔒 Authorize Final Billing Lock")
       st.write(
           f"You are requesting to download the **{doc_type}** for **RA Bill {ra_bill_num}** ({chosen_do}).\n\n"
-          "Per contract governance, downloading official client statements requires this bill to be **Committed & Locked** into the commercial ledger to prevent audit discrepancies.\n\n"
-          "Once locked, editing this bill will be blocked unless explicitly rejected or unlocked."
+          f"**Tenure:** `{bill_period}` ({base_billable_shifts} Base Working Shifts)\n\n"
+          "Per Tata Steel contract governance, downloading official client statements requires this bill to be **Committed & Locked** into the commercial ledger to prevent audit discrepancies.\n\n"
+          "Once locked, editing this tenure will be blocked unless explicitly unlocked."
       )
       col_m1, col_m2 = st.columns(2)
       if col_m1.button("❌ Cancel (Keep Editing)", use_container_width=True):
@@ -1369,10 +1405,8 @@ with tabs[1]:
         st.success(f"RA Bill {ra_bill_num} committed to ledger! Click the download button below.")
         st.rerun()
 
-    # ACTION BUTTONS
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
 
-    # Excel Download Button / Interceptor
     if is_bill_already_locked:
       col_btn1.download_button(
           "📊 Download Excel Workbook",
@@ -1384,7 +1418,6 @@ with tabs[1]:
       if col_btn1.button("📊 Export Excel Workbook"):
         confirm_lock_and_download_modal("Excel Workbook")
 
-    # PDF Download Button / Interceptor
     if is_bill_already_locked:
       col_btn2.download_button(
           "📄 Download Official PDF",
@@ -1396,13 +1429,11 @@ with tabs[1]:
       if col_btn2.button("📄 Generate Official PDF"):
         confirm_lock_and_download_modal("Official PDF")
 
-    # Manual Lock Button
     if col_btn3.button("🔒 Finalize & Lock Bill", disabled=is_bill_already_locked):
       commit_and_lock_bill()
       st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
       st.rerun()
 
-    # Delete / Unlock Button (To allow regeneration after rejection)
     if col_btn4.button("🗑️ Delete / Unlock Bill", help="Unlock this bill from ledger to allow modifications or re-billing."):
       if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
         df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
@@ -1428,7 +1459,7 @@ with tabs[2]:
     if not detected_wo:
       final_wo = st.text_input("Enter SAP Work Order Reference Manually (e.g., 3700981341/109):").strip()
     else:
-      st.success("Extracted Order Reference: **{}**".format(detected_wo))
+      st.success(f"Extracted Order Reference: **{detected_wo}**")
       final_wo = detected_wo
 
     pattern = r"(\d+)\s+(\d{2})\s+([A-Za-z0-9/\s,.\-#]+?)\s+([\d,]+\.?\d*)\s*(Months?|Hours?|LUMPSUM|KM)\s+([\d,]+\.?\d*)\s*INR"
@@ -1464,7 +1495,7 @@ with tabs[2]:
       if st.button("Confirm & Apply Contract Scope"):
         df_master_do = apply_do_amendment(df_master_do, parsed_items)
         if save_sheet_df("master_do_items", df_master_do):
-          st.success("Contract terms registered to Google Sheets for Order {}.".format(final_wo))
+          st.success(f"Contract terms registered to Google Sheets for Order {final_wo}.")
           st.rerun()
 
   st.markdown("---")
@@ -1507,7 +1538,6 @@ with tabs[2]:
     for c in num_cols:
       edited_master[c] = pd.to_numeric(edited_master[c].astype(str).str.replace(",", ""), errors="coerce").fillna(0.0).astype(float)
 
-    # AUTO-CALCULATE BASELINE AMOUNT: Amount = Baseline Qty * Rate
     for idx in edited_master.index:
       b_qty = float(edited_master.at[idx, "Initial_Baseline_Qty"])
       b_rate = float(edited_master.at[idx, "Rate"])
