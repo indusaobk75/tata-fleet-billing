@@ -207,8 +207,6 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   except Exception:
     bd_hours_val = 0.0
 
-  is_breakdown = ("BREAKDOWN" in rem_upper) or (bd_hours_val >= 4.0)
-
   try:
     m_s = float(m_start) if pd.notna(m_start) and str(m_start).strip() != "" and str(m_start).lower() != "nan" else 0.0
   except Exception:
@@ -227,7 +225,7 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   clean_start = str(start_t).strip().upper() if pd.notna(start_t) and str(start_t).strip() and str(start_t).lower() != "nan" else ""
   clean_end = str(end_t).strip().upper() if pd.notna(end_t) and str(end_t).strip() and str(end_t).lower() != "nan" else ""
 
-  if clean_start and clean_end and "NO WORK" not in clean_start and "NO WORK" not in clean_end and not is_breakdown:
+  if clean_start and clean_end and "NO WORK" not in clean_start and "NO WORK" not in clean_end and clean_start != "-" and clean_end != "-":
     try:
       def parse_t(t_val):
         t_val = t_val.strip()
@@ -246,25 +244,34 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
         gross_work += 24.0
       gross_work_hours = gross_work
 
+      # Overtime Calculation: Beyond 06:00 PM minus breakdown hours
       cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
       diff = (t_out - cutoff_t).total_seconds() / 3600.0
       if diff < 0 and "AM" in clean_end:
         diff += 24.0
       ot_hours = round(max(0.0, diff - bd_hours_val), 2)
     except Exception:
-      gross_work_hours = 8.0
+      gross_work_hours = 9.0
       ot_hours = 0.0
-  elif not is_sunday and not is_breakdown:
-    gross_work_hours = 8.0
+  elif not is_sunday:
+    gross_work_hours = 9.0
 
   actual_working_hours = round(max(0.0, gross_work_hours - bd_hours_val), 2)
 
-  if is_breakdown:
-    disp_shift = "0"
-    billable_shift = 0.0
-  elif is_sunday:
+  # COMMERCIAL SHIFT LOGIC:
+  # 1. Sunday Rule: Shift is ALWAYS blank / 0 (Paid week-off), only OT beyond 6 PM counts.
+  if is_sunday:
     disp_shift = ""
     billable_shift = 0.0
+  # 2. Regular Days (Monday-Saturday):
+  elif "NO WORK" in rem_upper or "NO WORK" in clean_start:
+    disp_shift = "0"
+    billable_shift = 0.0
+  # 3. Hourly Breakdown Deduction Rule on 9-Hour Base Shift:
+  elif bd_hours_val >= 2.0:
+    net_shift_hrs = max(0.0, 9.0 - bd_hours_val)
+    billable_shift = round(net_shift_hrs / 9.0, 2)
+    disp_shift = f"{billable_shift:.2f}" if billable_shift > 0 else "0"
   else:
     disp_shift = "1"
     billable_shift = 1.0
@@ -356,7 +363,7 @@ def generate_tenure_statement(vehicle_no, start_dt, end_dt, raw_logs_df):
           "ACTUAL_WORK_HRS": f"{act_hrs:.2f}",
           "BREAKDOWN_TIME_HRS": bd_disp,
           "INVOLVEMENT": raw_inv if raw_inv != "-" else "",
-          "REMARKS": raw_rem if raw_rem != "-" else "",
+          "REMARKS": raw_rem if raw_rem != "-" else ("SUNDAY" if is_sun else "-"),
       })
     else:
       full_rows.append({
@@ -510,6 +517,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
+  # ================= PAGE 1: RE-ENGINEERED CONSOLIDATED ABSTRACT =================
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -627,15 +635,18 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     elements.append(Paragraph(f"EQUIPMENT DUTY LOG STATEMENT - {veh} [{veh_desc}]", ParagraphStyle('VPHead', parent=abstract_heading, fontSize=9, spaceAfter=2)))
     elements.append(Paragraph(f"Work Order: <b>{do_no}</b> | RA Bill: <b>{ra_bill_no}</b> | Period: <b>{bill_period}</b>", ParagraphStyle('VPPeriod', parent=sub_meta, spaceAfter=3)))
 
-    v_working_shifts = 0
+    v_working_shifts = 0.0
     v_ot_hrs = 0.0
     v_meter_run_units = 0.0
     v_bd_hrs = 0.0
 
     for _, r in s_df.iterrows():
       s_str = str(r.get("NO_OF_SHIFTS", "")).strip()
-      if s_str == "1":
-        v_working_shifts += 1
+      try:
+        if s_str != "":
+          v_working_shifts += float(s_str)
+      except Exception:
+        pass
 
       try:
         v_ot_hrs += float(r.get("OVERTIME_HRS", 0) or 0)
@@ -667,7 +678,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     v_summary_data = [
         [
             Paragraph(f"<b>Equipment ID:</b> {veh} ({veh_desc})", cell_l),
-            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts} / {base_shifts}", cell_l),
+            Paragraph(f"<b>Shifts Worked:</b> {v_working_shifts:.2f} / {base_shifts}", cell_l),
             Paragraph(f"<b>Breakdown:</b> {v_bd_hrs:.1f} Hrs", cell_l),
             Paragraph(f"<b>Overtime:</b> {v_ot_hrs:.2f} Hrs", cell_l),
             Paragraph(col5_text, cell_l),
@@ -769,7 +780,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
         ],
         [
             Paragraph("<b>TOTAL</b>", cell_d),
-            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} ({veh_desc}) (Shifts: {v_working_shifts}/{base_shifts}, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
+            Paragraph(f"<b>EQUIPMENT BILL VALUE - {veh} ({veh_desc}) (Shifts: {v_working_shifts:.2f}/{base_shifts}, B/D: {v_bd_hrs:.1f} Hrs)</b>", cell_l),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
             Paragraph("", cell_d),
@@ -1170,8 +1181,11 @@ with tabs[1]:
 
       for _, r in v_statement.iterrows():
         s_val = str(r.get("NO_OF_SHIFTS", "")).strip()
-        if s_val == "1":
-          v_shifts += 1.0
+        try:
+          if s_val != "":
+            v_shifts += float(s_val)
+        except Exception:
+          pass
 
         try:
           v_ot += float(r.get("OVERTIME_HRS", 0) or 0)
@@ -1188,6 +1202,7 @@ with tabs[1]:
         except Exception:
           pass
 
+      # Pro-rata based on DYNAMIC billable shifts for the chosen tenure
       v_month_qty = round(v_shifts / float(base_billable_shifts), 3)
 
       if f_type == "HOUR_BASED":
@@ -1401,7 +1416,6 @@ with tabs[1]:
           "Per Tata Steel contract governance, this bill will be **Committed & Locked** in the commercial ledger to prevent audit discrepancies."
       )
 
-      # Check state inside modal
       modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
       if modal_state_key not in st.session_state:
         st.session_state[modal_state_key] = False
@@ -1474,7 +1488,6 @@ with tabs[1]:
       if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
         df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
         if save_sheet_df("ra_bills_ledger", df_ledger):
-          # Reset modal state
           modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
           if modal_state_key in st.session_state:
             del st.session_state[modal_state_key]
