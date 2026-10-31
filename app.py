@@ -122,13 +122,11 @@ def save_sheet_df(worksheet_name, df):
   if df is None:
     return False
 
-  # Safe cleanup to prevent JSON serialization error
   df_to_save = df.copy()
-  temp_drop_cols = [c for c in df_to_save.columns if "parsed_dt" in str(c).lower()]
+  temp_drop_cols = [c for c in df_to_save.columns if "parsed_dt" in str(c).lower() or str(c).startswith("_")]
   if temp_drop_cols:
     df_to_save = df_to_save.drop(columns=temp_drop_cols)
 
-  # Convert every cell cleanly to standard string
   prepared_values = []
   headers = [str(c) for c in df_to_save.columns.tolist()]
   prepared_values.append(headers)
@@ -220,7 +218,8 @@ def format_12hr_time(t_val):
 
 
 def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remarks):
-  rem_upper = str(remarks).upper() if pd.notna(remarks) else ""
+  raw_rem = str(remarks).strip() if pd.notna(remarks) else ""
+  rem_upper = raw_rem.upper()
 
   is_sunday = False
   d_obj = parse_any_date(date_str)
@@ -252,7 +251,9 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   clean_start = str(start_t).strip().upper() if pd.notna(start_t) and str(start_t).strip() and str(start_t).lower() != "nan" else ""
   clean_end = str(end_t).strip().upper() if pd.notna(end_t) and str(end_t).strip() and str(end_t).lower() != "nan" else ""
 
-  if clean_start and clean_end and "NO WORK" not in clean_start and "NO WORK" not in clean_end and clean_start != "-" and clean_end != "-":
+  has_valid_times = bool(clean_start and clean_end and "NO WORK" not in clean_start and "NO WORK" not in clean_end and clean_start != "-" and clean_end != "-")
+
+  if has_valid_times:
     try:
       def parse_t(t_val):
         t_val = t_val.strip()
@@ -271,12 +272,17 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
         gross_work += 24.0
       gross_work_hours = gross_work
 
-      # Overtime Calculation: Beyond 06:00 PM minus breakdown hours
-      cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
-      diff = (t_out - cutoff_t).total_seconds() / 3600.0
-      if diff < 0 and "AM" in clean_end:
-        diff += 24.0
-      ot_hours = round(max(0.0, diff - bd_hours_val), 2)
+      if is_sunday:
+        # MODEL A: Sunday Working -> 100% of Net Working Hours are Claimed as OT
+        net_sunday_work = max(0.0, gross_work_hours - bd_hours_val)
+        ot_hours = round(net_sunday_work, 2)
+      else:
+        # Regular Day: Overtime beyond 06:00 PM minus breakdown duration
+        cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
+        diff = (t_out - cutoff_t).total_seconds() / 3600.0
+        if diff < 0 and "AM" in clean_end:
+          diff += 24.0
+        ot_hours = round(max(0.0, diff - bd_hours_val), 2)
     except Exception:
       gross_work_hours = 9.0
       ot_hours = 0.0
@@ -286,15 +292,18 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
   actual_working_hours = round(max(0.0, gross_work_hours - bd_hours_val), 2)
 
   # COMMERCIAL SHIFT LOGIC:
-  # 1. Sunday Rule: Shift is ALWAYS blank / 0 (Paid week-off), only OT beyond 6 PM counts.
+  # 1. Sunday Rule: Shift is ALWAYS blank / 0 (Paid week-off)
   if is_sunday:
     disp_shift = ""
     billable_shift = 0.0
-  # 2. Regular Days (Monday-Saturday):
+  # 2. Exact "BREAKDOWN" remark (Whole day breakdown regardless of hours)
+  elif rem_upper == "BREAKDOWN":
+    disp_shift = "0"
+    billable_shift = 0.0
   elif "NO WORK" in rem_upper or "NO WORK" in clean_start:
     disp_shift = "0"
     billable_shift = 0.0
-  # 3. Hourly Breakdown Deduction Rule on 9-Hour Base Shift:
+  # 3. Pro-rata Hourly Deduction (Shift Base = 9 Hours) for Breakdown >= 2.0 Hours
   elif bd_hours_val >= 2.0:
     net_shift_hrs = max(0.0, 9.0 - bd_hours_val)
     billable_shift = round(net_shift_hrs / 9.0, 2)
@@ -435,7 +444,7 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
       prior_bills = df_ledger[
           (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_target)
           & (df_ledger["SrvLnNo"].astype(str) == str(srv_ln))
-          & (df_ledger["Status"] == "Approved")
+          & (df_ledger["Status"].isin(["Locked", "Approved"]))
       ]
       if target_ra_bill_no and "RA_Bill_No" in prior_bills.columns:
         prior_bills = prior_bills[prior_bills["RA_Bill_No"].astype(str) != str(target_ra_bill_no)]
@@ -512,7 +521,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. RE-DESIGNED PROFESSIONAL PDF GENERATOR -----------------
+# ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
@@ -888,7 +897,7 @@ for col in req_veh_cols:
     df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
-# --- TAB 1: DAILY ENTRY (SAFE UPDATE PROTECTION) ---
+# --- TAB 1: DAILY ENTRY (MODEL A SUNDAY & SAFE UPDATE PROTECTION) ---
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
 
@@ -1089,7 +1098,7 @@ with tabs[0]:
       if st.form_submit_button(btn_label):
         disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
 
-        # Fresh pull from sheets to avoid wiping out other records
+        # Fresh pull from sheets to preserve all other rows
         fresh_logs = load_sheet_df("fleet_daily_logsheets")
         if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
           fresh_logs = pd.DataFrame(columns=required_log_cols)
@@ -1166,7 +1175,7 @@ with tabs[1]:
       locked_match = df_ledger[
           (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
           & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num))
-          & (df_ledger["Status"] == "Approved")
+          & (df_ledger["Status"].isin(["Locked", "Approved"]))
       ]
       is_bill_already_locked = not locked_match.empty
 
@@ -1421,11 +1430,11 @@ with tabs[1]:
     st.write(f"**Net Invoice Value:** ₹{total_this_bill:,.2f} | **Amount in Words:** {in_words} RUPEES ONLY")
 
     def commit_and_lock_bill():
-      global df_ledger
-      if df_ledger.empty or "DO_No" not in df_ledger.columns:
-        df_ledger = pd.DataFrame(columns=required_ledger_cols)
+      fresh_ledger = load_sheet_df("ra_bills_ledger")
+      if fresh_ledger.empty or "DO_No" not in fresh_ledger.columns:
+        fresh_ledger = pd.DataFrame(columns=required_ledger_cols)
       else:
-        df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+        fresh_ledger = fresh_ledger[~((fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (fresh_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
 
       new_entries = []
       for _, r in abs_df.iterrows():
@@ -1436,10 +1445,10 @@ with tabs[1]:
             "SrvLnNo": r["W.O SrL No"],
             "Billed_Qty": r["This Bill Qty"],
             "Billed_Amt": r["This Bill Amount"],
-            "Status": "Approved",
+            "Status": "Locked",
         })
-      df_ledger = pd.concat([df_ledger, pd.DataFrame(new_entries)], ignore_index=True)
-      save_sheet_df("ra_bills_ledger", df_ledger)
+      fresh_ledger = pd.concat([fresh_ledger, pd.DataFrame(new_entries)], ignore_index=True)
+      save_sheet_df("ra_bills_ledger", fresh_ledger[required_ledger_cols])
 
     clean_do = str(chosen_do).replace("/", "_")
     buf_xl = io.BytesIO()
@@ -1530,9 +1539,10 @@ with tabs[1]:
 
     # 4. Delete / Unlock
     if col_btn4.button("🗑️ Delete / Unlock Bill", help="Unlock this bill from ledger to allow modifications or re-billing."):
-      if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
-        df_ledger = df_ledger[~((df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
-        if save_sheet_df("ra_bills_ledger", df_ledger):
+      fresh_ledger = load_sheet_df("ra_bills_ledger")
+      if not fresh_ledger.empty and "DO_No" in fresh_ledger.columns and "RA_Bill_No" in fresh_ledger.columns:
+        fresh_ledger = fresh_ledger[~((fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (fresh_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+        if save_sheet_df("ra_bills_ledger", fresh_ledger[required_ledger_cols]):
           modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
           if modal_state_key in st.session_state:
             del st.session_state[modal_state_key]
