@@ -92,7 +92,7 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def load_sheet_df(worksheet_name):
   for attempt in range(3):
     try:
@@ -110,7 +110,32 @@ def load_sheet_df(worksheet_name):
   return pd.DataFrame()
 
 
+def safe_serialize_cell(v):
+  if pd.isna(v) or v is None:
+    return ""
+  if isinstance(v, (datetime.date, datetime.datetime)):
+    return v.strftime("%d-%m-%Y")
+  return str(v).strip()
+
+
 def save_sheet_df(worksheet_name, df):
+  if df is None:
+    return False
+
+  # Safe cleanup to prevent JSON serialization error
+  df_to_save = df.copy()
+  temp_drop_cols = [c for c in df_to_save.columns if "parsed_dt" in str(c).lower()]
+  if temp_drop_cols:
+    df_to_save = df_to_save.drop(columns=temp_drop_cols)
+
+  # Convert every cell cleanly to standard string
+  prepared_values = []
+  headers = [str(c) for c in df_to_save.columns.tolist()]
+  prepared_values.append(headers)
+
+  for row in df_to_save.values.tolist():
+    prepared_values.append([safe_serialize_cell(c) for c in row])
+
   for attempt in range(3):
     try:
       gc = get_gspread_client()
@@ -119,9 +144,9 @@ def save_sheet_df(worksheet_name, df):
         ws = sh.worksheet(worksheet_name)
       except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
+
       ws.clear()
-      df_clean = df.fillna("")
-      ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist(), value_input_option="USER_ENTERED")
+      ws.update(prepared_values, value_input_option="USER_ENTERED")
       st.cache_data.clear()
       return True
     except Exception as e:
@@ -153,6 +178,8 @@ def clean_text_cell(val):
 def parse_any_date(date_val):
   if pd.isna(date_val) or not str(date_val).strip():
     return None
+  if isinstance(date_val, (datetime.date, datetime.datetime)):
+    return date_val if isinstance(date_val, datetime.date) else date_val.date()
   s = str(date_val).strip().split(" ")[0].replace("/", "-")
   for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%m-%y", "%m-%d-%Y"):
     try:
@@ -298,7 +325,7 @@ def generate_tenure_statement(vehicle_no, start_dt, end_dt, raw_logs_df):
     v_clean = str(vehicle_no).strip().upper()
     veh_logs = raw_logs_df[raw_logs_df["Vehicle_No"].astype(str).str.strip().str.upper() == v_clean].copy()
     if not veh_logs.empty and "DATE" in veh_logs.columns:
-      veh_logs["parsed_dt"] = veh_logs["DATE"].apply(parse_any_date)
+      veh_logs["_dt"] = veh_logs["DATE"].apply(parse_any_date)
 
   full_rows = []
   curr = start_dt
@@ -308,8 +335,8 @@ def generate_tenure_statement(vehicle_no, start_dt, end_dt, raw_logs_df):
     is_sun = curr.weekday() == 6
 
     match = pd.DataFrame()
-    if not veh_logs.empty and "parsed_dt" in veh_logs.columns:
-      match = veh_logs[veh_logs["parsed_dt"] == curr]
+    if not veh_logs.empty and "_dt" in veh_logs.columns:
+      match = veh_logs[veh_logs["_dt"] == curr]
 
     if not match.empty:
       r = match.iloc[0]
@@ -517,7 +544,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
-  # ================= PAGE 1: RE-ENGINEERED CONSOLIDATED ABSTRACT =================
+  # PAGE 1: CONSOLIDATED ABSTRACT
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -619,7 +646,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   ]))
   elements.append(t_sig)
 
-  # ================= PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS =================
+  # PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
@@ -861,7 +888,7 @@ for col in req_veh_cols:
     df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
-# --- TAB 1: DAILY ENTRY (WITH PRE-CONFIGURED EXCEL TEMPLATE) ---
+# --- TAB 1: DAILY ENTRY (SAFE UPDATE PROTECTION) ---
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
 
@@ -915,7 +942,6 @@ with tabs[0]:
         file_name=f"Logsheet_Template_{selected_tpl_key}_{m_name_tpl}_{tpl_year}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.caption("The template automatically populates sequential calendar days (1 to 30/31). Enter meter readings and operational remarks directly.")
 
     st.markdown("---")
     st.markdown("##### 2. Upload Completed Logsheet File")
@@ -968,12 +994,20 @@ with tabs[0]:
             })
 
           if new_processed_rows:
+            fresh_logs = load_sheet_df("fleet_daily_logsheets")
+            if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
+              fresh_logs = pd.DataFrame(columns=required_log_cols)
+
             new_df = pd.DataFrame(new_processed_rows)
-            if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
-              for _, nr in new_df.iterrows():
-                df_logs = df_logs[~((df_logs["Vehicle_No"] == nr["Vehicle_No"]) & (df_logs["DATE"] == nr["DATE"]))]
-            df_logs = pd.concat([df_logs, new_df], ignore_index=True)
-            if save_sheet_df("fleet_daily_logsheets", df_logs):
+            for _, nr in new_df.iterrows():
+              n_v = str(nr["Vehicle_No"]).strip().upper()
+              n_d = parse_any_date(nr["DATE"])
+              fresh_logs["_chk_d"] = fresh_logs["DATE"].apply(parse_any_date)
+              fresh_logs = fresh_logs[~((fresh_logs["Vehicle_No"].astype(str).str.strip().str.upper() == n_v) & (fresh_logs["_chk_d"] == n_d))]
+              fresh_logs = fresh_logs.drop(columns=["_chk_d"])
+
+            merged_df = pd.concat([fresh_logs, new_df], ignore_index=True)
+            if save_sheet_df("fleet_daily_logsheets", merged_df[required_log_cols]):
               st.success(f"Success: {len(new_processed_rows)} records successfully synced to Google Sheets!")
               st.rerun()
       except Exception as err:
@@ -1004,8 +1038,9 @@ with tabs[0]:
 
     existing_record = pd.DataFrame()
     if not df_logs.empty and "Vehicle_No" in df_logs.columns and "DATE" in df_logs.columns:
-      df_logs["parsed_dt_chk"] = df_logs["DATE"].apply(parse_any_date)
-      existing_record = df_logs[(df_logs["Vehicle_No"] == selected_veh) & (df_logs["parsed_dt_chk"] == selected_date)]
+      df_logs["_temp_dt"] = df_logs["DATE"].apply(parse_any_date)
+      existing_record = df_logs[(df_logs["Vehicle_No"] == selected_veh) & (df_logs["_temp_dt"] == selected_date)]
+      df_logs = df_logs.drop(columns=["_temp_dt"])
     is_already_submitted = not existing_record.empty
 
     if is_already_submitted:
@@ -1054,8 +1089,15 @@ with tabs[0]:
       if st.form_submit_button(btn_label):
         disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
 
-        if is_already_submitted:
-          df_logs = df_logs[~((df_logs["Vehicle_No"] == selected_veh) & (df_logs["DATE"] == d_date_str))]
+        # Fresh pull from sheets to avoid wiping out other records
+        fresh_logs = load_sheet_df("fleet_daily_logsheets")
+        if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
+          fresh_logs = pd.DataFrame(columns=required_log_cols)
+
+        # Remove ONLY this vehicle on this specific date
+        fresh_logs["_date_cmp"] = fresh_logs["DATE"].apply(parse_any_date)
+        fresh_logs = fresh_logs[~((fresh_logs["Vehicle_No"].astype(str).str.strip().str.upper() == selected_veh.strip().upper()) & (fresh_logs["_date_cmp"] == selected_date))]
+        fresh_logs = fresh_logs.drop(columns=["_date_cmp"])
 
         day_num = selected_date.day
         new_row = {
@@ -1074,9 +1116,9 @@ with tabs[0]:
             "INVOLVEMENT": dept,
             "REMARKS": remarks,
         }
-        df_logs = pd.concat([df_logs, pd.DataFrame([new_row])], ignore_index=True)
-        if save_sheet_df("fleet_daily_logsheets", df_logs):
-          st.success(f"Duty slip successfully recorded for {selected_veh}.")
+        updated_all_logs = pd.concat([fresh_logs, pd.DataFrame([new_row])], ignore_index=True)
+        if save_sheet_df("fleet_daily_logsheets", updated_all_logs[required_log_cols]):
+          st.success(f"Duty slip successfully recorded for {selected_veh} on {d_date_str}.")
           st.rerun()
 
 
@@ -1249,20 +1291,23 @@ with tabs[1]:
 
       col_st1, col_st2 = st.columns(2)
       if col_st1.button(f"Save Verified Adjustments for {chosen_view_veh}", disabled=is_bill_already_locked):
-        df_logs["parsed_dt_save"] = df_logs["DATE"].apply(parse_any_date)
-        df_logs = df_logs[
+        fresh_logs = load_sheet_df("fleet_daily_logsheets")
+        if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
+          fresh_logs = pd.DataFrame(columns=required_log_cols)
+
+        fresh_logs["_dt_filter"] = fresh_logs["DATE"].apply(parse_any_date)
+        fresh_logs = fresh_logs[
             ~(
-                (df_logs["Vehicle_No"] == chosen_view_veh)
-                & (df_logs["parsed_dt_save"].apply(lambda d: start_date_input <= d <= end_date_input if d else False))
+                (fresh_logs["Vehicle_No"].astype(str).str.strip().str.upper() == chosen_view_veh.strip().upper())
+                & (fresh_logs["_dt_filter"].apply(lambda d: start_date_input <= d <= end_date_input if d else False))
             )
         ]
-        if "parsed_dt_save" in df_logs.columns:
-          df_logs = df_logs.drop(columns=["parsed_dt_save"])
+        fresh_logs = fresh_logs.drop(columns=["_dt_filter"])
 
-        valid_rows = edited_stmt[(edited_stmt["START_TIME"].str.strip() != "") | (edited_stmt["REMARKS"].str.strip() != "")]
-        df_logs = pd.concat([df_logs, valid_rows], ignore_index=True)
-        if save_sheet_df("fleet_daily_logsheets", df_logs):
-          st.success("Google Sheets synchronized successfully.")
+        valid_rows = edited_stmt[(edited_stmt["START_TIME"].astype(str).str.strip() != "") | (edited_stmt["REMARKS"].astype(str).str.strip() != "")]
+        merged_adjustments = pd.concat([fresh_logs, valid_rows], ignore_index=True)
+        if save_sheet_df("fleet_daily_logsheets", merged_adjustments[required_log_cols]):
+          st.success(f"Verified adjustments preserved and synchronized for {chosen_view_veh}.")
           st.rerun()
 
       csv_buf = edited_stmt.to_csv(index=False).encode('utf-8')
