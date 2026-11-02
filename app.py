@@ -155,11 +155,21 @@ def save_sheet_df(worksheet_name, df):
   return False
 
 
-# ----------------- 2. CALCULATION ENGINE -----------------
+# ----------------- 2. CALCULATION ENGINE & HELPERS -----------------
 def normalize_do(do_str):
   if not do_str:
     return ""
   return str(do_str).split("/")[0].strip()
+
+
+def normalize_bill_no(b_val):
+  if pd.isna(b_val) or b_val is None:
+    return ""
+  s = str(b_val).strip()
+  try:
+    return str(int(s))
+  except Exception:
+    return s.lstrip("0")
 
 
 def clean_text_cell(val):
@@ -177,7 +187,7 @@ def parse_any_date(date_val):
   if isinstance(date_val, (datetime.date, datetime.datetime)):
     return date_val if isinstance(date_val, datetime.date) else date_val.date()
   s = str(date_val).strip().split(" ")[0].replace("/", "-")
-  for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%m-%y", "%m-%d-%Y"):
+  for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d", "%d-%m-%y", "%m-%d-%Y"):
     try:
       return datetime.datetime.strptime(s, fmt).date()
     except Exception:
@@ -308,6 +318,8 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
 
 
 def get_tenure_calendar_metrics(start_dt, end_dt):
+  if not start_dt or not end_dt or start_dt > end_dt:
+    return 30, 4, 26
   total_days = (end_dt - start_dt).days + 1
   sundays_count = 0
   curr = start_dt
@@ -424,6 +436,8 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
   do_items = df_master[df_master["DO_No"].astype(str).apply(normalize_do) == norm_target].copy()
   positions = []
 
+  target_b_norm = normalize_bill_no(target_ra_bill_no)
+
   for _, row in do_items.iterrows():
     srv_ln = row["SrvLnNo"]
     boq_qty = float(row.get("BOQ_Qty", 0.0) or 0.0)
@@ -437,9 +451,11 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
           (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_target)
           & (df_ledger["SrvLnNo"].astype(str) == str(srv_ln))
           & (df_ledger["Status"].isin(["Locked", "Approved"]))
-      ]
-      if target_ra_bill_no and "RA_Bill_No" in prior_bills.columns:
-        prior_bills = prior_bills[prior_bills["RA_Bill_No"].astype(str) != str(target_ra_bill_no)]
+      ].copy()
+
+      if target_b_norm and "RA_Bill_No" in prior_bills.columns:
+        prior_bills["_b_norm"] = prior_bills["RA_Bill_No"].apply(normalize_bill_no)
+        prior_bills = prior_bills[prior_bills["_b_norm"] != target_b_norm]
 
       prior_qty = prior_bills["Billed_Qty"].astype(float).sum()
       prior_amt = prior_bills["Billed_Amt"].astype(float).sum()
@@ -580,7 +596,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
     sorted_abs_df = sorted_abs_df.sort_values(by="srl_sort").drop(columns=["srl_sort"])
 
-  # DYNAMIC AUTO-ARRANGE WIDTH CALCULATION (NO QUANTITY WRAPPING)
   TOTAL_PRINT_WIDTH = 794.0
   raw_headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
 
@@ -668,7 +683,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   ]))
   elements.append(t_tot)
 
-  # BALANCED GAP BEFORE SIGNATURES
   elements.append(Spacer(1, 55))
 
   sig_data = [
@@ -1198,15 +1212,18 @@ with tabs[1]:
     )
 
     norm_chosen_do = normalize_do(chosen_do)
+    norm_target_bill = normalize_bill_no(ra_bill_num)
 
     is_bill_already_locked = False
     if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
+      df_ledger["_chk_bill_norm"] = df_ledger["RA_Bill_No"].apply(normalize_bill_no)
       locked_match = df_ledger[
           (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
-          & (df_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num))
+          & (df_ledger["_chk_bill_norm"] == norm_target_bill)
           & (df_ledger["Status"].isin(["Locked", "Approved"]))
       ]
       is_bill_already_locked = not locked_match.empty
+      df_ledger = df_ledger.drop(columns=["_chk_bill_norm"])
 
     authorize_overwrite = False
     if is_bill_already_locked:
@@ -1466,7 +1483,14 @@ with tabs[1]:
       if fresh_ledger.empty or "DO_No" not in fresh_ledger.columns:
         fresh_ledger = pd.DataFrame(columns=required_ledger_cols)
       else:
-        fresh_ledger = fresh_ledger[~((fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (fresh_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+        fresh_ledger["_del_bill_norm"] = fresh_ledger["RA_Bill_No"].apply(normalize_bill_no)
+        fresh_ledger = fresh_ledger[
+            ~(
+                (fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
+                & (fresh_ledger["_del_bill_norm"] == norm_target_bill)
+            )
+        ]
+        fresh_ledger = fresh_ledger.drop(columns=["_del_bill_norm"])
 
       new_entries = []
       for _, r in abs_df.iterrows():
@@ -1574,7 +1598,13 @@ with tabs[1]:
     if col_btn4.button("🗑️ Delete / Unlock Bill", help="Unlock this bill from ledger to allow modifications or re-billing."):
       fresh_ledger = load_sheet_df("ra_bills_ledger")
       if not fresh_ledger.empty and "DO_No" in fresh_ledger.columns and "RA_Bill_No" in fresh_ledger.columns:
-        fresh_ledger = fresh_ledger[~((fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do) & (fresh_ledger["RA_Bill_No"].astype(str) == str(ra_bill_num)))]
+        fresh_ledger["_del_norm"] = fresh_ledger["RA_Bill_No"].apply(normalize_bill_no)
+        fresh_ledger = fresh_ledger[
+            ~(
+                (fresh_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
+                & (fresh_ledger["_del_norm"] == norm_target_bill)
+            )
+        ]
         if save_sheet_df("ra_bills_ledger", fresh_ledger[required_ledger_cols]):
           modal_state_key = f"bill_locked_in_modal_{ra_bill_num}_{clean_do}"
           if modal_state_key in st.session_state:
@@ -1585,7 +1615,7 @@ with tabs[1]:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
-# --- TAB 3: LOCKED RA BILLS REPOSITORY (STREAMLINED INLINE ACTIONS & SAFETY POPUPS) ---
+# --- TAB 3: LOCKED RA BILLS REPOSITORY (INLINE ACTIONS & CRASH-PROOF MODALS) ---
 with tabs[2]:
   st.subheader("📚 Locked RA Bills Repository")
   st.caption("Central ledger of all locked and committed commercial bills. Access files or safely unlock bills directly from the registry.")
@@ -1598,13 +1628,21 @@ with tabs[2]:
     st.markdown("#### Commercial Bill Documents")
     st.info(f"**Work Order:** `{target_do}` | **RA Bill No:** `{target_bill}`\n\n**Tenure:** `{target_period}` | **Invoiced Amount:** ₹{target_amt:,.2f}")
 
-    # Build files from current position
     norm_do = normalize_do(target_do)
     assigned_v = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_do]["Vehicle_No"].tolist()
 
-    p_parts = str(target_period).upper().split(" TO ")
-    start_dt_calc = parse_any_date(p_parts[0]) if len(p_parts) == 2 else datetime.date.today().replace(day=1)
-    end_dt_calc = parse_any_date(p_parts[1]) if len(p_parts) == 2 else datetime.date.today()
+    start_dt_calc = None
+    end_dt_calc = None
+    if " TO " in str(target_period).upper():
+      p_parts = str(target_period).upper().split(" TO ")
+      start_dt_calc = parse_any_date(p_parts[0])
+      end_dt_calc = parse_any_date(p_parts[1])
+
+    if not start_dt_calc:
+      start_dt_calc = datetime.date.today().replace(day=1)
+    if not end_dt_calc:
+      end_dt_calc = datetime.date.today()
+
     _, _, b_shifts = get_tenure_calendar_metrics(start_dt_calc, end_dt_calc)
 
     b_stmts = {}
@@ -1625,17 +1663,18 @@ with tabs[2]:
           "ot_rate": r_pres.get("ot_rate", 0.0), "desc": v_fm, "hold_qty": 0.0
       }
 
-    # Ledger items
+    target_b_norm = normalize_bill_no(target_bill)
+    fresh_rep_ledger["_tmp_b_norm"] = fresh_rep_ledger["RA_Bill_No"].apply(normalize_bill_no)
     items_subset = fresh_rep_ledger[
         (fresh_rep_ledger["DO_No"].astype(str) == str(target_do)) &
-        (fresh_rep_ledger["RA_Bill_No"].astype(str) == str(target_bill))
-    ]
+        (fresh_rep_ledger["_tmp_b_norm"] == target_b_norm)
+    ].copy()
 
     abs_rep_rows = []
     for _, it in items_subset.iterrows():
       abs_rep_rows.append({
           "W.O SrL No": it.get("SrvLnNo"),
-          "Description": f"Contract Service Scope - Line {it.get('SrvLnNo')}",
+          "Description": f"Contract Scope Item (Line {it.get('SrvLnNo')})",
           "Unit": "Month/Qty",
           "BOQ Rate": 0.0,
           "BOQ Qty": 0.0,
@@ -1681,7 +1720,7 @@ with tabs[2]:
         f"Are you sure you want to revoke and unlock **RA Bill {target_bill}** for Work Order **{target_do}**?\n\n"
         f"- **Billing Tenure:** `{target_period}`\n"
         f"- **Committed Net Amount:** ₹{target_amt:,.2f}\n\n"
-        "This will purge the bill record from the commercial ledger. You will be able to re-edit or re-issue this bill in Tab 2 without duplicate alerts."
+        "This will permanently purge this bill from the commercial ledger. You will be able to re-edit or re-issue this bill in Tab 2 without duplicate alerts."
     )
     col_rv1, col_rv2 = st.columns(2)
     if col_rv1.button("❌ Cancel (Keep Locked)", use_container_width=True):
@@ -1689,12 +1728,19 @@ with tabs[2]:
 
     if col_rv2.button("🗑️ Yes, Revoke & Unlock", type="primary", use_container_width=True):
       fresh_l = load_sheet_df("ra_bills_ledger")
-      purged_l = fresh_l[~((fresh_l["DO_No"].astype(str) == str(target_do)) & (fresh_l["RA_Bill_No"].astype(str) == str(target_bill)))]
+      target_b_norm = normalize_bill_no(target_bill)
+      fresh_l["_tmp_del_b"] = fresh_l["RA_Bill_No"].apply(normalize_bill_no)
+      purged_l = fresh_l[
+          ~(
+              (fresh_l["DO_No"].astype(str) == str(target_do))
+              & (fresh_l["_tmp_del_b"] == target_b_norm)
+          )
+      ]
       if save_sheet_df("ra_bills_ledger", purged_l[required_ledger_cols]):
         st.success(f"RA Bill {target_bill} has been successfully revoked and cleared from ledger.")
         st.rerun()
 
-  # RENDER CLEAN REPOSITORY TABLE WITH INLINE ACTION BUTTONS
+  # RENDER CLEAN REPOSITORY TABLE
   if fresh_rep_ledger.empty or "RA_Bill_No" not in fresh_rep_ledger.columns:
     st.info("No locked RA bills currently recorded in the commercial ledger.")
   else:
@@ -1704,12 +1750,13 @@ with tabs[2]:
       st.info("No locked RA bills currently recorded in the commercial ledger.")
     else:
       valid_bills["Billed_Amt"] = pd.to_numeric(valid_bills["Billed_Amt"], errors="coerce").fillna(0.0)
+      valid_bills["Bill_Norm"] = valid_bills["RA_Bill_No"].apply(normalize_bill_no)
 
-      summary_table = valid_bills.groupby(["DO_No", "RA_Bill_No", "Bill_Period", "Status"], as_index=False).agg(
-          Total_Bill_Amount=("Billed_Amt", "sum")
+      summary_table = valid_bills.groupby(["DO_No", "Bill_Norm", "Bill_Period", "Status"], as_index=False).agg(
+          Total_Bill_Amount=("Billed_Amt", "sum"),
+          Display_Bill_No=("RA_Bill_No", "first")
       )
 
-      # HEADER ROW
       c_h1, c_h2, c_h3, c_h4, c_h5, c_h6 = st.columns([2.5, 1.2, 2.8, 2.0, 1.2, 1.8])
       c_h1.markdown("**Work Order / DO No**")
       c_h2.markdown("**RA Bill No**")
@@ -1719,10 +1766,9 @@ with tabs[2]:
       c_h6.markdown("**Actions**")
       st.markdown("---")
 
-      # DATA ROWS WITH DIRECT ACTION BUTTONS
       for idx, row in summary_table.iterrows():
         r_do = str(row["DO_No"])
-        r_bill = str(row["RA_Bill_No"])
+        r_bill = str(row["Display_Bill_No"])
         r_per = str(row["Bill_Period"])
         r_amt = float(row["Total_Bill_Amount"])
         r_status = str(row["Status"])
