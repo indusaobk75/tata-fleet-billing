@@ -441,6 +441,8 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
 
   for _, row in do_items.iterrows():
     srv_ln = row["SrvLnNo"]
+    unit = str(row.get("Unit", "")).strip().upper()
+    rate = float(row.get("Rate", 0.0) or 0.0)
     boq_qty = float(row.get("BOQ_Qty", 0.0) or 0.0)
     init_qty = float(row.get("Initial_Baseline_Qty", 0.0) or 0.0)
     init_amt = float(row.get("Initial_Baseline_Amt", 0.0) or 0.0)
@@ -463,6 +465,11 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
 
     prev_qty = round(init_qty + prior_qty, 3)
     prev_amt = round(init_amt + prior_amt, 2)
+
+    # STRICT 1:1 SYNC FOR LUMPSUM / RATE=1.0 ITEMS (EXACT 2-DECIMAL INTEGRITY)
+    if ("LUMPSUM" in unit or rate == 1.0) and prev_amt > 0:
+      prev_qty = round(prev_amt, 3)
+
     balance_qty = round(boq_qty - prev_qty, 3)
 
     positions.append({
@@ -472,7 +479,7 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
         "Description": row.get("Description", ""),
         "Unit": row.get("Unit", "Month"),
         "BOQ_Qty": boq_qty,
-        "Rate": float(row.get("Rate", 0.0) or 0.0),
+        "Rate": rate,
         "OT_Rate": float(row.get("OT_Rate", 0.0) or 0.0),
         "Fuel_Rate_KM": float(row.get("Fuel_Rate_KM", 0.0) or 0.0),
         "Prev_Qty": prev_qty,
@@ -923,6 +930,7 @@ if df_rates.empty or "Category_Name" not in df_rates.columns:
       {"Category_Name": "Excavator (220 Class with Breaker)", "Monthly_Rate": 170000.0, "OT_Rate": 450.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 10.0, "Unit_Display": "Ltr/Hr"},
       {"Category_Name": "Excavator (300 Class with Breaker)", "Monthly_Rate": 225000.0, "OT_Rate": 590.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 14.0, "Unit_Display": "Ltr/Hr"},
       {"Category_Name": "F-23 Crane", "Monthly_Rate": 140000.0, "OT_Rate": 300.0, "Fuel_Mode": "HOUR_BASED", "Fuel_Factor": 3.0, "Unit_Display": "Ltr/Hr"},
+      {"Category_Name": "Trailor-40MT", "Monthly_Rate": 140000.0, "OT_Rate": 299.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 40.0, "Unit_Display": "₹/Km"},
       {"Category_Name": "Trailer (40 MT)", "Monthly_Rate": 140000.0, "OT_Rate": 299.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 40.0, "Unit_Display": "₹/Km"},
       {"Category_Name": "Diesel Bowser (800 Litres Capacity)", "Monthly_Rate": 50000.0, "OT_Rate": 135.0, "Fuel_Mode": "KM_BASED", "Fuel_Factor": 9.0, "Unit_Display": "₹/Km"},
   ]
@@ -960,7 +968,7 @@ with tabs[0]:
         vehs_options[v_id] = disp_txt
 
     if not vehs_options:
-      vehs_options = {"NL01DA1034(ROLLER)": "NL01DA1034(ROLLER) [Vibratory Roller]", "JH02BY7955": "JH02BY7955 [Trailer 40MT]"}
+      vehs_options = {"NL01DA1034(ROLLER)": "NL01DA1034(ROLLER) [Vibratory Roller]", "JH02BY7955": "JH02BY7955 [Trailor-40MT]"}
 
     selected_tpl_key = col_sel_v.selectbox("Target Equipment", options=list(vehs_options.keys()), format_func=lambda x: vehs_options[x], key="tpl_veh_select")
     today = datetime.date.today()
@@ -1436,7 +1444,7 @@ with tabs[1]:
             hold_notes.append(f"Line {sl} (Fuel): Actual Value ₹{computed_qty:,.2f} exceeded DO Balance ₹{balance_boq:,.2f}. Billed: ₹{this_qty:,.2f} | ₹{hold_qty_for_line:,.2f} HOLD.")
           else:
             this_qty = computed_qty
-          this_amt = this_qty
+          this_amt = round(this_qty, 2)
         else:
           computed_qty = round(line_fuel_cost / (rate if rate > 0 else 1.0), 2)
           this_qty = computed_qty
@@ -1646,7 +1654,6 @@ with tabs[2]:
 
     _, _, b_shifts = get_tenure_calendar_metrics(start_dt_calc, end_dt_calc)
 
-    # PULL REAL DO MASTER ITEMS & PREVIOUS LEDGER AMOUNTS
     live_pos = get_live_do_position(df_master_do, fresh_rep_ledger, target_do, target_ra_bill_no=target_bill)
 
     b_stmts = {}
@@ -1666,7 +1673,6 @@ with tabs[2]:
       m_rate_val = r_pres.get("m_rate", 0.0)
       ot_rate_val = r_pres.get("ot_rate", 0.0)
 
-      # Fallback to contract lines if rate_dict didn't catch the exact string
       if m_rate_val == 0.0 and not live_pos.empty:
         m_r = live_pos[live_pos["Unit"].astype(str).str.upper().str.contains("MONTH")]
         if not m_r.empty:
@@ -1688,14 +1694,12 @@ with tabs[2]:
         (fresh_rep_ledger["_tmp_b_norm"] == target_b_norm)
     ].copy()
 
-    # BUILD AUTHENTIC ABSTRACT ROWS USING ACTUAL CONTRACT DO ITEMS
     abs_rep_rows = []
     for _, it in items_subset.iterrows():
       srl = it.get("SrvLnNo")
       this_q = float(it.get("Billed_Qty", 0.0) or 0.0)
       this_a = float(it.get("Billed_Amt", 0.0) or 0.0)
 
-      # Lookup real master contract row
       m_item = live_pos[live_pos["SrvLnNo"].astype(str) == str(srl)]
       if not m_item.empty:
         m_r = m_item.iloc[0]
@@ -1889,7 +1893,7 @@ with tabs[3]:
 
   st.markdown("---")
   st.subheader("2. Opening Baseline & Rate Ledger Configuration")
-  st.caption("Review BOQ values, baseline quantities, and rates across contract line items. Decimal inputs (e.g., 8.072) are fully supported:")
+  st.caption("Review BOQ values, baseline quantities, and rates across contract line items. Exact precision with 2-decimals for amounts and 3-decimals for quantities:")
 
   baseline_columns = [
       "DO_No", "SrvLnNo", "Equipment_Family", "Description", "Unit",
@@ -1933,15 +1937,18 @@ with tabs[3]:
       b_unit = str(edited_master.at[idx, "Unit"]).strip().upper()
       curr_amt = float(edited_master.at[idx, "Initial_Baseline_Amt"])
 
-      if b_qty > 0:
-        if "MONTH" in b_unit or "HOUR" in b_unit:
-          edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
-        elif "LUMPSUM" in b_unit or "KM" in b_unit:
-          if b_rate == 1.0 or b_rate == 0.0:
-            if curr_amt == 0.0:
-              edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty, 2)
-          else:
-            edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
+      # AUTOMATIC STRICT AMOUNT CALCULATION (EXACT 2 DECIMALS, NO INTEGER ROUND-OFF)
+      if "MONTH" in b_unit or "HOUR" in b_unit:
+        edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
+      elif "LUMPSUM" in b_unit or rate == 1.0:
+        if curr_amt > 0 and b_qty == 0.0:
+          edited_master.at[idx, "Initial_Baseline_Qty"] = round(curr_amt, 3)
+        elif b_qty > 0 and curr_amt == 0.0:
+          edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty, 2)
+        elif b_qty > 0 and curr_amt > 0:
+          # If both present, prioritize explicit amount and sync quantity
+          edited_master.at[idx, "Initial_Baseline_Qty"] = round(curr_amt, 3)
+          edited_master.at[idx, "Initial_Baseline_Amt"] = round(curr_amt, 2)
 
     clean_save_df = edited_master.copy()
     clean_save_df["BOQ_Qty"] = clean_save_df["BOQ_Qty"].apply(lambda x: f"{float(x):.3f}")
@@ -1952,7 +1959,7 @@ with tabs[3]:
     clean_save_df["Initial_Baseline_Amt"] = clean_save_df["Initial_Baseline_Amt"].apply(lambda x: f"{float(x):.2f}")
 
     if save_sheet_df("master_do_items", clean_save_df):
-      st.success("Contract baseline updated successfully! Amounts automatically computed and 3-decimal precision saved.")
+      st.success("Contract baseline updated successfully! Amounts preserved to 2 decimal places and Quantities to 3 decimals.")
       st.rerun()
 
 
