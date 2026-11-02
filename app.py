@@ -513,7 +513,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. RE-DESIGNED PDF GENERATOR -----------------
+# ----------------- 3. PDF GENERATOR (AUTO-ARRANGE COLUMN WIDTHS) -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
@@ -545,7 +545,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
-  # PAGE 1: ABSTRACT
+  # PAGE 1: CONSOLIDATED ABSTRACT
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -580,25 +580,62 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
     sorted_abs_df = sorted_abs_df.sort_values(by="srl_sort").drop(columns=["srl_sort"])
 
-  headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
-  abs_table_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in headers]]
+  # DYNAMIC AUTO-ARRANGE WIDTH CALCULATION (NO QUANTITY WRAPPING)
+  TOTAL_PRINT_WIDTH = 794.0
+  raw_headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
 
+  str_matrix = [raw_headers]
   for _, r in sorted_abs_df.iterrows():
-    abs_table_data.append([
-        Paragraph(str(r["W.O SrL No"]), cell_d),
-        Paragraph(str(r["Description"]), cell_l),
-        Paragraph(str(r["Unit"]), cell_d),
-        Paragraph(f"{float(r['BOQ Rate']):,.2f}", cell_r),
-        Paragraph(f"{float(r['BOQ Qty']):,.3f}", cell_d),
-        Paragraph(f"{float(r['Prev Qty']):,.3f}", cell_d),
-        Paragraph(f"{float(r['Prev Amount']):,.2f}", cell_r),
-        Paragraph(f"{float(r['This Bill Qty']):,.3f}", cell_d),
-        Paragraph(f"{float(r['This Bill Amount']):,.2f}", cell_bold_r),
-        Paragraph(f"{float(r['Cumulative Qty']):,.3f}", cell_d),
-        Paragraph(f"{float(r['Cumulative Amount']):,.2f}", cell_bold_r),
+    str_matrix.append([
+        str(r["W.O SrL No"]),
+        str(r["Description"]),
+        str(r["Unit"]),
+        f"{float(r['BOQ Rate']):,.2f}",
+        f"{float(r['BOQ Qty']):,.3f}",
+        f"{float(r['Prev Qty']):,.3f}",
+        f"{float(r['Prev Amount']):,.2f}",
+        f"{float(r['This Bill Qty']):,.3f}",
+        f"{float(r['This Bill Amount']):,.2f}",
+        f"{float(r['Cumulative Qty']):,.3f}",
+        f"{float(r['Cumulative Amount']):,.2f}",
     ])
 
-  t_abs = Table(abs_table_data, colWidths=[26, 218, 44, 56, 46, 46, 78, 46, 80, 50, 120])
+  max_lens = [
+      max(len(str_matrix[row_idx][col_idx]) for row_idx in range(len(str_matrix)))
+      for col_idx in range(len(raw_headers))
+  ]
+
+  weights = []
+  for col_idx, m_len in enumerate(max_lens):
+    if col_idx == 0:
+      weights.append(max(4.0, m_len * 1.0))
+    elif col_idx == 1:
+      weights.append(max(20.0, m_len * 0.72))
+    elif col_idx == 2:
+      weights.append(max(6.5, m_len * 1.1))
+    else:
+      weights.append(max(9.5, m_len * 1.15))
+
+  total_weight = sum(weights)
+  dynamic_widths = [round((w / total_weight) * TOTAL_PRINT_WIDTH, 1) for w in weights]
+
+  abs_table_data = [[Paragraph(f"<b>{h}</b>", cell_h) for h in raw_headers]]
+  for row_vals in str_matrix[1:]:
+    abs_table_data.append([
+        Paragraph(row_vals[0], cell_d),
+        Paragraph(row_vals[1], cell_l),
+        Paragraph(row_vals[2], cell_d),
+        Paragraph(row_vals[3], cell_r),
+        Paragraph(row_vals[4], cell_d),
+        Paragraph(row_vals[5], cell_d),
+        Paragraph(row_vals[6], cell_r),
+        Paragraph(row_vals[7], cell_d),
+        Paragraph(row_vals[8], cell_bold_r),
+        Paragraph(row_vals[9], cell_d),
+        Paragraph(row_vals[10], cell_bold_r),
+    ])
+
+  t_abs = Table(abs_table_data, colWidths=dynamic_widths)
   t_abs.setStyle(TableStyle([
       ('BACKGROUND', (0,0), (-1,0), c_navy),
       ('GRID', (0,0), (-1,-1), 0.5, c_border),
@@ -608,7 +645,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, c_row_alt]),
   ]))
   elements.append(t_abs)
-  elements.append(Spacer(1, 4))
+  elements.append(Spacer(1, 5))
 
   if hold_notes:
     for hn in hold_notes:
@@ -622,7 +659,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(f"<b>NET INVOICE VALUE: ₹{total_bill_amt:,.2f}</b>", ParagraphStyle('TotNet', parent=cell_bold_r, fontSize=8.5, textColor=c_navy))
       ]
   ]
-  t_tot = Table(total_box, colWidths=[570, 240])
+  t_tot = Table(total_box, colWidths=[TOTAL_PRINT_WIDTH - 240, 240])
   t_tot.setStyle(TableStyle([
       ('BOX', (0,0), (-1,-1), 1, c_navy),
       ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#E2E8F0")),
@@ -631,7 +668,8 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   ]))
   elements.append(t_tot)
 
-  elements.append(Spacer(1, 48))
+  # BALANCED GAP BEFORE SIGNATURES
+  elements.append(Spacer(1, 55))
 
   sig_data = [
       [
@@ -640,7 +678,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph("___________________________________<br/><b>Verified & Certified By</b><br/>Engineer-in-Charge (Tata Steel Ltd)", cell_d)
       ]
   ]
-  t_sig = Table(sig_data, colWidths=[265, 280, 265])
+  t_sig = Table(sig_data, colWidths=[260, 274, 260])
   t_sig.setStyle(TableStyle([
       ('ALIGN', (0,0), (-1,-1), 'CENTER'),
       ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
@@ -1122,7 +1160,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & STATEMENT (WITH OPTION 2 BRIEF WARNING & OVERWRITE GUARD) ---
+# --- TAB 2: BILLING & STATEMENT (BRIEF OVERWRITE ALERT) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1161,7 +1199,6 @@ with tabs[1]:
 
     norm_chosen_do = normalize_do(chosen_do)
 
-    # CHECK EXISTING LEDGER RECORD
     is_bill_already_locked = False
     if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
       locked_match = df_ledger[
@@ -1171,7 +1208,6 @@ with tabs[1]:
       ]
       is_bill_already_locked = not locked_match.empty
 
-    # OPTION 2 BRIEF WARNING
     authorize_overwrite = False
     if is_bill_already_locked:
       st.warning(f"⚠️ **Duplicate Alert:** Bill **{ra_bill_num}** exists in ledger for **{chosen_do}**. Overwrite required to re-bill.")
@@ -1549,13 +1585,116 @@ with tabs[1]:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
-# --- TAB 3: LOCKED RA BILLS REPOSITORY ---
+# --- TAB 3: LOCKED RA BILLS REPOSITORY (STREAMLINED INLINE ACTIONS & SAFETY POPUPS) ---
 with tabs[2]:
-  st.subheader("📚 Locked RA Bills Repository & Audit Ledger")
-  st.caption("Consolidated register of all finalized and committed commercial bills. Inspect prior bill records or unlock bills for amendments.")
+  st.subheader("📚 Locked RA Bills Repository")
+  st.caption("Central ledger of all locked and committed commercial bills. Access files or safely unlock bills directly from the registry.")
 
   fresh_rep_ledger = load_sheet_df("ra_bills_ledger")
 
+  # SAFETY DIALOG 1: RE-DOWNLOAD COMMITTED BILL MODAL
+  @st.dialog("📥 Access Committed RA Bill Documents")
+  def download_locked_bill_modal(target_do, target_bill, target_period, target_amt):
+    st.markdown("#### Commercial Bill Documents")
+    st.info(f"**Work Order:** `{target_do}` | **RA Bill No:** `{target_bill}`\n\n**Tenure:** `{target_period}` | **Invoiced Amount:** ₹{target_amt:,.2f}")
+
+    # Build files from current position
+    norm_do = normalize_do(target_do)
+    assigned_v = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_do]["Vehicle_No"].tolist()
+
+    p_parts = str(target_period).upper().split(" TO ")
+    start_dt_calc = parse_any_date(p_parts[0]) if len(p_parts) == 2 else datetime.date.today().replace(day=1)
+    end_dt_calc = parse_any_date(p_parts[1]) if len(p_parts) == 2 else datetime.date.today()
+    _, _, b_shifts = get_tenure_calendar_metrics(start_dt_calc, end_dt_calc)
+
+    b_stmts = {}
+    b_meta = {}
+    for v in assigned_v:
+      b_stmts[v] = generate_tenure_statement(v, start_dt_calc, end_dt_calc, df_logs)
+      v_row_m = df_vehs[df_vehs["Vehicle_No"] == v]
+      f_tp = "KM_BASED"
+      f_fc = 0.0
+      v_fm = "General"
+      if not v_row_m.empty:
+        f_tp = str(v_row_m.iloc[0].get("Fuel_Type", "KM_BASED")).strip()
+        f_fc = float(v_row_m.iloc[0].get("Consumption_Factor", 0.0) or 0.0)
+        v_fm = str(v_row_m.iloc[0].get("Equipment_Family", "General")).strip()
+      r_pres = rate_dict.get(v_fm, {})
+      b_meta[v] = {
+          "type": f_tp, "factor": f_fc, "m_rate": r_pres.get("m_rate", 0.0),
+          "ot_rate": r_pres.get("ot_rate", 0.0), "desc": v_fm, "hold_qty": 0.0
+      }
+
+    # Ledger items
+    items_subset = fresh_rep_ledger[
+        (fresh_rep_ledger["DO_No"].astype(str) == str(target_do)) &
+        (fresh_rep_ledger["RA_Bill_No"].astype(str) == str(target_bill))
+    ]
+
+    abs_rep_rows = []
+    for _, it in items_subset.iterrows():
+      abs_rep_rows.append({
+          "W.O SrL No": it.get("SrvLnNo"),
+          "Description": f"Contract Service Scope - Line {it.get('SrvLnNo')}",
+          "Unit": "Month/Qty",
+          "BOQ Rate": 0.0,
+          "BOQ Qty": 0.0,
+          "Prev Qty": 0.0,
+          "Prev Amount": 0.0,
+          "This Bill Qty": float(it.get("Billed_Qty", 0.0) or 0.0),
+          "This Bill Amount": float(it.get("Billed_Amt", 0.0) or 0.0),
+          "Cumulative Qty": float(it.get("Billed_Qty", 0.0) or 0.0),
+          "Cumulative Amount": float(it.get("Billed_Amt", 0.0) or 0.0),
+      })
+    rep_abs_df = pd.DataFrame(abs_rep_rows)
+
+    rep_pdf_bytes = generate_bill_pdf_report(target_bill, target_do, target_period, rep_abs_df, target_amt, b_stmts, b_meta, 101.06, base_shifts=b_shifts)
+
+    buf_rep_xl = io.BytesIO()
+    with pd.ExcelWriter(buf_rep_xl, engine="openpyxl") as wr:
+      rep_abs_df.to_excel(wr, sheet_name="Page1_Abstract", index=False)
+      for v, s_d in b_stmts.items():
+        s_d.to_excel(wr, sheet_name=f"Stmt_{v.replace('-', '_')}"[:31], index=False)
+
+    c_dl1, c_dl2 = st.columns(2)
+    c_dl1.download_button(
+        "📄 Download Official PDF",
+        data=rep_pdf_bytes,
+        file_name=f"Locked_RA_Bill_{target_bill}_{str(target_do).replace('/', '_')}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        type="primary"
+    )
+    c_dl2.download_button(
+        "📊 Download Excel Workbook",
+        data=buf_rep_xl.getvalue(),
+        file_name=f"Locked_RA_Bill_{target_bill}_{str(target_do).replace('/', '_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+  # SAFETY DIALOG 2: CONFIRM REVOCATION MODAL
+  @st.dialog("⚠️ Confirm Ledger Revocation")
+  def revoke_locked_bill_modal(target_do, target_bill, target_period, target_amt):
+    st.markdown("#### Confirm Unlocking & Deletion")
+    st.write(
+        f"Are you sure you want to revoke and unlock **RA Bill {target_bill}** for Work Order **{target_do}**?\n\n"
+        f"- **Billing Tenure:** `{target_period}`\n"
+        f"- **Committed Net Amount:** ₹{target_amt:,.2f}\n\n"
+        "This will purge the bill record from the commercial ledger. You will be able to re-edit or re-issue this bill in Tab 2 without duplicate alerts."
+    )
+    col_rv1, col_rv2 = st.columns(2)
+    if col_rv1.button("❌ Cancel (Keep Locked)", use_container_width=True):
+      st.rerun()
+
+    if col_rv2.button("🗑️ Yes, Revoke & Unlock", type="primary", use_container_width=True):
+      fresh_l = load_sheet_df("ra_bills_ledger")
+      purged_l = fresh_l[~((fresh_l["DO_No"].astype(str) == str(target_do)) & (fresh_l["RA_Bill_No"].astype(str) == str(target_bill)))]
+      if save_sheet_df("ra_bills_ledger", purged_l[required_ledger_cols]):
+        st.success(f"RA Bill {target_bill} has been successfully revoked and cleared from ledger.")
+        st.rerun()
+
+  # RENDER CLEAN REPOSITORY TABLE WITH INLINE ACTION BUTTONS
   if fresh_rep_ledger.empty or "RA_Bill_No" not in fresh_rep_ledger.columns:
     st.info("No locked RA bills currently recorded in the commercial ledger.")
   else:
@@ -1567,55 +1706,41 @@ with tabs[2]:
       valid_bills["Billed_Amt"] = pd.to_numeric(valid_bills["Billed_Amt"], errors="coerce").fillna(0.0)
 
       summary_table = valid_bills.groupby(["DO_No", "RA_Bill_No", "Bill_Period", "Status"], as_index=False).agg(
-          Total_Bill_Amount=("Billed_Amt", "sum"),
-          Service_Lines_Count=("SrvLnNo", "count")
+          Total_Bill_Amount=("Billed_Amt", "sum")
       )
 
-      st.markdown("##### Committed RA Bills Summary")
-      st.dataframe(
-          summary_table,
-          use_container_width=True,
-          column_config={
-              "DO_No": st.column_config.TextColumn("Delivery Order / WO Ref"),
-              "RA_Bill_No": st.column_config.TextColumn("RA Bill No"),
-              "Bill_Period": st.column_config.TextColumn("Billing Tenure"),
-              "Total_Bill_Amount": st.column_config.NumberColumn("Total Invoiced Amount (₹)", format="₹%,.2f"),
-              "Service_Lines_Count": st.column_config.NumberColumn("Items Count"),
-              "Status": st.column_config.TextColumn("Ledger Status"),
-          }
-      )
-
+      # HEADER ROW
+      c_h1, c_h2, c_h3, c_h4, c_h5, c_h6 = st.columns([2.5, 1.2, 2.8, 2.0, 1.2, 1.8])
+      c_h1.markdown("**Work Order / DO No**")
+      c_h2.markdown("**RA Bill No**")
+      c_h3.markdown("**Billing Period**")
+      c_h4.markdown("**Total Billed Amount**")
+      c_h5.markdown("**Status**")
+      c_h6.markdown("**Actions**")
       st.markdown("---")
-      st.markdown("##### RA Bill Detail & Revocation Center")
-      col_r1, col_r2 = st.columns([2, 1])
 
-      bill_keys = [f"{r['DO_No']} | RA Bill: {r['RA_Bill_No']} ({r['Bill_Period']})" for _, r in summary_table.iterrows()]
-      selected_bill_key = col_r1.selectbox("Select Committed RA Bill to Review or Unlock:", options=bill_keys)
+      # DATA ROWS WITH DIRECT ACTION BUTTONS
+      for idx, row in summary_table.iterrows():
+        r_do = str(row["DO_No"])
+        r_bill = str(row["RA_Bill_No"])
+        r_per = str(row["Bill_Period"])
+        r_amt = float(row["Total_Bill_Amount"])
+        r_status = str(row["Status"])
 
-      sel_idx = bill_keys.index(selected_bill_key)
-      target_row = summary_table.iloc[sel_idx]
-      t_do = target_row["DO_No"]
-      t_bill = target_row["RA_Bill_No"]
+        r_col1, r_col2, r_col3, r_col4, r_col5, r_col6 = st.columns([2.5, 1.2, 2.8, 2.0, 1.2, 1.8])
 
-      detail_items = valid_bills[(valid_bills["DO_No"].astype(str) == str(t_do)) & (valid_bills["RA_Bill_No"].astype(str) == str(t_bill))]
+        r_col1.write(r_do)
+        r_col2.write(f"**{r_bill}**")
+        r_col3.write(r_per)
+        r_col4.write(f"₹{r_amt:,.2f}")
+        r_col5.write(f"🟢 `{r_status}`")
 
-      with st.expander(f"View Line Item Details for RA Bill {t_bill} ({t_do})", expanded=False):
-        st.dataframe(
-            detail_items[["SrvLnNo", "Billed_Qty", "Billed_Amt", "Status"]],
-            use_container_width=True,
-            column_config={
-                "SrvLnNo": st.column_config.NumberColumn("Service Line"),
-                "Billed_Qty": st.column_config.NumberColumn("Billed Qty", format="%.3f"),
-                "Billed_Amt": st.column_config.NumberColumn("Billed Amount (₹)", format="₹%,.2f"),
-                "Status": st.column_config.TextColumn("Status"),
-            }
-        )
+        act_col_a, act_col_b = r_col6.columns(2)
+        if act_col_a.button("📥", key=f"dl_btn_{idx}", help=f"Download files for RA Bill {r_bill}"):
+          download_locked_bill_modal(r_do, r_bill, r_per, r_amt)
 
-      if col_r2.button(f"🗑️ Unlock / Revoke RA Bill {t_bill}", help="Deletes this bill record from ledger, allowing full re-computation and re-billing."):
-        purged_ledger = fresh_rep_ledger[~((fresh_rep_ledger["DO_No"].astype(str) == str(t_do)) & (fresh_rep_ledger["RA_Bill_No"].astype(str) == str(t_bill)))]
-        if save_sheet_df("ra_bills_ledger", purged_ledger[required_ledger_cols]):
-          st.success(f"RA Bill {t_bill} for Order {t_do} has been revoked and removed from ledger.")
-          st.rerun()
+        if act_col_b.button("🗑️", key=f"del_btn_{idx}", help=f"Revoke/Unlock RA Bill {r_bill}"):
+          revoke_locked_bill_modal(r_do, r_bill, r_per, r_amt)
 
 
 # --- TAB 4: DO UPLOAD & BASELINE SETUP ---
