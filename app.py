@@ -91,6 +91,7 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def load_sheet_df(worksheet_name):
   for attempt in range(3):
     try:
@@ -1615,14 +1616,14 @@ with tabs[1]:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
-# --- TAB 3: LOCKED RA BILLS REPOSITORY (INLINE ACTIONS & CRASH-PROOF MODALS) ---
+# --- TAB 3: LOCKED RA BILLS REPOSITORY (PERFECT REAL CONTRACT METADATA LOOKUP) ---
 with tabs[2]:
   st.subheader("📚 Locked RA Bills Repository")
   st.caption("Central ledger of all locked and committed commercial bills. Access files or safely unlock bills directly from the registry.")
 
   fresh_rep_ledger = load_sheet_df("ra_bills_ledger")
 
-  # SAFETY DIALOG 1: RE-DOWNLOAD COMMITTED BILL MODAL
+  # SAFETY DIALOG 1: RE-DOWNLOAD COMMITTED BILL MODAL WITH REAL SCOPE & RATES
   @st.dialog("📥 Access Committed RA Bill Documents")
   def download_locked_bill_modal(target_do, target_bill, target_period, target_amt):
     st.markdown("#### Commercial Bill Documents")
@@ -1645,6 +1646,9 @@ with tabs[2]:
 
     _, _, b_shifts = get_tenure_calendar_metrics(start_dt_calc, end_dt_calc)
 
+    # PULL REAL DO MASTER ITEMS & PREVIOUS LEDGER AMOUNTS
+    live_pos = get_live_do_position(df_master_do, fresh_rep_ledger, target_do, target_ra_bill_no=target_bill)
+
     b_stmts = {}
     b_meta = {}
     for v in assigned_v:
@@ -1657,10 +1661,24 @@ with tabs[2]:
         f_tp = str(v_row_m.iloc[0].get("Fuel_Type", "KM_BASED")).strip()
         f_fc = float(v_row_m.iloc[0].get("Consumption_Factor", 0.0) or 0.0)
         v_fm = str(v_row_m.iloc[0].get("Equipment_Family", "General")).strip()
+
       r_pres = rate_dict.get(v_fm, {})
+      m_rate_val = r_pres.get("m_rate", 0.0)
+      ot_rate_val = r_pres.get("ot_rate", 0.0)
+
+      # Fallback to contract lines if rate_dict didn't catch the exact string
+      if m_rate_val == 0.0 and not live_pos.empty:
+        m_r = live_pos[live_pos["Unit"].astype(str).str.upper().str.contains("MONTH")]
+        if not m_r.empty:
+          m_rate_val = float(m_r.iloc[0].get("Rate", 0.0) or 0.0)
+      if ot_rate_val == 0.0 and not live_pos.empty:
+        ot_r = live_pos[live_pos["Unit"].astype(str).str.upper().str.contains("HOUR")]
+        if not ot_r.empty:
+          ot_rate_val = float(ot_r.iloc[0].get("Rate", 0.0) or 0.0)
+
       b_meta[v] = {
-          "type": f_tp, "factor": f_fc, "m_rate": r_pres.get("m_rate", 0.0),
-          "ot_rate": r_pres.get("ot_rate", 0.0), "desc": v_fm, "hold_qty": 0.0
+          "type": f_tp, "factor": f_fc, "m_rate": m_rate_val,
+          "ot_rate": ot_rate_val, "desc": v_fm, "hold_qty": 0.0
       }
 
     target_b_norm = normalize_bill_no(target_bill)
@@ -1670,20 +1688,46 @@ with tabs[2]:
         (fresh_rep_ledger["_tmp_b_norm"] == target_b_norm)
     ].copy()
 
+    # BUILD AUTHENTIC ABSTRACT ROWS USING ACTUAL CONTRACT DO ITEMS
     abs_rep_rows = []
     for _, it in items_subset.iterrows():
+      srl = it.get("SrvLnNo")
+      this_q = float(it.get("Billed_Qty", 0.0) or 0.0)
+      this_a = float(it.get("Billed_Amt", 0.0) or 0.0)
+
+      # Lookup real master contract row
+      m_item = live_pos[live_pos["SrvLnNo"].astype(str) == str(srl)]
+      if not m_item.empty:
+        m_r = m_item.iloc[0]
+        real_desc = str(m_r.get("Description", ""))
+        real_unit = str(m_r.get("Unit", ""))
+        real_rate = float(m_r.get("Rate", 0.0) or 0.0)
+        real_boq_q = float(m_r.get("BOQ_Qty", 0.0) or 0.0)
+        prev_q = float(m_r.get("Prev_Qty", 0.0) or 0.0)
+        prev_a = float(m_r.get("Prev_Amt", 0.0) or 0.0)
+      else:
+        real_desc = f"Contract Scope Item (Line {srl})"
+        real_unit = "Qty"
+        real_rate = 0.0
+        real_boq_q = 0.0
+        prev_q = 0.0
+        prev_a = 0.0
+
+      cum_q = round(prev_q + this_q, 3)
+      cum_a = round(prev_a + this_a, 2)
+
       abs_rep_rows.append({
-          "W.O SrL No": it.get("SrvLnNo"),
-          "Description": f"Contract Scope Item (Line {it.get('SrvLnNo')})",
-          "Unit": "Month/Qty",
-          "BOQ Rate": 0.0,
-          "BOQ Qty": 0.0,
-          "Prev Qty": 0.0,
-          "Prev Amount": 0.0,
-          "This Bill Qty": float(it.get("Billed_Qty", 0.0) or 0.0),
-          "This Bill Amount": float(it.get("Billed_Amt", 0.0) or 0.0),
-          "Cumulative Qty": float(it.get("Billed_Qty", 0.0) or 0.0),
-          "Cumulative Amount": float(it.get("Billed_Amt", 0.0) or 0.0),
+          "W.O SrL No": srl,
+          "Description": real_desc,
+          "Unit": real_unit,
+          "BOQ Rate": real_rate,
+          "BOQ Qty": real_boq_q,
+          "Prev Qty": prev_q,
+          "Prev Amount": prev_a,
+          "This Bill Qty": this_q,
+          "This Bill Amount": this_a,
+          "Cumulative Qty": cum_q,
+          "Cumulative Amount": cum_a,
       })
     rep_abs_df = pd.DataFrame(abs_rep_rows)
 
