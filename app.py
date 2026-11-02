@@ -62,7 +62,6 @@ def check_access():
 
 check_access()
 
-# CLEAN CSS: HIDES MAIN MENU AND FOOTER WITHOUT AFFECTING CALENDAR DATEPICKER HEADERS
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -72,7 +71,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 1. GOOGLE SHEETS CONNECTION & SMART CACHE -----------------
+# ----------------- 1. GOOGLE SHEETS CONNECTION & PERSISTENCE -----------------
 SHEET_NAME = st.secrets.get("spreadsheet_name", "Tata_Steel_Fleet_DB")
 
 @st.cache_resource
@@ -92,7 +91,6 @@ def get_gspread_client():
   return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=15, show_spinner=False)
 def load_sheet_df(worksheet_name):
   for attempt in range(3):
     try:
@@ -157,7 +155,7 @@ def save_sheet_df(worksheet_name, df):
   return False
 
 
-# ----------------- 2. UNIVERSAL CALCULATION & ENGINE -----------------
+# ----------------- 2. CALCULATION ENGINE -----------------
 def normalize_do(do_str):
   if not do_str:
     return ""
@@ -273,11 +271,9 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
       gross_work_hours = gross_work
 
       if is_sunday:
-        # MODEL A: Sunday Working -> 100% of Net Working Hours are Claimed as OT
         net_sunday_work = max(0.0, gross_work_hours - bd_hours_val)
         ot_hours = round(net_sunday_work, 2)
       else:
-        # Regular Day: Overtime beyond 06:00 PM minus breakdown duration
         cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
         diff = (t_out - cutoff_t).total_seconds() / 3600.0
         if diff < 0 and "AM" in clean_end:
@@ -291,19 +287,15 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
 
   actual_working_hours = round(max(0.0, gross_work_hours - bd_hours_val), 2)
 
-  # COMMERCIAL SHIFT LOGIC:
-  # 1. Sunday Rule: Shift is ALWAYS blank / 0 (Paid week-off)
   if is_sunday:
     disp_shift = ""
     billable_shift = 0.0
-  # 2. Exact "BREAKDOWN" remark (Whole day breakdown regardless of hours)
   elif rem_upper == "BREAKDOWN":
     disp_shift = "0"
     billable_shift = 0.0
   elif "NO WORK" in rem_upper or "NO WORK" in clean_start:
     disp_shift = "0"
     billable_shift = 0.0
-  # 3. Pro-rata Hourly Deduction (Shift Base = 9 Hours) for Breakdown >= 2.0 Hours
   elif bd_hours_val >= 2.0:
     net_shift_hrs = max(0.0, 9.0 - bd_hours_val)
     billable_shift = round(net_shift_hrs / 9.0, 2)
@@ -521,7 +513,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. PROFESSIONAL PDF GENERATOR -----------------
+# ----------------- 3. RE-DESIGNED PDF GENERATOR -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
@@ -553,7 +545,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   cell_rem = ParagraphStyle('CellRem', fontName='Helvetica', fontSize=7, leading=8, alignment=0)
   hold_style = ParagraphStyle('HoldStyle', fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.HexColor("#C53030"))
 
-  # PAGE 1: CONSOLIDATED ABSTRACT
+  # PAGE 1: ABSTRACT
   elements.append(Paragraph("M/S INDU SAO", comp_title))
   elements.append(Paragraph("ABSTRACT", abstract_heading))
   elements.append(Paragraph("COAL PROJECTS, WEST BOKARO | TATA STEEL CONTRACT LEDGER STATEMENT", sub_meta))
@@ -655,7 +647,7 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   ]))
   elements.append(t_sig)
 
-  # PAGE 2 ONWARDS: INDIVIDUAL VEHICLE STATEMENTS
+  # PAGE 2 ONWARDS: VEHICLE STATEMENTS
   for veh, s_df in veh_statements.items():
     elements.append(PageBreak())
 
@@ -846,6 +838,7 @@ st.caption("Contractor: M/S INDU SAO (Vendor Code: ID47) | Coal Projects, West B
 tabs = st.tabs([
     "Daily Logsheet Entry",
     "Monthly Statement & Abstract",
+    "Locked RA Bills Repository",
     "Delivery Order (DO) Contract Management",
     "Vehicle Fleet Master Mapping",
     "Equipment Rate & Fuel Policy Master",
@@ -897,7 +890,7 @@ for col in req_veh_cols:
     df_vehs[col] = "KM_BASED" if col == "Fuel_Type" else ("0.0" if col == "Consumption_Factor" else "")
 
 
-# --- TAB 1: DAILY ENTRY (MODEL A SUNDAY & SAFE UPDATE PROTECTION) ---
+# --- TAB 1: DAILY ENTRY ---
 with tabs[0]:
   st.subheader("Daily Field Duty Slip Entry & Verification")
 
@@ -1098,12 +1091,10 @@ with tabs[0]:
       if st.form_submit_button(btn_label):
         disp_s, ot, r_units, _, act_hrs = compute_shift_and_ot(d_date_str, s_time, e_time, m_start, m_end, bd_hrs, remarks)
 
-        # Fresh pull from sheets to preserve all other rows
         fresh_logs = load_sheet_df("fleet_daily_logsheets")
         if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
           fresh_logs = pd.DataFrame(columns=required_log_cols)
 
-        # Remove ONLY this vehicle on this specific date
         fresh_logs["_date_cmp"] = fresh_logs["DATE"].apply(parse_any_date)
         fresh_logs = fresh_logs[~((fresh_logs["Vehicle_No"].astype(str).str.strip().str.upper() == selected_veh.strip().upper()) & (fresh_logs["_date_cmp"] == selected_date))]
         fresh_logs = fresh_logs.drop(columns=["_date_cmp"])
@@ -1131,7 +1122,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & STATEMENT (PURE CLEAN DATE PICKERS + RELIABLE DOWNLOADS) ---
+# --- TAB 2: BILLING & STATEMENT (WITH OPTION 2 BRIEF WARNING & OVERWRITE GUARD) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1170,6 +1161,7 @@ with tabs[1]:
 
     norm_chosen_do = normalize_do(chosen_do)
 
+    # CHECK EXISTING LEDGER RECORD
     is_bill_already_locked = False
     if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
       locked_match = df_ledger[
@@ -1179,8 +1171,11 @@ with tabs[1]:
       ]
       is_bill_already_locked = not locked_match.empty
 
+    # OPTION 2 BRIEF WARNING
+    authorize_overwrite = False
     if is_bill_already_locked:
-      st.error(f"🔒 **LOCKED COMMERCIAL RECORD**: RA Bill **{ra_bill_num}** for Order **{chosen_do}** is already finalized and committed to the ledger. Editing or regenerating is blocked unless this bill is first Unlocked/Deleted.")
+      st.warning(f"⚠️ **Duplicate Alert:** Bill **{ra_bill_num}** exists in ledger for **{chosen_do}**. Overwrite required to re-bill.")
+      authorize_overwrite = st.checkbox(f"Authorize Overwrite for RA Bill {ra_bill_num}", value=False)
 
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
@@ -1253,7 +1248,6 @@ with tabs[1]:
         except Exception:
           pass
 
-      # Pro-rata based on DYNAMIC billable shifts for the chosen tenure
       v_month_qty = round(v_shifts / float(base_billable_shifts), 3)
 
       if f_type == "HOUR_BASED":
@@ -1290,16 +1284,18 @@ with tabs[1]:
       )
       st.write(f"Displaying sequential calendar entries ({start_date_input.strftime('%d-%b')} to {end_date_input.strftime('%d-%b-%Y')}) for **{chosen_view_veh}**.")
 
+      can_edit_statement = (not is_bill_already_locked) or authorize_overwrite
+
       edited_stmt = st.data_editor(
           veh_full_statements[chosen_view_veh],
           num_rows="fixed",
           use_container_width=True,
           key=f"stmt_edit_{chosen_view_veh}",
-          disabled=is_bill_already_locked,
+          disabled=not can_edit_statement,
       )
 
       col_st1, col_st2 = st.columns(2)
-      if col_st1.button(f"Save Verified Adjustments for {chosen_view_veh}", disabled=is_bill_already_locked):
+      if col_st1.button(f"Save Verified Adjustments for {chosen_view_veh}", disabled=not can_edit_statement):
         fresh_logs = load_sheet_df("fleet_daily_logsheets")
         if fresh_logs.empty or "Vehicle_No" not in fresh_logs.columns:
           fresh_logs = pd.DataFrame(columns=required_log_cols)
@@ -1460,7 +1456,6 @@ with tabs[1]:
 
     pdf_payload = generate_bill_pdf_report(ra_bill_num, chosen_do, bill_period, abs_df, total_this_bill, veh_full_statements, veh_fuel_meta, market_diesel_rate, base_shifts=base_billable_shifts, hold_notes=hold_notes)
 
-    # RELIABLE AUTO-LOCK & DOWNLOAD MODAL
     @st.dialog("Commercial Audit: Lock RA Bill & Release Download")
     def confirm_lock_and_download_modal(doc_type):
       st.markdown(f"### 🔒 Authorize Final Billing Lock")
@@ -1507,8 +1502,10 @@ with tabs[1]:
 
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
 
+    can_download_or_lock = (not is_bill_already_locked) or authorize_overwrite
+
     # 1. Excel Workbook Export
-    if is_bill_already_locked:
+    if is_bill_already_locked and not authorize_overwrite:
       col_btn1.download_button(
           "📊 Download Excel Workbook",
           data=excel_payload,
@@ -1516,11 +1513,11 @@ with tabs[1]:
           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       )
     else:
-      if col_btn1.button("📊 Export Excel Workbook"):
+      if col_btn1.button("📊 Export Excel Workbook", disabled=not can_download_or_lock):
         confirm_lock_and_download_modal("Excel Workbook")
 
     # 2. PDF Export
-    if is_bill_already_locked:
+    if is_bill_already_locked and not authorize_overwrite:
       col_btn2.download_button(
           "📄 Download Official PDF",
           data=pdf_payload,
@@ -1528,11 +1525,11 @@ with tabs[1]:
           mime="application/pdf",
       )
     else:
-      if col_btn2.button("📄 Generate Official PDF"):
+      if col_btn2.button("📄 Generate Official PDF", disabled=not can_download_or_lock):
         confirm_lock_and_download_modal("Official PDF")
 
     # 3. Manual Lock
-    if col_btn3.button("🔒 Finalize & Lock Bill", disabled=is_bill_already_locked):
+    if col_btn3.button("🔒 Finalize & Lock Bill", disabled=not can_download_or_lock):
       commit_and_lock_bill()
       st.success(f"RA Bill {ra_bill_num} committed and locked in commercial ledger.")
       st.rerun()
@@ -1552,8 +1549,77 @@ with tabs[1]:
         st.info(f"No ledger records found for RA Bill {ra_bill_num}.")
 
 
-# --- TAB 3: DO UPLOAD & BASELINE SETUP ---
+# --- TAB 3: LOCKED RA BILLS REPOSITORY ---
 with tabs[2]:
+  st.subheader("📚 Locked RA Bills Repository & Audit Ledger")
+  st.caption("Consolidated register of all finalized and committed commercial bills. Inspect prior bill records or unlock bills for amendments.")
+
+  fresh_rep_ledger = load_sheet_df("ra_bills_ledger")
+
+  if fresh_rep_ledger.empty or "RA_Bill_No" not in fresh_rep_ledger.columns:
+    st.info("No locked RA bills currently recorded in the commercial ledger.")
+  else:
+    valid_bills = fresh_rep_ledger[fresh_rep_ledger["Status"].isin(["Locked", "Approved"])].copy()
+
+    if valid_bills.empty:
+      st.info("No locked RA bills currently recorded in the commercial ledger.")
+    else:
+      valid_bills["Billed_Amt"] = pd.to_numeric(valid_bills["Billed_Amt"], errors="coerce").fillna(0.0)
+
+      summary_table = valid_bills.groupby(["DO_No", "RA_Bill_No", "Bill_Period", "Status"], as_index=False).agg(
+          Total_Bill_Amount=("Billed_Amt", "sum"),
+          Service_Lines_Count=("SrvLnNo", "count")
+      )
+
+      st.markdown("##### Committed RA Bills Summary")
+      st.dataframe(
+          summary_table,
+          use_container_width=True,
+          column_config={
+              "DO_No": st.column_config.TextColumn("Delivery Order / WO Ref"),
+              "RA_Bill_No": st.column_config.TextColumn("RA Bill No"),
+              "Bill_Period": st.column_config.TextColumn("Billing Tenure"),
+              "Total_Bill_Amount": st.column_config.NumberColumn("Total Invoiced Amount (₹)", format="₹%,.2f"),
+              "Service_Lines_Count": st.column_config.NumberColumn("Items Count"),
+              "Status": st.column_config.TextColumn("Ledger Status"),
+          }
+      )
+
+      st.markdown("---")
+      st.markdown("##### RA Bill Detail & Revocation Center")
+      col_r1, col_r2 = st.columns([2, 1])
+
+      bill_keys = [f"{r['DO_No']} | RA Bill: {r['RA_Bill_No']} ({r['Bill_Period']})" for _, r in summary_table.iterrows()]
+      selected_bill_key = col_r1.selectbox("Select Committed RA Bill to Review or Unlock:", options=bill_keys)
+
+      sel_idx = bill_keys.index(selected_bill_key)
+      target_row = summary_table.iloc[sel_idx]
+      t_do = target_row["DO_No"]
+      t_bill = target_row["RA_Bill_No"]
+
+      detail_items = valid_bills[(valid_bills["DO_No"].astype(str) == str(t_do)) & (valid_bills["RA_Bill_No"].astype(str) == str(t_bill))]
+
+      with st.expander(f"View Line Item Details for RA Bill {t_bill} ({t_do})", expanded=False):
+        st.dataframe(
+            detail_items[["SrvLnNo", "Billed_Qty", "Billed_Amt", "Status"]],
+            use_container_width=True,
+            column_config={
+                "SrvLnNo": st.column_config.NumberColumn("Service Line"),
+                "Billed_Qty": st.column_config.NumberColumn("Billed Qty", format="%.3f"),
+                "Billed_Amt": st.column_config.NumberColumn("Billed Amount (₹)", format="₹%,.2f"),
+                "Status": st.column_config.TextColumn("Status"),
+            }
+        )
+
+      if col_r2.button(f"🗑️ Unlock / Revoke RA Bill {t_bill}", help="Deletes this bill record from ledger, allowing full re-computation and re-billing."):
+        purged_ledger = fresh_rep_ledger[~((fresh_rep_ledger["DO_No"].astype(str) == str(t_do)) & (fresh_rep_ledger["RA_Bill_No"].astype(str) == str(t_bill)))]
+        if save_sheet_df("ra_bills_ledger", purged_ledger[required_ledger_cols]):
+          st.success(f"RA Bill {t_bill} for Order {t_do} has been revoked and removed from ledger.")
+          st.rerun()
+
+
+# --- TAB 4: DO UPLOAD & BASELINE SETUP ---
+with tabs[3]:
   st.subheader("1. Register / Amend SAP Delivery Order (DO) Contract")
   uploaded_pdf = st.file_uploader("Upload Official Tata Steel Work Order (PDF Format)", type=["pdf"], key="pdf_uploader_clean")
 
@@ -1675,8 +1741,8 @@ with tabs[2]:
       st.rerun()
 
 
-# --- TAB 4: VEHICLE MASTER MAPPING ---
-with tabs[3]:
+# --- TAB 5: VEHICLE MASTER MAPPING ---
+with tabs[4]:
   st.subheader("Fleet Asset Mapping & Deployment")
   st.caption("Map deployed vehicle registration numbers and asset tags to corresponding delivery orders:")
 
@@ -1746,8 +1812,8 @@ with tabs[3]:
       st.rerun()
 
 
-# --- TAB 5: EQUIPMENT RATE & POLICY MASTER ---
-with tabs[4]:
+# --- TAB 6: EQUIPMENT RATE & POLICY MASTER ---
+with tabs[5]:
   st.subheader("⚙️ Commercial Terms & Machinery Policy Master")
   st.caption(
       "Configure standard hiring rates, overtime terms, and fuel reimbursement norms. "
