@@ -285,7 +285,8 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
         net_sunday_work = max(0.0, gross_work_hours - bd_hours_val)
         ot_hours = round(net_sunday_work, 2)
       else:
-        cutoff_t = pd.to_datetime("06:00 PM", format="%I:%M %p")
+        # OT CALCULATION: 6:00 PM SE BADAL KAR 6:30 PM KIYA GAYA HAI
+        cutoff_t = pd.to_datetime("06:30 PM", format="%I:%M %p")
         diff = (t_out - cutoff_t).total_seconds() / 3600.0
         if diff < 0 and "AM" in clean_end:
           diff += 24.0
@@ -466,7 +467,7 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
     prev_qty = round(init_qty + prior_qty, 3)
     prev_amt = round(init_amt + prior_amt, 2)
 
-    # STRICT 1:1 SYNC FOR LUMPSUM / RATE=1.0 ITEMS (EXACT 2-DECIMAL INTEGRITY)
+    # LUMPSUM / RATE=1.0 ITEMS KE LIYE STRICT 1:1 DECIMALS
     if ("LUMPSUM" in unit or rate == 1.0) and prev_amt > 0:
       prev_qty = round(prev_amt, 3)
 
@@ -537,7 +538,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. PDF GENERATOR (AUTO-ARRANGE COLUMN WIDTHS) -----------------
+# ----------------- 3. PDF GENERATOR (SL NO WRAP-FREE & AUTO-ARRANGE WIDTHS) -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
@@ -604,8 +605,9 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
     sorted_abs_df = sorted_abs_df.sort_values(by="srl_sort").drop(columns=["srl_sort"])
 
+  # SL NO WRAPPING SE BACHNE KE LIYE "SL" SHORT HEADER AUR ADEQUATE WIDTH
   TOTAL_PRINT_WIDTH = 794.0
-  raw_headers = ["SrL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
+  raw_headers = ["SL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
 
   str_matrix = [raw_headers]
   for _, r in sorted_abs_df.iterrows():
@@ -631,9 +633,10 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   weights = []
   for col_idx, m_len in enumerate(max_lens):
     if col_idx == 0:
-      weights.append(max(4.0, m_len * 1.0))
+      # SL NO KE LIYE MIN WEIGHT 6.0 KIYA TAQI KABHI WRAP NA HO
+      weights.append(max(6.0, m_len * 1.5))
     elif col_idx == 1:
-      weights.append(max(20.0, m_len * 0.72))
+      weights.append(max(20.0, m_len * 0.70))
     elif col_idx == 2:
       weights.append(max(6.5, m_len * 1.1))
     else:
@@ -803,7 +806,8 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(clean_text_cell(row.get("REMARKS", "-")), cell_rem),
       ])
 
-    t_stmt = Table(st_data, colWidths=[22, 58, 64, 64, 34, 44, 58, 58, 54, 48, 110, 196])
+    # SL NO KA COLUMN WIDTH 22 SE BADHAKAR 26 KIYA GAYA HAI
+    t_stmt = Table(st_data, colWidths=[26, 56, 63, 63, 34, 44, 58, 58, 54, 48, 110, 196])
     t_stmt.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_navy),
         ('GRID', (0,0), (-1,-1), 0.4, c_border),
@@ -1937,7 +1941,7 @@ with tabs[3]:
       b_unit = str(edited_master.at[idx, "Unit"]).strip().upper()
       curr_amt = float(edited_master.at[idx, "Initial_Baseline_Amt"])
 
-      # AUTOMATIC STRICT AMOUNT CALCULATION (EXACT 2 DECIMALS, NO INTEGER ROUND-OFF)
+      # AMOUNT 2 DECIMALS AUR QUANTITY 3 DECIMALS STRICT RECALCULATION
       if "MONTH" in b_unit or "HOUR" in b_unit:
         edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
       elif "LUMPSUM" in b_unit or rate == 1.0:
@@ -1946,7 +1950,6 @@ with tabs[3]:
         elif b_qty > 0 and curr_amt == 0.0:
           edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty, 2)
         elif b_qty > 0 and curr_amt > 0:
-          # If both present, prioritize explicit amount and sync quantity
           edited_master.at[idx, "Initial_Baseline_Qty"] = round(curr_amt, 3)
           edited_master.at[idx, "Initial_Baseline_Amt"] = round(curr_amt, 2)
 
