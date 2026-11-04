@@ -226,6 +226,23 @@ def format_12hr_time(t_val):
   return s
 
 
+def amount_to_words_indian(amt):
+  """Converts currency amount to exact words with Paise (no round-off)"""
+  try:
+    amt_float = round(float(amt), 2)
+    rupees = int(amt_float)
+    paise = int(round((amt_float - rupees) * 100))
+    
+    words_rupees = num2words(rupees, lang="en_IN").replace(",", "").upper()
+    if paise > 0:
+      words_paise = num2words(paise, lang="en_IN").replace(",", "").upper()
+      return f"RUPEES {words_rupees} AND PAISE {words_paise} ONLY"
+    else:
+      return f"RUPEES {words_rupees} ONLY"
+  except Exception:
+    return "RUPEES ZERO ONLY"
+
+
 def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remarks):
   raw_rem = str(remarks).strip() if pd.notna(remarks) else ""
   rem_upper = raw_rem.upper()
@@ -285,7 +302,7 @@ def compute_shift_and_ot(date_str, start_t, end_t, m_start, m_end, bd_hrs, remar
         net_sunday_work = max(0.0, gross_work_hours - bd_hours_val)
         ot_hours = round(net_sunday_work, 2)
       else:
-        # OT CALCULATION: 6:00 PM SE BADAL KAR 6:30 PM KIYA GAYA HAI
+        # STRICT 06:30 PM CUTOFF FOR OVERTIME
         cutoff_t = pd.to_datetime("06:30 PM", format="%I:%M %p")
         diff = (t_out - cutoff_t).total_seconds() / 3600.0
         if diff < 0 and "AM" in clean_end:
@@ -467,7 +484,6 @@ def get_live_do_position(df_master, df_ledger, do_no, target_ra_bill_no=None):
     prev_qty = round(init_qty + prior_qty, 3)
     prev_amt = round(init_amt + prior_amt, 2)
 
-    # LUMPSUM / RATE=1.0 ITEMS KE LIYE STRICT 1:1 DECIMALS
     if ("LUMPSUM" in unit or rate == 1.0) and prev_amt > 0:
       prev_qty = round(prev_amt, 3)
 
@@ -538,7 +554,7 @@ def apply_do_amendment(existing_master_df, new_extracted_items):
   return df
 
 
-# ----------------- 3. PDF GENERATOR (SL NO WRAP-FREE & AUTO-ARRANGE WIDTHS) -----------------
+# ----------------- 3. PDF GENERATOR (WRAP-FREE & EXACT WORDS) -----------------
 def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_amt, veh_statements, veh_fuel_meta, market_diesel_rate, base_shifts=26, hold_notes=[]):
   pdf_buffer = io.BytesIO()
   
@@ -605,7 +621,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
     sorted_abs_df["srl_sort"] = pd.to_numeric(sorted_abs_df["W.O SrL No"], errors="coerce").fillna(999)
     sorted_abs_df = sorted_abs_df.sort_values(by="srl_sort").drop(columns=["srl_sort"])
 
-  # SL NO WRAPPING SE BACHNE KE LIYE "SL" SHORT HEADER AUR ADEQUATE WIDTH
   TOTAL_PRINT_WIDTH = 794.0
   raw_headers = ["SL", "Description of Scope", "Unit", "BOQ Rate", "BOQ Qty", "Prev Qty", "Prev Amount (₹)", "This Qty", "This Amount (₹)", "Cumul Qty", "Cumul Amount (₹)"]
 
@@ -633,7 +648,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
   weights = []
   for col_idx, m_len in enumerate(max_lens):
     if col_idx == 0:
-      # SL NO KE LIYE MIN WEIGHT 6.0 KIYA TAQI KABHI WRAP NA HO
       weights.append(max(6.0, m_len * 1.5))
     elif col_idx == 1:
       weights.append(max(20.0, m_len * 0.70))
@@ -678,10 +692,11 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
       elements.append(Paragraph(f"⚠️ <b>DO RESTRICTION HOLD:</b> {hn}", hold_style))
     elements.append(Spacer(1, 3))
 
-  in_words = num2words(int(round(total_bill_amt)), lang="en_IN").upper()
+  # EXACT WORDS (WITH PAISE, NO INTEGER ROUND-OFF)
+  in_words = amount_to_words_indian(total_bill_amt)
   total_box = [
       [
-          Paragraph(f"<b>AMOUNT IN WORDS:</b> RUPEES {in_words} ONLY", cell_l),
+          Paragraph(f"<b>AMOUNT IN WORDS:</b> {in_words}", cell_l),
           Paragraph(f"<b>NET INVOICE VALUE: ₹{total_bill_amt:,.2f}</b>", ParagraphStyle('TotNet', parent=cell_bold_r, fontSize=8.5, textColor=c_navy))
       ]
   ]
@@ -806,7 +821,6 @@ def generate_bill_pdf_report(ra_bill_no, do_no, bill_period, abs_df, total_bill_
           Paragraph(clean_text_cell(row.get("REMARKS", "-")), cell_rem),
       ])
 
-    # SL NO KA COLUMN WIDTH 22 SE BADHAKAR 26 KIYA GAYA HAI
     t_stmt = Table(st_data, colWidths=[26, 56, 63, 63, 34, 44, 58, 58, 54, 48, 110, 196])
     t_stmt.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), c_navy),
@@ -1187,7 +1201,7 @@ with tabs[0]:
           st.rerun()
 
 
-# --- TAB 2: BILLING & STATEMENT (BRIEF OVERWRITE ALERT) ---
+# --- TAB 2: BILLING & STATEMENT (SMART RA DROPDOWN + DIRECT DATES) ---
 with tabs[1]:
   st.subheader("Billing Statement & Financial Abstract Generation")
 
@@ -1195,10 +1209,55 @@ with tabs[1]:
   if len(available_dos) == 0:
     st.info("No active Delivery Orders available. Please upload a contract under 'Delivery Order Management'.")
   else:
-    col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([1.5, 1.0, 1.2, 1.2, 1.3])
+    col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns([1.5, 1.3, 1.1, 1.1, 1.2])
     chosen_do = col_d1.selectbox("Work Order / DO Selection", available_dos)
-    ra_bill_num = col_d2.text_input("RA Bill Number (e.g., 08)", value="08")
+    norm_chosen_do = normalize_do(chosen_do)
 
+    # DYNAMIC RA BILL SELECTION DROPDOWN
+    existing_bills = []
+    if not df_ledger.empty and "DO_No" in df_ledger.columns and "RA_Bill_No" in df_ledger.columns:
+      do_ledger = df_ledger[
+          (df_ledger["DO_No"].astype(str).apply(normalize_do) == norm_chosen_do)
+          & (df_ledger["Status"].isin(["Locked", "Approved"]))
+      ].copy()
+      if not do_ledger.empty:
+        existing_bills = do_ledger["RA_Bill_No"].dropna().astype(str).unique().tolist()
+
+    max_bill_int = 0
+    clean_bill_list = []
+    for b in existing_bills:
+      try:
+        val = int(normalize_bill_no(b))
+        clean_bill_list.append((val, b))
+        if val > max_bill_int:
+          max_bill_int = val
+      except Exception:
+        clean_bill_list.append((0, b))
+
+    clean_bill_list.sort(key=lambda x: x[0], reverse=True)
+    next_bill_int = max_bill_int + 1
+    next_bill_str = f"{next_bill_int:02d}"
+
+    ra_options = [f"NEW:{next_bill_str}"] + [f"LOCKED:{b[1]}" for b in clean_bill_list] + ["CUSTOM"]
+    
+    def format_ra_option(opt):
+      if opt.startswith("NEW:"):
+        return f"➕ Create New: RA Bill {opt.split(':')[1]} (Next)"
+      elif opt.startswith("LOCKED:"):
+        return f"🔒 Edit / Overwrite: RA Bill {opt.split(':')[1]} [Locked]"
+      else:
+        return "✏️ Enter Custom RA Bill No..."
+
+    selected_ra_opt = col_d2.selectbox("Select RA Bill", options=ra_options, format_func=format_ra_option)
+
+    if selected_ra_opt == "CUSTOM":
+      ra_bill_num = col_d2.text_input("Enter Bill No:", value=next_bill_str).strip()
+    elif selected_ra_opt.startswith("NEW:"):
+      ra_bill_num = selected_ra_opt.split(":")[1]
+    else:
+      ra_bill_num = selected_ra_opt.split(":")[1]
+
+    # DIRECT BILL PERIOD (CALENDAR DATE PICKERS)
     today = datetime.date.today()
     default_start_dt = today.replace(day=1)
     last_day_m = calendar.monthrange(today.year, today.month)[1]
@@ -1212,7 +1271,7 @@ with tabs[1]:
       st.stop()
 
     market_diesel_rate = col_d5.number_input(
-        "1st Day Diesel Rate (₹/Ltr)",
+        "1st Day Diesel (₹/Ltr)",
         value=101.06,
         step=0.25,
         help="IOCL prevailing rate on tenure start date applicable for heavy machinery fuel claims."
@@ -1224,7 +1283,6 @@ with tabs[1]:
         end_date_input.strftime("%d-%b-%Y").upper()
     )
 
-    norm_chosen_do = normalize_do(chosen_do)
     norm_target_bill = normalize_bill_no(ra_bill_num)
 
     is_bill_already_locked = False
@@ -1240,12 +1298,11 @@ with tabs[1]:
 
     authorize_overwrite = False
     if is_bill_already_locked:
-      st.warning(f"⚠️ **Duplicate Alert:** Bill **{ra_bill_num}** exists in ledger for **{chosen_do}**. Overwrite required to re-bill.")
-      authorize_overwrite = st.checkbox(f"Authorize Overwrite for RA Bill {ra_bill_num}", value=False)
+      st.warning(f"⚠️ **Duplicate Alert:** RA Bill **{ra_bill_num}** is already committed in the ledger for **{chosen_do}**.")
+      authorize_overwrite = st.checkbox(f"Authorize Correction & Overwrite for RA Bill {ra_bill_num}", value=False)
 
     assigned_vehs_df = df_vehs[df_vehs["Mapped_DO_No"].astype(str).apply(normalize_do) == norm_chosen_do]
     assigned_vehs = assigned_vehs_df["Vehicle_No"].tolist()
-
     assigned_labels = [f"{v} [{assigned_vehs_df[assigned_vehs_df['Vehicle_No']==v].iloc[0].get('Equipment_Family', '')}]" for v in assigned_vehs]
     
     st.info(
@@ -1325,7 +1382,7 @@ with tabs[1]:
           "family": v_fam,
           "shifts": v_shifts,
           "month_qty": v_month_qty,
-          "ot_hours": v_ot,
+          "ot_hours": round(v_ot, 2),
           "run_units": v_meter_run,
           "bd_hours": v_bd_hours,
           "fuel_cost": v_fuel_cost,
@@ -1488,8 +1545,8 @@ with tabs[1]:
       for hn in hold_notes:
         st.warning(hn)
 
-    in_words = num2words(int(round(total_this_bill)), lang="en_IN").upper()
-    st.write(f"**Net Invoice Value:** ₹{total_this_bill:,.2f} | **Amount in Words:** {in_words} RUPEES ONLY")
+    in_words = amount_to_words_indian(total_this_bill)
+    st.write(f"**Net Invoice Value:** ₹{total_this_bill:,.2f} | **Amount in Words:** {in_words}")
 
     def commit_and_lock_bill():
       fresh_ledger = load_sheet_df("ra_bills_ledger")
@@ -1662,8 +1719,18 @@ with tabs[2]:
 
     b_stmts = {}
     b_meta = {}
+    calculated_v_ot = 0.0
+
     for v in assigned_v:
-      b_stmts[v] = generate_tenure_statement(v, start_dt_calc, end_dt_calc, df_logs)
+      v_stmt = generate_tenure_statement(v, start_dt_calc, end_dt_calc, df_logs)
+      b_stmts[v] = v_stmt
+
+      for _, r in v_stmt.iterrows():
+        try:
+          calculated_v_ot += float(r.get("OVERTIME_HRS", 0) or 0)
+        except Exception:
+          pass
+
       v_row_m = df_vehs[df_vehs["Vehicle_No"] == v]
       f_tp = "KM_BASED"
       f_fc = 0.0
@@ -1713,6 +1780,10 @@ with tabs[2]:
         real_boq_q = float(m_r.get("BOQ_Qty", 0.0) or 0.0)
         prev_q = float(m_r.get("Prev_Qty", 0.0) or 0.0)
         prev_a = float(m_r.get("Prev_Amt", 0.0) or 0.0)
+
+        if "HOUR" in real_unit.upper() and calculated_v_ot > 0:
+          this_q = round(calculated_v_ot, 2)
+          this_a = round(this_q * real_rate, 2)
       else:
         real_desc = f"Contract Scope Item (Line {srl})"
         real_unit = "Qty"
@@ -1738,8 +1809,9 @@ with tabs[2]:
           "Cumulative Amount": cum_a,
       })
     rep_abs_df = pd.DataFrame(abs_rep_rows)
+    real_total_bill_amt = rep_abs_df["This Bill Amount"].sum()
 
-    rep_pdf_bytes = generate_bill_pdf_report(target_bill, target_do, target_period, rep_abs_df, target_amt, b_stmts, b_meta, 101.06, base_shifts=b_shifts)
+    rep_pdf_bytes = generate_bill_pdf_report(target_bill, target_do, target_period, rep_abs_df, real_total_bill_amt, b_stmts, b_meta, 101.06, base_shifts=b_shifts)
 
     buf_rep_xl = io.BytesIO()
     with pd.ExcelWriter(buf_rep_xl, engine="openpyxl") as wr:
@@ -1941,7 +2013,6 @@ with tabs[3]:
       b_unit = str(edited_master.at[idx, "Unit"]).strip().upper()
       curr_amt = float(edited_master.at[idx, "Initial_Baseline_Amt"])
 
-      # AMOUNT 2 DECIMALS AUR QUANTITY 3 DECIMALS STRICT RECALCULATION
       if "MONTH" in b_unit or "HOUR" in b_unit:
         edited_master.at[idx, "Initial_Baseline_Amt"] = round(b_qty * b_rate, 2)
       elif "LUMPSUM" in b_unit or rate == 1.0:
