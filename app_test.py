@@ -259,25 +259,20 @@ def init_session():
 init_session()
 
 def login_screen():
-    c1, c2, c3 = st.columns([1, 1.4, 1])
+    c1, c2, c3 = st.columns([1, 1.3, 1])
     with c2:
-        st.markdown(
-            f"""
-            <div style="text-align: center; margin-bottom: 20px; margin-top: 45px;">
-                <div style="display: flex; justify-content: center; margin-bottom: 8px;">
-                    {INDU_SAO_SVG_LOGO}
-                </div>
-                <h2 style="margin-bottom: 2px; color: #0f172a; font-weight: 700;">M/s INDU SAO</h2>
-                <div style="font-size: 0.82rem; color: #475569; font-weight: 500;">
-                    Vendor Code: ID47 | Tata Steel West Bokaro Division
-                </div>
-                <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">
-                    ISO Certified Company 45001:2018
-                </div>
-            </div>
-            """, 
-            unsafe_allow_html=True
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+        
+        # Clean Header Without Indentation Glitch
+        header_html = (
+            "<div style='text-align: center; margin-bottom: 20px;'>"
+            f"<div style='display: flex; justify-content: center; margin-bottom: 8px;'>{INDU_SAO_SVG_LOGO}</div>"
+            "<h2 style='margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.6rem;'>M/s INDU SAO</h2>"
+            "<div style='font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 4px;'>Vendor Code: ID47 | Tata Steel West Bokaro Division</div>"
+            "<div style='font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;'>ISO Certified Company 45001:2018</div>"
+            "</div>"
         )
+        st.markdown(header_html, unsafe_allow_html=True)
 
         with st.container(border=True):
             st.markdown("##### Portal Authentication")
@@ -356,12 +351,6 @@ def login_screen():
                         st.error("Incorrect password entered.")
                 else:
                     st.error("Authorized user profile not found.")
-
-if not st.session_state.user_authenticated:
-    login_screen()
-    st.stop()
-
-
 # ----------------- 4. COMPACT PROFESSIONAL SIDEBAR -----------------
 with st.sidebar:
     st.markdown(
