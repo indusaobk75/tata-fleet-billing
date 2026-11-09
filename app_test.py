@@ -1,4 +1,5 @@
 import io
+import os
 import json
 import time
 import base64
@@ -10,7 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(
-    page_title="Tata Steel Mining ERP | Staging",
+    page_title="M/s INDU SAO | Tata Steel Site ERP",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -111,6 +112,22 @@ TAB_REGISTRY = {
     "Monthly Attendance Summary": "Attendance"
 }
 
+# Accurate SVG Vector Recreation of M/s INDU SAO Letterhead Oval Logo
+INDU_SAO_SVG_LOGO = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));">
+  <ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/>
+  <!-- Central Architecture Pillars -->
+  <polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/>
+  <polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/>
+  <!-- Right Vertical Strips -->
+  <rect x="98" y="24" width="4" height="66" fill="#334155"/>
+  <rect x="105" y="32" width="4" height="58" fill="#334155"/>
+  <!-- Base Swoosh / Ellipse Arc -->
+  <path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/>
+  <circle cx="80" cy="74" r="5" fill="#0b2a75"/>
+</svg>
+"""
+
 st.markdown("""
 <style>
     /* Safe Top Margin to prevent Streamlit Header cut */
@@ -121,8 +138,8 @@ st.markdown("""
 
     /* Fixed Compact Sidebar Width */
     section[data-testid="stSidebar"] {
-        width: 270px !important;
-        min-width: 270px !important;
+        width: 275px !important;
+        min-width: 275px !important;
     }
 
     /* Top Navigation Elements */
@@ -177,6 +194,25 @@ st.markdown("""
         font-weight: 600 !important;
         box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.15);
     }
+
+    /* Executive Top Action Buttons (Profile & Logout) */
+    .top-action-btn button {
+        border-radius: 8px !important;
+        font-size: 1.05rem !important;
+        padding: 4px 10px !important;
+        font-weight: 600 !important;
+        transition: all 0.15s ease !important;
+    }
+    .top-logout-btn button {
+        color: #ef4444 !important;
+        border-color: #fecaca !important;
+        background-color: #fef2f2 !important;
+    }
+    .top-logout-btn button:hover {
+        background-color: #fee2e2 !important;
+        border-color: #fca5a5 !important;
+        color: #dc2626 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -210,12 +246,18 @@ def login_screen():
     c1, c2, c3 = st.columns([1, 1.4, 1])
     with c2:
         st.markdown(
-            """
-            <div style="text-align: center; margin-bottom: 24px; margin-top: 50px;">
-                <h2 style="margin-bottom: 4px;">🏗️ Site Operations ERP</h2>
-                <span style="font-size: 0.9rem; color: #64748b; font-weight: 500;">
-                    M/S INDU SAO | Tata Steel West Bokaro Division
-                </span>
+            f"""
+            <div style="text-align: center; margin-bottom: 20px; margin-top: 45px;">
+                <div style="display: flex; justify-content: center; margin-bottom: 8px;">
+                    {INDU_SAO_SVG_LOGO}
+                </div>
+                <h2 style="margin-bottom: 2px; color: #0f172a; font-weight: 700;">M/s INDU SAO</h2>
+                <div style="font-size: 0.82rem; color: #475569; font-weight: 500;">
+                    Vendor Code: 47 | Tata Steel West Bokaro Division
+                </div>
+                <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">
+                    ISO Certified Company 45001:2018
+                </div>
             </div>
             """, 
             unsafe_allow_html=True
@@ -306,15 +348,15 @@ if not st.session_state.user_authenticated:
 
 # ----------------- 4. COMPACT PROFESSIONAL SIDEBAR -----------------
 with st.sidebar:
+    # Company Header using Letterhead Logo
     st.markdown(
-        """
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-            <div style="background: #e0f2fe; padding: 7px; border-radius: 8px; display: inline-flex;">
-                <span style="font-size: 1.2rem;">🏗️</span>
-            </div>
+        f"""
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+            <div>{INDU_SAO_SVG_LOGO}</div>
             <div>
-                <div style="font-size: 1.0rem; font-weight: 700; color: #0f172a; line-height: 1.2;">M/S INDU SAO</div>
-                <div style="font-size: 0.68rem; color: #64748b; font-weight: 600; letter-spacing: 0.05em;">ENTERPRISE PORTAL</div>
+                <div style="font-size: 0.98rem; font-weight: 700; color: #0f172a; line-height: 1.1;">M/s INDU SAO</div>
+                <div style="font-size: 0.68rem; color: #475569; font-weight: 600;">Vendor Code: 47</div>
+                <div style="font-size: 0.62rem; color: #059669; font-weight: 600;">ISO 45001:2018</div>
             </div>
         </div>
         """,
@@ -367,15 +409,18 @@ if st.session_state.get("current_photo"):
     avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="top-user-avatar" />'
 
 # Header Strip Grid
-h_col1, h_col2, h_col3 = st.columns([2.5, 1.2, 0.6], gap="small")
+h_col1, h_col2, h_col3 = st.columns([2.5, 1.2, 0.65], gap="small")
 
 with h_col1:
     st.markdown(
-        """
-        <div style="display: flex; align-items: center; gap: 8px; padding-top: 6px;">
-            <span style="font-weight: 700; font-size: 1.05rem; color: #0f172a;">Site Operations ERP</span>
-            <span style="color: #cbd5e1;">|</span>
-            <span style="font-size: 0.82rem; color: #64748b; font-weight: 500;">Tata Steel West Bokaro Division</span>
+        f"""
+        <div style="display: flex; align-items: center; gap: 10px; padding-top: 4px;">
+            <div style="display: flex; align-items: center;">{INDU_SAO_SVG_LOGO}</div>
+            <div>
+                <span style="font-weight: 700; font-size: 1.05rem; color: #0f172a;">Site Operations ERP</span>
+                <span style="color: #cbd5e1; margin: 0 6px;">|</span>
+                <span style="font-size: 0.82rem; color: #475569; font-weight: 500;">Tata Steel West Bokaro Division</span>
+            </div>
         </div>
         """, 
         unsafe_allow_html=True
@@ -398,11 +443,15 @@ with h_col2:
 with h_col3:
     btn_c1, btn_c2 = st.columns(2)
     with btn_c1:
-        if st.button("⚙️", help="Edit Profile & Password", use_container_width=True):
+        st.markdown('<div class="top-action-btn">', unsafe_allow_html=True)
+        if st.button("⚙️", help="Edit Profile & Security Passkey", use_container_width=True):
             st.session_state.show_profile_box = not st.session_state.show_profile_box
             st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
     with btn_c2:
-        if st.button("🚪", help="Logout", use_container_width=True):
+        st.markdown('<div class="top-action-btn top-logout-btn">', unsafe_allow_html=True)
+        # Corporate Power-Off Icon replacement
+        if st.button("⏻", help="Sign Out / Disconnect Session", use_container_width=True):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
@@ -411,6 +460,7 @@ with h_col3:
             st.session_state.active_module = None
             st.session_state.show_profile_box = False
             st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("<hr style='margin-top: 6px; margin-bottom: 14px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
 
