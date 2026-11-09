@@ -121,29 +121,26 @@ TAB_REGISTRY = {
     "Fleet Fuel Benchmark Master": "Fuel",
     "Theft & Pilferage Audit": "Fuel",
 
-    # MODULE 3: WORKER ATTENDANCE & MULTI-TRADE MANAGEMENT
+    # MODULE 3: WORKER ATTENDANCE (MULTI-TRADE)
     "Worker & Crew Directory": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
     "Advance & Khuraki Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance"
 }
 
-# Accurate SVG Vector Recreation of M/s INDU SAO Letterhead Oval Logo
-INDU_SAO_SVG_LOGO = """
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));">
-  <ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/>
-  <polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/>
-  <polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/>
-  <rect x="98" y="24" width="4" height="66" fill="#334155"/>
-  <rect x="105" y="32" width="4" height="58" fill="#334155"/>
-  <path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/>
-  <circle cx="80" cy="74" r="5" fill="#0b2a75"/>
-</svg>
-"""
+# Auto-Map Legacy names to avoid empty tab locks
+TAB_ALIASES = {
+    "Worker Daily Muster Roll": "Daily Muster Roll (Field Attendance)",
+    "Driver & Operator Pool": "Worker & Crew Directory",
+    "Monthly Attendance Summary": "Monthly Wages & Payout Summary"
+}
+
+# Letterhead Official Oval Vector Logo (Clean single-line string)
+INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" cy="74" r="5" fill="#0b2a75"/></svg>"""
 
 st.markdown("""
 <style>
-    /* Full Responsive Width: Sidebar band hone par poora screen rearrange hoga */
+    /* Responsive auto-expand width on sidebar collapse */
     .block-container { 
         padding-top: 3.2rem !important; 
         padding-bottom: 2rem !important;
@@ -153,7 +150,7 @@ st.markdown("""
         width: 100% !important;
     }
 
-    /* Fixed Compact Sidebar width on expand */
+    /* Standard fixed sidebar width when expanded */
     section[data-testid="stSidebar"][aria-expanded="true"] {
         width: 275px !important;
         min-width: 275px !important;
@@ -258,21 +255,31 @@ def init_session():
 
 init_session()
 
+# FAILSAFE GATEKEEPER: Session true hone par bhi agar tabs khali hon toh reset karega
+if st.session_state.user_authenticated and not st.session_state.allowed_tabs:
+    st.session_state.user_authenticated = False
+    st.session_state.current_user = None
+    st.session_state.current_name = None
+    st.session_state.current_role = None
+    st.session_state.active_module = None
+
 def login_screen():
     c1, c2, c3 = st.columns([1, 1.3, 1])
     with c2:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         
-        # Clean Header Without Indentation Glitch
-        header_html = (
-            "<div style='text-align: center; margin-bottom: 20px;'>"
-            f"<div style='display: flex; justify-content: center; margin-bottom: 8px;'>{INDU_SAO_SVG_LOGO}</div>"
-            "<h2 style='margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.6rem;'>M/s INDU SAO</h2>"
-            "<div style='font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 4px;'>Vendor Code: ID47 | Tata Steel West Bokaro Division</div>"
-            "<div style='font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;'>ISO Certified Company 45001:2018</div>"
-            "</div>"
+        # Exact Letterhead Header Integration (No Raw Markdown Glitch)
+        st.markdown(
+            f"""
+            <div style="text-align: center; margin-bottom: 20px;">
+                <div style="display: flex; justify-content: center; margin-bottom: 8px;">{INDU_SAO_SVG_LOGO}</div>
+                <h2 style="margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.6rem;">M/s INDU SAO</h2>
+                <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 4px;">Vendor Code: ID47 | Tata Steel West Bokaro Division</div>
+                <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">ISO Certified Company 45001:2018</div>
+            </div>
+            """, 
+            unsafe_allow_html=True
         )
-        st.markdown(header_html, unsafe_allow_html=True)
 
         with st.container(border=True):
             st.markdown("##### Portal Authentication")
@@ -290,7 +297,7 @@ def login_screen():
                 u_lower = username.lower()
                 configured_master_pass = st.secrets.get("app_password", DEFAULT_ADMIN_PASS)
 
-                # 1. BULLETPROOF ADMIN AUTHENTICATION
+                # 1. MASTER ADMIN AUTHENTICATION
                 if u_lower == DEFAULT_ADMIN_USER.lower() and password == configured_master_pass:
                     st.session_state.user_authenticated = True
                     st.session_state.current_user = DEFAULT_ADMIN_USER
@@ -335,10 +342,26 @@ def login_screen():
                             st.session_state.active_module = "👷 Worker Attendance"
                         else:
                             raw_tabs = str(u_row.get("Allowed_Tabs", ""))
-                            permitted = [t.strip() for t in raw_tabs.split(",") if t.strip() in TAB_REGISTRY]
-                            st.session_state.allowed_tabs = permitted
+                            permitted = []
+                            for t in raw_tabs.split(","):
+                                t_clean = t.strip()
+                                if t_clean in TAB_REGISTRY:
+                                    permitted.append(t_clean)
+                                elif t_clean in TAB_ALIASES:
+                                    permitted.append(TAB_ALIASES[t_clean])
                             
-                            mods = set([TAB_REGISTRY[t] for t in permitted])
+                            # Auto-fallback: active users get Worker Attendance if mapping was empty
+                            if not permitted:
+                                permitted = [
+                                    "Worker & Crew Directory",
+                                    "Daily Muster Roll (Field Attendance)",
+                                    "Advance & Khuraki Register",
+                                    "Monthly Wages & Payout Summary"
+                                ]
+
+                            st.session_state.allowed_tabs = list(set(permitted))
+                            
+                            mods = set([TAB_REGISTRY.get(t) for t in st.session_state.allowed_tabs if t in TAB_REGISTRY])
                             if "Attendance" in mods:
                                 st.session_state.active_module = "👷 Worker Attendance"
                             elif "Billing" in mods:
@@ -351,6 +374,12 @@ def login_screen():
                         st.error("Incorrect password entered.")
                 else:
                     st.error("Authorized user profile not found.")
+
+if not st.session_state.user_authenticated:
+    login_screen()
+    st.stop()
+
+
 # ----------------- 4. COMPACT PROFESSIONAL SIDEBAR -----------------
 with st.sidebar:
     st.markdown(
@@ -385,6 +414,14 @@ with st.sidebar:
 
     if not module_options:
         st.warning("No operational modules have been provisioned for this account.")
+        if st.button("🔄 Reset & Login Again", use_container_width=True, type="primary"):
+            st.session_state.user_authenticated = False
+            st.session_state.current_user = None
+            st.session_state.current_name = None
+            st.session_state.current_role = None
+            st.session_state.allowed_tabs = []
+            st.session_state.active_module = None
+            st.rerun()
         st.stop()
 
     if st.session_state.active_module not in module_options:
@@ -452,7 +489,6 @@ with h_col3:
         st.markdown('</div>', unsafe_allow_html=True)
     with btn_c2:
         st.markdown('<div class="top-action-btn top-logout-btn">', unsafe_allow_html=True)
-        # Corporate Power-Off Icon
         if st.button("⏻", help="Sign Out / Disconnect Session", use_container_width=True, key="hdr_pwr"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
@@ -885,7 +921,6 @@ if selected_module == "👷 Worker Attendance":
                         if wtype == "DAILY_WAGE":
                             base_earnings = total_effective_haazri * rate
                         else:
-                            # Monthly fixed salary: pro-rated over 30 days
                             per_day_sal = rate / 30.0 if rate > 0 else 0.0
                             base_earnings = total_effective_haazri * per_day_sal
 
