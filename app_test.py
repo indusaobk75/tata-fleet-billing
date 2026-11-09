@@ -1,6 +1,7 @@
 import io
 import json
 import time
+import base64
 import datetime
 import calendar
 import pandas as pd
@@ -15,13 +16,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- 0. BULLETPROOF CREDENTIALS CONFIG -----------------
+# ----------------- 0. BULLETPROOF ADMIN MASTER CONFIG -----------------
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "Admin@2026"
 DEFAULT_ADMIN_NAME = "Indu Sao (Owner)"
 
 # ----------------- 1. DATABASE & CONFIG (TEST ISOLATION) -----------------
 SHEET_NAME = st.secrets.get("test_spreadsheet_name", st.secrets.get("spreadsheet_name", "Tata_Steel_ERP_TEST_DB"))
+
+USER_COLUMNS = [
+    "Username", "Password", "Full_Name", "Role", "Allowed_Tabs", "Status",
+    "Contact_No", "Emergency_Contact", "Photo_Base64"
+]
 
 @st.cache_resource
 def get_gspread_client():
@@ -84,7 +90,7 @@ def save_sheet_df(worksheet_name, df):
     return False
 
 
-# ----------------- 2. MASTER REGISTRY & CSS STYLING -----------------
+# ----------------- 2. MASTER REGISTRY & ENTERPRISE UI STYLING -----------------
 TAB_REGISTRY = {
     # MODULE 1: CLIENT BILLING HUB
     "Daily Logsheet Entry": "Billing",
@@ -105,40 +111,38 @@ TAB_REGISTRY = {
     "Monthly Attendance Summary": "Attendance"
 }
 
-# Custom Professional UI Styling
 st.markdown("""
 <style>
-    /* Global Clean Font & Header Adjustments */
     .block-container { padding-top: 1.8rem; padding-bottom: 2rem; }
     
-    /* Enterprise Sidebar Card */
     .profile-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         border: 1px solid #334155;
         border-radius: 12px;
-        padding: 16px;
+        padding: 14px;
         color: #f8fafc;
-        margin-bottom: 1rem;
+        margin-bottom: 0.8rem;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     }
     .profile-avatar {
-        width: 44px;
-        height: 44px;
+        width: 46px;
+        height: 46px;
         border-radius: 50%;
         background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
         display: flex;
         align-items: center;
         justify-content: center;
         font-weight: 700;
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         color: white;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.25);
+        object-fit: cover;
     }
     .status-badge {
         display: inline-block;
         padding: 2px 8px;
         border-radius: 9999px;
-        font-size: 0.72rem;
+        font-size: 0.70rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -146,7 +150,6 @@ st.markdown("""
     .status-admin { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
     .status-user { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #2563eb; }
 
-    /* Nav Item Customization */
     div[data-testid="stSidebar"] div[role="radiogroup"] > label {
         background-color: #f8fafc;
         border: 1px solid #e2e8f0;
@@ -163,7 +166,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 3. BULLETPROOF AUTHENTICATION -----------------
+# ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
     if "user_authenticated" not in st.session_state:
         st.session_state.user_authenticated = False
@@ -175,6 +178,12 @@ def init_session():
         st.session_state.current_role = None
     if "allowed_tabs" not in st.session_state:
         st.session_state.allowed_tabs = []
+    if "current_contact" not in st.session_state:
+        st.session_state.current_contact = ""
+    if "current_emergency" not in st.session_state:
+        st.session_state.current_emergency = ""
+    if "current_photo" not in st.session_state:
+        st.session_state.current_photo = ""
 
 init_session()
 
@@ -195,22 +204,21 @@ def login_screen():
 
         with st.container(border=True):
             st.markdown("##### Portal Authentication")
-            st.caption("Sign in with your assigned operational credentials")
+            st.caption("Sign in with your authorized operational credentials")
             
-            username = st.text_input("Username / Operator ID", placeholder="e.g. admin or supervisor").strip()
+            username = st.text_input("Username / Operator ID", placeholder="e.g. admin or supervisor1").strip()
             password = st.text_input("Security Passkey", type="password", placeholder="••••••••").strip()
             submitted = st.button("Sign In to Workspace", use_container_width=True, type="primary")
 
             if submitted:
                 if not username or not password:
-                    st.warning("Please fill in both Username and Passkey.")
+                    st.warning("Please enter both Username and Passkey.")
                     return
 
                 u_lower = username.lower()
                 configured_master_pass = st.secrets.get("app_password", DEFAULT_ADMIN_PASS)
 
                 # PRIORITY 1: BULLETPROOF ADMIN AUTHENTICATION
-                # Never depends on Google Sheet status, network latency, or accidental sheet wipes
                 if u_lower == DEFAULT_ADMIN_USER.lower() and password == configured_master_pass:
                     st.session_state.user_authenticated = True
                     st.session_state.current_user = DEFAULT_ADMIN_USER
@@ -219,7 +227,7 @@ def login_screen():
                     st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
                     st.rerun()
 
-                # PRIORITY 2: GOOGLE SHEETS USER VERIFICATION
+                # PRIORITY 2: DATABASE USERS AUTHENTICATION
                 users_df = load_sheet_df("app_users")
                 
                 if users_df.empty or "Username" not in users_df.columns:
@@ -245,6 +253,9 @@ def login_screen():
                         st.session_state.current_user = str(u_row.get("Username"))
                         st.session_state.current_name = u_name if u_name else username
                         st.session_state.current_role = u_role
+                        st.session_state.current_contact = str(u_row.get("Contact_No", ""))
+                        st.session_state.current_emergency = str(u_row.get("Emergency_Contact", ""))
+                        st.session_state.current_photo = str(u_row.get("Photo_Base64", ""))
 
                         if u_role == "ADMIN":
                             st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
@@ -269,7 +280,7 @@ with st.sidebar:
     # 1. Branding Header
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
             <div style="background: #e0f2fe; padding: 8px; border-radius: 8px; display: inline-flex;">
                 <span style="font-size: 1.3rem;">🏗️</span>
             </div>
@@ -282,17 +293,21 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    # 2. Executive Aesthetic User Card
-    user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "Admin"
+    # 2. Executive Aesthetic User Card with Photo or Initials
+    user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
     name_parts = str(user_display_name).strip().split()
     initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
     badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
+
+    avatar_html = f'<div class="profile-avatar">{initials}</div>'
+    if st.session_state.get("current_photo"):
+        avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="profile-avatar" />'
 
     st.markdown(
         f"""
         <div class="profile-card">
             <div style="display: flex; align-items: center; gap: 12px;">
-                <div class="profile-avatar">{initials}</div>
+                {avatar_html}
                 <div style="overflow: hidden;">
                     <div style="font-weight: 600; font-size: 0.92rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
                         {user_display_name}
@@ -307,13 +322,69 @@ with st.sidebar:
         """,
         unsafe_allow_html=True
     )
-    # 3. Collapsible Environment Details Drawer
-    with st.expander("🛠️ Session & Security Controls", expanded=False):
-        st.caption(f"**Database:** `{SHEET_NAME}`")
-        st.caption(f"**Role Privileges:** `{st.session_state.current_role}`")
-        st.caption(f"**Permitted Tabs:** `{len(st.session_state.allowed_tabs)} active`")
-        
-        if st.button("🚪 Terminate Session", use_container_width=True, type="secondary"):
+
+    # 3. Dedicated User Profile Editor (Supervisors & Admins)
+    with st.expander("👤 My Profile & Contact", expanded=False):
+        with st.form("my_profile_update_form"):
+            prof_name = st.text_input("My Full Name", value=st.session_state.current_name or "")
+            prof_contact = st.text_input("Mobile / WhatsApp No.", value=st.session_state.current_contact or "")
+            prof_emer = st.text_input("Emergency Contact", value=st.session_state.current_emergency or "")
+            prof_pass = st.text_input("Update Passkey (Visible to Admin)", placeholder="Type new password to change", type="password")
+            
+            uploaded_photo = st.file_uploader("Upload Photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+            
+            save_prof_btn = st.form_submit_button("Save Profile Changes", use_container_width=True, type="primary")
+
+            if save_prof_btn:
+                users_df = load_sheet_df("app_users")
+                for col in USER_COLUMNS:
+                    if col not in users_df.columns:
+                        users_df[col] = ""
+
+                users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
+                c_u = st.session_state.current_user.lower()
+
+                # Agar photo upload hui hai to base64 encode karenge
+                photo_b64 = st.session_state.current_photo
+                if uploaded_photo:
+                    photo_b64 = base64.b64encode(uploaded_photo.read()).decode("utf-8")
+
+                if not users_df[users_df["_u_clean"] == c_u].empty:
+                    idx = users_df[users_df["_u_clean"] == c_u].index[0]
+                    users_df.at[idx, "Full_Name"] = prof_name
+                    users_df.at[idx, "Contact_No"] = prof_contact
+                    users_df.at[idx, "Emergency_Contact"] = prof_emer
+                    if prof_pass.strip():
+                        users_df.at[idx, "Password"] = prof_pass.strip()
+                    if photo_b64:
+                        users_df.at[idx, "Photo_Base64"] = photo_b64
+
+                    if save_sheet_df("app_users", users_df[USER_COLUMNS]):
+                        st.session_state.current_name = prof_name
+                        st.session_state.current_contact = prof_contact
+                        st.session_state.current_emergency = prof_emer
+                        st.session_state.current_photo = photo_b64
+                        st.success("Profile successfully synchronized!")
+                        st.rerun()
+                else:
+                    st.info("Admin master profile updated for this session.")
+
+    # 4. Clean Role-Based Session / Logout
+    if st.session_state.current_role == "ADMIN":
+        with st.expander("🛠️ Diagnostics & Security", expanded=False):
+            st.caption(f"**Database:** `{SHEET_NAME}`")
+            st.caption(f"**Role:** `{st.session_state.current_role}`")
+            st.caption(f"**Permitted Tabs:** `{len(st.session_state.allowed_tabs)} active`")
+            if st.button("🚪 Terminate Session", use_container_width=True, type="secondary", key="admin_logout"):
+                st.session_state.user_authenticated = False
+                st.session_state.current_user = None
+                st.session_state.current_name = None
+                st.session_state.current_role = None
+                st.session_state.allowed_tabs = []
+                st.rerun()
+    else:
+        # Standard Users: Clean single Logout button
+        if st.button("🚪 Logout", use_container_width=True, type="secondary", key="user_logout"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
@@ -323,7 +394,7 @@ with st.sidebar:
 
     st.markdown("<div style='margin-top: 10px; margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
 
-    # 4. Filter Available Workspace Modules
+    # 5. Filter Available Workspace Modules
     available_modules = set()
     for tab_name in st.session_state.allowed_tabs:
         available_modules.add(TAB_REGISTRY.get(tab_name))
@@ -410,12 +481,12 @@ elif selected_module == "👷 Worker Attendance":
                 st.info("Monthly attendance sheet consolidation for contractor wage payouts.")
 
 
-# --- HUB 4: ADMIN COMMAND & RBAC MANAGER ---
+# --- HUB 4: ADMIN COMMAND & RBAC MANAGER (ADMIN ONLY) ---
 elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.current_role == "ADMIN":
     st.markdown("### ⚙️ Identity & Access Management (RBAC)")
-    st.caption("Provision employee credentials and define modular access boundaries across site operations")
+    st.caption("Provision employee credentials, define modular access boundaries, and audit live user credentials")
 
-    col_u1, col_u2 = st.columns([1.2, 1.8], gap="large")
+    col_u1, col_u2 = st.columns([1.1, 1.9], gap="large")
 
     with col_u1:
         with st.container(border=True):
@@ -423,8 +494,9 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
             
             with st.form("create_user_form", clear_on_submit=False):
                 new_username = st.text_input("Username (Unique ID)", placeholder="e.g. sup_ramesh").strip()
-                new_password = st.text_input("Password", placeholder="••••••••").strip()
+                new_password = st.text_input("Password (Plain Text)", placeholder="Set initial password").strip()
                 new_name = st.text_input("Full Name", placeholder="e.g. Ramesh Kumar").strip()
+                new_contact = st.text_input("Contact Number", placeholder="e.g. 9876543210").strip()
                 
                 f_c1, f_c2 = st.columns(2)
                 with f_c1:
@@ -460,9 +532,9 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                         st.error("Username and password are required.")
                     else:
                         users_df = load_sheet_df("app_users")
-                        req_u_cols = ["Username", "Password", "Full_Name", "Role", "Allowed_Tabs", "Status"]
-                        if users_df.empty or "Username" not in users_df.columns:
-                            users_df = pd.DataFrame(columns=req_u_cols)
+                        for col in USER_COLUMNS:
+                            if col not in users_df.columns:
+                                users_df[col] = ""
 
                         # BULLETPROOF ADMIN SAFEGUARD
                         users_df["_u_chk"] = users_df["Username"].astype(str).str.strip().str.lower()
@@ -477,7 +549,10 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                                 "Full_Name": DEFAULT_ADMIN_NAME,
                                 "Role": "ADMIN",
                                 "Allowed_Tabs": "ALL",
-                                "Status": "ACTIVE"
+                                "Status": "ACTIVE",
+                                "Contact_No": "",
+                                "Emergency_Contact": "",
+                                "Photo_Base64": ""
                             })
 
                         rows_to_append.append({
@@ -486,21 +561,25 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                             "Full_Name": new_name,
                             "Role": new_role,
                             "Allowed_Tabs": ",".join(selected_permissions) if new_role != "ADMIN" else "ALL",
-                            "Status": new_status
+                            "Status": new_status,
+                            "Contact_No": new_contact,
+                            "Emergency_Contact": "",
+                            "Photo_Base64": ""
                         })
 
                         updated_users = pd.concat([users_df, pd.DataFrame(rows_to_append)], ignore_index=True)
-                        if save_sheet_df("app_users", updated_users[req_u_cols]):
-                            st.success(f"User account '{new_username}' synced with central database!")
+                        if save_sheet_df("app_users", updated_users[USER_COLUMNS]):
+                            st.success(f"User account '{new_username}' saved and synchronized!")
                             st.rerun()
 
     with col_u2:
         with st.container(border=True):
-            st.markdown("##### 👥 Active Enterprise Users")
+            st.markdown("##### 👥 Active Enterprise Users & Credentials Master")
             users_table = load_sheet_df("app_users")
             if users_table.empty or "Username" not in users_table.columns:
                 st.info("No auxiliary user accounts found in 'app_users' ledger.")
             else:
-                disp_cols = [c for c in ["Username", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in users_table.columns]
+                # ADMIN KE LIYE PASSWORD LIVE VISIBLE RAHEGA
+                disp_cols = [c for c in ["Username", "Password", "Full_Name", "Role", "Contact_No", "Status", "Allowed_Tabs"] if c in users_table.columns]
                 st.dataframe(users_table[disp_cols], use_container_width=True, hide_index=True)
-                st.caption("Re-submit the same Username in the creation form to modify permissions or change account status.")
+                st.caption("🔒 All credentials shown in clear text for master administrative oversight. Re-submit Username on left to overwrite or reset.")
