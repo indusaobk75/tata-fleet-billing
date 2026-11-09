@@ -113,57 +113,57 @@ TAB_REGISTRY = {
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-
-    /* Top Executive Navigation Bar */
-    .top-navbar-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        padding: 10px 18px;
-        margin-bottom: 14px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+    /* Safe Top Margin to prevent Streamlit Header cut */
+    .block-container { 
+        padding-top: 3.4rem !important; 
+        padding-bottom: 2rem !important; 
     }
+
+    /* Fixed Compact Sidebar Width */
+    section[data-testid="stSidebar"] {
+        width: 270px !important;
+        min-width: 270px !important;
+    }
+
+    /* Top Navigation Elements */
     .top-user-avatar {
-        width: 38px;
-        height: 38px;
+        width: 36px;
+        height: 36px;
         border-radius: 50%;
         background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
         display: flex;
         align-items: center;
         justify-content: center;
         font-weight: 700;
-        font-size: 0.95rem;
+        font-size: 0.88rem;
         color: white;
         object-fit: cover;
     }
     .status-badge {
         display: inline-block;
-        padding: 2px 8px;
+        padding: 1px 7px;
         border-radius: 9999px;
-        font-size: 0.68rem;
+        font-size: 0.65rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.04em;
     }
     .status-admin { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
     .status-user { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #2563eb; }
 
-    /* Custom Professional Nav Button Styles */
+    /* Compact Sidebar Nav Button Styling */
     div[data-testid="stSidebar"] div.stButton > button {
         text-align: left;
         justify-content: flex-start;
-        border-radius: 9px;
+        border-radius: 8px;
+        font-size: 0.88rem;
         font-weight: 500;
-        padding: 10px 14px;
+        padding: 8px 12px;
         margin-bottom: 4px;
         border: 1px solid #e2e8f0;
         background-color: #ffffff;
         color: #1e293b;
-        transition: all 0.2s ease;
+        transition: all 0.15s ease;
     }
     div[data-testid="stSidebar"] div.stButton > button:hover {
         background-color: #f1f5f9;
@@ -171,11 +171,11 @@ st.markdown("""
         color: #0f172a;
     }
     div[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #1e293b 0%, #334155 100%) !important;
+        background: #1e293b !important;
         color: #ffffff !important;
         border-color: #1e293b !important;
         font-weight: 600 !important;
-        box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.15);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -211,7 +211,7 @@ def login_screen():
     with c2:
         st.markdown(
             """
-            <div style="text-align: center; margin-bottom: 24px; margin-top: 40px;">
+            <div style="text-align: center; margin-bottom: 24px; margin-top: 50px;">
                 <h2 style="margin-bottom: 4px;">🏗️ Site Operations ERP</h2>
                 <span style="font-size: 0.9rem; color: #64748b; font-weight: 500;">
                     M/S INDU SAO | Tata Steel West Bokaro Division
@@ -237,7 +237,7 @@ def login_screen():
                 u_lower = username.lower()
                 configured_master_pass = st.secrets.get("app_password", DEFAULT_ADMIN_PASS)
 
-                # PRIORITY 1: BULLETPROOF ADMIN AUTHENTICATION
+                # 1. BULLETPROOF ADMIN AUTHENTICATION
                 if u_lower == DEFAULT_ADMIN_USER.lower() and password == configured_master_pass:
                     st.session_state.user_authenticated = True
                     st.session_state.current_user = DEFAULT_ADMIN_USER
@@ -247,11 +247,11 @@ def login_screen():
                     st.session_state.active_module = "📑 Tata Steel Billing Hub"
                     st.rerun()
 
-                # PRIORITY 2: DATABASE USERS AUTHENTICATION
+                # 2. DATABASE USERS AUTHENTICATION
                 users_df = load_sheet_df("app_users")
                 
                 if users_df.empty or "Username" not in users_df.columns:
-                    st.error("Authentication database is offline or uninitialized. Use master admin credentials.")
+                    st.error("Authentication database is offline. Use master admin credentials.")
                     return
 
                 users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
@@ -304,24 +304,24 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. CLEAN SIDEBAR (NAVIGATION ONLY) -----------------
+# ----------------- 4. COMPACT PROFESSIONAL SIDEBAR -----------------
 with st.sidebar:
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-            <div style="background: #e0f2fe; padding: 8px; border-radius: 8px; display: inline-flex;">
-                <span style="font-size: 1.3rem;">🏗️</span>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+            <div style="background: #e0f2fe; padding: 7px; border-radius: 8px; display: inline-flex;">
+                <span style="font-size: 1.2rem;">🏗️</span>
             </div>
             <div>
-                <div style="font-size: 1.05rem; font-weight: 700; color: #0f172a; line-height: 1.2;">M/S INDU SAO</div>
-                <div style="font-size: 0.72rem; color: #64748b; font-weight: 600; letter-spacing: 0.05em;">ENTERPRISE PORTAL</div>
+                <div style="font-size: 1.0rem; font-weight: 700; color: #0f172a; line-height: 1.2;">M/S INDU SAO</div>
+                <div style="font-size: 0.68rem; color: #64748b; font-weight: 600; letter-spacing: 0.05em;">ENTERPRISE PORTAL</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    st.markdown("<div style='margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-bottom: 8px; font-size: 0.72rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
 
     available_modules = set()
     for tab_name in st.session_state.allowed_tabs:
@@ -344,7 +344,7 @@ with st.sidebar:
     if st.session_state.active_module not in module_options:
         st.session_state.active_module = module_options[0]
 
-    # Clean Navigation Tiles
+    # Compact Navigation Buttons
     for mod_title in module_options:
         is_active = (st.session_state.active_module == mod_title)
         btn_type = "primary" if is_active else "secondary"
@@ -366,58 +366,53 @@ avatar_html = f'<div class="top-user-avatar">{initials}</div>'
 if st.session_state.get("current_photo"):
     avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="top-user-avatar" />'
 
-# Header Container
-with st.container():
-    h_col1, h_col2, h_col3 = st.columns([2.2, 1.2, 0.6], gap="small")
-    
-    with h_col1:
-        st.markdown(
-            f"""
-            <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0;">
-                <div>
-                    <span style="font-weight: 700; font-size: 1.15rem; color: #0f172a;">Site Operations ERP</span>
-                    <span style="margin: 0 8px; color: #cbd5e1;">|</span>
-                    <span style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Tata Steel West Bokaro Division</span>
-                </div>
+# Header Strip Grid
+h_col1, h_col2, h_col3 = st.columns([2.5, 1.2, 0.6], gap="small")
+
+with h_col1:
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; gap: 8px; padding-top: 6px;">
+            <span style="font-weight: 700; font-size: 1.05rem; color: #0f172a;">Site Operations ERP</span>
+            <span style="color: #cbd5e1;">|</span>
+            <span style="font-size: 0.82rem; color: #64748b; font-weight: 500;">Tata Steel West Bokaro Division</span>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
+with h_col2:
+    st.markdown(
+        f"""
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 3px;">
+            {avatar_html}
+            <div style="text-align: left; line-height: 1.2;">
+                <div style="font-weight: 600; font-size: 0.85rem; color: #0f172a;">{user_display_name}</div>
+                <div style="margin-top: 1px;"><span class="status-badge {badge_class}">{st.session_state.current_role}</span></div>
             </div>
-            """, 
-            unsafe_allow_html=True
-        )
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    with h_col2:
-        st.markdown(
-            f"""
-            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 4px 0;">
-                {avatar_html}
-                <div style="text-align: left; line-height: 1.2;">
-                    <div style="font-weight: 600; font-size: 0.88rem; color: #0f172a;">{user_display_name}</div>
-                    <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                        <span class="status-badge {badge_class}">{st.session_state.current_role}</span>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+with h_col3:
+    btn_c1, btn_c2 = st.columns(2)
+    with btn_c1:
+        if st.button("⚙️", help="Edit Profile & Password", use_container_width=True):
+            st.session_state.show_profile_box = not st.session_state.show_profile_box
+            st.rerun()
+    with btn_c2:
+        if st.button("🚪", help="Logout", use_container_width=True):
+            st.session_state.user_authenticated = False
+            st.session_state.current_user = None
+            st.session_state.current_name = None
+            st.session_state.current_role = None
+            st.session_state.allowed_tabs = []
+            st.session_state.active_module = None
+            st.session_state.show_profile_box = False
+            st.rerun()
 
-    with h_col3:
-        btn_c1, btn_c2 = st.columns(2)
-        with btn_c1:
-            if st.button("⚙️", help="My Profile & Security Settings", use_container_width=True):
-                st.session_state.show_profile_box = not st.session_state.show_profile_box
-                st.rerun()
-        with btn_c2:
-            if st.button("🚪", help="Logout Session", use_container_width=True):
-                st.session_state.user_authenticated = False
-                st.session_state.current_user = None
-                st.session_state.current_name = None
-                st.session_state.current_role = None
-                st.session_state.allowed_tabs = []
-                st.session_state.active_module = None
-                st.session_state.show_profile_box = False
-                st.rerun()
-
-    st.markdown("<hr style='margin-top: 4px; margin-bottom: 16px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
+st.markdown("<hr style='margin-top: 6px; margin-bottom: 14px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
 
 
 # --- TOP PROFILE EDIT CARD (TOGGLED VIA ⚙️ BUTTON) ---
