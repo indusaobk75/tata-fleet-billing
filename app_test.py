@@ -283,7 +283,9 @@ with st.sidebar:
     )
 
     # 2. Executive Aesthetic User Card
-    initials = "".join([part[0] for part in st.session_state.current_name.split()[:2]]).upper() or "US"
+    user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "Admin"
+    name_parts = str(user_display_name).strip().split()
+    initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
     badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
 
     st.markdown(
@@ -293,7 +295,7 @@ with st.sidebar:
                 <div class="profile-avatar">{initials}</div>
                 <div style="overflow: hidden;">
                     <div style="font-weight: 600; font-size: 0.92rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
-                        {st.session_state.current_name}
+                        {user_display_name}
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
                         <span class="status-badge {badge_class}">{st.session_state.current_role}</span>
@@ -305,7 +307,6 @@ with st.sidebar:
         """,
         unsafe_allow_html=True
     )
-
     # 3. Collapsible Environment Details Drawer
     with st.expander("🛠️ Session & Security Controls", expanded=False):
         st.caption(f"**Database:** `{SHEET_NAME}`")
