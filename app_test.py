@@ -14,8 +14,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ----------------- 0. ADMIN CREDENTIALS CONFIG (FAILSAFE) -----------------
+# Final deployment ke waqt bas in do variables ko aapke naye secret credentials se badal denge
+DEFAULT_ADMIN_USER = "admin"
+DEFAULT_ADMIN_PASS = "Admin@2026"
+DEFAULT_ADMIN_NAME = "Indu Sao (Owner)"
+
 # ----------------- 1. DATABASE & CONFIG (TEST ISOLATION) -----------------
-# Secrets mein 'test_spreadsheet_name' de sakte hain, default 'Tata_Steel_ERP_TEST_DB' rahega
 SHEET_NAME = st.secrets.get("test_spreadsheet_name", st.secrets.get("spreadsheet_name", "Tata_Steel_ERP_TEST_DB"))
 
 @st.cache_resource
@@ -30,7 +35,7 @@ def get_gspread_client():
     credentials = Credentials.from_service_account_info(creds_info, scopes=scopes)
     return gspread.authorize(credentials)
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def load_sheet_df(worksheet_name):
     for attempt in range(3):
         try:
@@ -80,7 +85,6 @@ def save_sheet_df(worksheet_name, df):
 
 
 # ----------------- 2. MASTER TAB REGISTRY -----------------
-# Saare available operational tabs jo Admin kisi bhi user ko assign kar sakta hai
 TAB_REGISTRY = {
     # MODULE 1: CLIENT BILLING HUB
     "Daily Logsheet Entry": "Billing",
@@ -132,25 +136,27 @@ def login_screen():
                     st.error("Please enter both username and password.")
                     return
 
+                u_lower = username.lower()
+                configured_master_pass = st.secrets.get("app_password", DEFAULT_ADMIN_PASS)
+
+                # 1. PERMANENT FAILSAFE MASTER ADMIN (ALWAYS GRANTS ACCESS)
+                if u_lower == DEFAULT_ADMIN_USER.lower() and password == configured_master_pass:
+                    st.session_state.user_authenticated = True
+                    st.session_state.current_user = DEFAULT_ADMIN_USER
+                    st.session_state.current_role = "ADMIN"
+                    st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
+                    st.success("Master Admin authenticated successfully!")
+                    st.rerun()
+
+                # 2. DATABASE USER VERIFICATION (SUPERVISORS / EMPLOYEES)
                 users_df = load_sheet_df("app_users")
                 
-                # Default Superadmin fallback agar sheet abhi empty ho
                 if users_df.empty or "Username" not in users_df.columns:
-                    master_pass = st.secrets.get("app_password", "Admin@2026")
-                    if username.lower() == "admin" and password == master_pass:
-                        st.session_state.user_authenticated = True
-                        st.session_state.current_user = "admin"
-                        st.session_state.current_role = "ADMIN"
-                        st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
-                        st.success("Master Admin initialized.")
-                        st.rerun()
-                    else:
-                        st.error("Invalid credentials.")
-                        return
+                    st.error("User database is unreachable or empty. If you are admin, use master credentials.")
+                    return
 
-                # Normal User Database Verification
                 users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
-                user_match = users_df[users_df["_u_clean"] == username.lower()]
+                user_match = users_df[users_df["_u_clean"] == u_lower]
 
                 if not user_match.empty:
                     u_row = user_match.iloc[0]
@@ -174,10 +180,10 @@ def login_screen():
                             permitted = [t.strip() for t in raw_tabs.split(",") if t.strip() in TAB_REGISTRY]
                             st.session_state.allowed_tabs = permitted
 
-                        st.success("Login confirmed! Loading permitted workspace...")
+                        st.success(f"Welcome {st.session_state.current_user}! Loading workspace...")
                         st.rerun()
                     else:
-                        st.error("Invalid username or password entered.")
+                        st.error("Invalid password entered.")
                 else:
                     st.error("User not found in authorized database.")
 
@@ -201,8 +207,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Module Navigation Selector
-    # User ke paas kaunse modules ke tabs maujood hain unhi ko dikhayenge
+    # User ke paas jo modules hain unhi ko dikhayenge
     available_modules = set()
     for tab_name in st.session_state.allowed_tabs:
         available_modules.add(TAB_REGISTRY.get(tab_name))
@@ -308,7 +313,6 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
             st.markdown("**Select Permitted Tabs for this User:**")
             selected_permissions = []
             
-            # Group checkboxes by Hub for clean organization
             st.caption("Billing Hub Tabs:")
             for t_name, m_type in TAB_REGISTRY.items():
                 if m_type == "Billing":
@@ -338,21 +342,38 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                     if users_df.empty or "Username" not in users_df.columns:
                         users_df = pd.DataFrame(columns=req_u_cols)
 
-                    # Remove existing user if updating
+                    # ADMIN PRESERVATION ENGINE:
+                    # Agar admin entry sheet me se hat gayi ho toh use preserve karega
                     users_df["_u_chk"] = users_df["Username"].astype(str).str.strip().str.lower()
+                    has_admin = not users_df[users_df["_u_chk"] == DEFAULT_ADMIN_USER.lower()].empty
+                    
+                    # Target user ka purana data remove karke naya add karenge
                     users_df = users_df[users_df["_u_chk"] != new_username.lower()].drop(columns=["_u_chk"])
 
-                    new_row = {
+                    # Agar admin nahi hai aur naya user bhi admin nahi hai toh admin ko add karega
+                    rows_to_append = []
+                    if not has_admin and new_username.lower() != DEFAULT_ADMIN_USER.lower():
+                        rows_to_append.append({
+                            "Username": DEFAULT_ADMIN_USER,
+                            "Password": DEFAULT_ADMIN_PASS,
+                            "Full_Name": DEFAULT_ADMIN_NAME,
+                            "Role": "ADMIN",
+                            "Allowed_Tabs": "ALL",
+                            "Status": "ACTIVE"
+                        })
+
+                    rows_to_append.append({
                         "Username": new_username,
                         "Password": new_password,
                         "Full_Name": new_name,
                         "Role": new_role,
                         "Allowed_Tabs": ",".join(selected_permissions) if new_role != "ADMIN" else "ALL",
                         "Status": new_status
-                    }
-                    updated_users = pd.concat([users_df, pd.DataFrame([new_row])], ignore_index=True)
+                    })
+
+                    updated_users = pd.concat([users_df, pd.DataFrame(rows_to_append)], ignore_index=True)
                     if save_sheet_df("app_users", updated_users[req_u_cols]):
-                        st.success(f"User account '{new_username}' saved successfully with customized permissions!")
+                        st.success(f"User account '{new_username}' saved successfully!")
                         st.rerun()
 
     with col_u2:
@@ -363,5 +384,4 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
         else:
             disp_cols = [c for c in ["Username", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in users_table.columns]
             st.dataframe(users_table[disp_cols], use_container_width=True)
-
             st.caption("To change permissions or deactivate an employee, re-enter their username in the left form and re-save.")
