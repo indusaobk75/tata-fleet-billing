@@ -30,6 +30,21 @@ USER_COLUMNS = [
     "Contact_No", "Emergency_Contact", "Photo_Base64"
 ]
 
+WORKER_MASTER_COLS = [
+    "Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", 
+    "Base_Rate", "OT_Hourly_Rate", "Contact_No", "Assigned_Asset", "Status", "Created_Date"
+]
+
+MUSTER_ROLL_COLS = [
+    "Date", "Worker_ID", "Worker_Name", "Division", "Attendance", "OT_Hours", 
+    "Advance_Amount", "Payment_Mode", "Supervisor", "Remarks"
+]
+
+ADVANCE_LOG_COLS = [
+    "Txn_ID", "Date", "Worker_ID", "Worker_Name", "Division", "Amount", 
+    "Payment_Mode", "Supervisor", "Remarks"
+]
+
 @st.cache_resource
 def get_gspread_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -106,23 +121,21 @@ TAB_REGISTRY = {
     "Fleet Fuel Benchmark Master": "Fuel",
     "Theft & Pilferage Audit": "Fuel",
 
-    # MODULE 3: WORKER ATTENDANCE
-    "Worker Daily Muster Roll": "Attendance",
-    "Driver & Operator Pool": "Attendance",
-    "Monthly Attendance Summary": "Attendance"
+    # MODULE 3: WORKER ATTENDANCE & MULTI-TRADE MANAGEMENT
+    "Worker & Crew Directory": "Attendance",
+    "Daily Muster Roll (Field Attendance)": "Attendance",
+    "Advance & Khuraki Register": "Attendance",
+    "Monthly Wages & Payout Summary": "Attendance"
 }
 
 # Accurate SVG Vector Recreation of M/s INDU SAO Letterhead Oval Logo
 INDU_SAO_SVG_LOGO = """
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));">
   <ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/>
-  <!-- Central Architecture Pillars -->
   <polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/>
   <polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/>
-  <!-- Right Vertical Strips -->
   <rect x="98" y="24" width="4" height="66" fill="#334155"/>
   <rect x="105" y="32" width="4" height="58" fill="#334155"/>
-  <!-- Base Swoosh / Ellipse Arc -->
   <path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/>
   <circle cx="80" cy="74" r="5" fill="#0b2a75"/>
 </svg>
@@ -130,14 +143,18 @@ INDU_SAO_SVG_LOGO = """
 
 st.markdown("""
 <style>
-    /* Safe Top Margin to prevent Streamlit Header cut */
+    /* Full Responsive Width: Sidebar band hone par poora screen rearrange hoga */
     .block-container { 
-        padding-top: 3.4rem !important; 
-        padding-bottom: 2rem !important; 
+        padding-top: 3.2rem !important; 
+        padding-bottom: 2rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        max-width: 100% !important;
+        width: 100% !important;
     }
 
-    /* Fixed Compact Sidebar Width */
-    section[data-testid="stSidebar"] {
+    /* Fixed Compact Sidebar width on expand */
+    section[data-testid="stSidebar"][aria-expanded="true"] {
         width: 275px !important;
         min-width: 275px !important;
     }
@@ -195,13 +212,12 @@ st.markdown("""
         box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.15);
     }
 
-    /* Executive Top Action Buttons (Profile & Logout) */
+    /* Executive Top Action Buttons */
     .top-action-btn button {
         border-radius: 8px !important;
         font-size: 1.05rem !important;
-        padding: 4px 10px !important;
+        padding: 4px 8px !important;
         font-weight: 600 !important;
-        transition: all 0.15s ease !important;
     }
     .top-logout-btn button {
         color: #ef4444 !important;
@@ -253,7 +269,7 @@ def login_screen():
                 </div>
                 <h2 style="margin-bottom: 2px; color: #0f172a; font-weight: 700;">M/s INDU SAO</h2>
                 <div style="font-size: 0.82rem; color: #475569; font-weight: 500;">
-                    Vendor Code: 47 | Tata Steel West Bokaro Division
+                    Vendor Code: ID47 | Tata Steel West Bokaro Division
                 </div>
                 <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">
                     ISO Certified Company 45001:2018
@@ -286,7 +302,7 @@ def login_screen():
                     st.session_state.current_name = DEFAULT_ADMIN_NAME
                     st.session_state.current_role = "ADMIN"
                     st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
-                    st.session_state.active_module = "📑 Tata Steel Billing Hub"
+                    st.session_state.active_module = "👷 Worker Attendance"
                     st.rerun()
 
                 # 2. DATABASE USERS AUTHENTICATION
@@ -321,19 +337,19 @@ def login_screen():
 
                         if u_role == "ADMIN":
                             st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
-                            st.session_state.active_module = "📑 Tata Steel Billing Hub"
+                            st.session_state.active_module = "👷 Worker Attendance"
                         else:
                             raw_tabs = str(u_row.get("Allowed_Tabs", ""))
                             permitted = [t.strip() for t in raw_tabs.split(",") if t.strip() in TAB_REGISTRY]
                             st.session_state.allowed_tabs = permitted
                             
                             mods = set([TAB_REGISTRY[t] for t in permitted])
-                            if "Billing" in mods:
+                            if "Attendance" in mods:
+                                st.session_state.active_module = "👷 Worker Attendance"
+                            elif "Billing" in mods:
                                 st.session_state.active_module = "📑 Tata Steel Billing Hub"
                             elif "Fuel" in mods:
                                 st.session_state.active_module = "⛽ Site Fuel Record"
-                            elif "Attendance" in mods:
-                                st.session_state.active_module = "👷 Worker Attendance"
 
                         st.rerun()
                     else:
@@ -348,14 +364,13 @@ if not st.session_state.user_authenticated:
 
 # ----------------- 4. COMPACT PROFESSIONAL SIDEBAR -----------------
 with st.sidebar:
-    # Company Header using Letterhead Logo
     st.markdown(
         f"""
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
             <div>{INDU_SAO_SVG_LOGO}</div>
             <div>
                 <div style="font-size: 0.98rem; font-weight: 700; color: #0f172a; line-height: 1.1;">M/s INDU SAO</div>
-                <div style="font-size: 0.68rem; color: #475569; font-weight: 600;">Vendor Code: 47</div>
+                <div style="font-size: 0.68rem; color: #475569; font-weight: 600;">Vendor Code: ID47</div>
                 <div style="font-size: 0.62rem; color: #059669; font-weight: 600;">ISO 45001:2018</div>
             </div>
         </div>
@@ -370,12 +385,12 @@ with st.sidebar:
         available_modules.add(TAB_REGISTRY.get(tab_name))
 
     module_options = []
+    if "Attendance" in available_modules:
+        module_options.append("👷 Worker Attendance")
     if "Billing" in available_modules:
         module_options.append("📑 Tata Steel Billing Hub")
     if "Fuel" in available_modules:
         module_options.append("⛽ Site Fuel Record")
-    if "Attendance" in available_modules:
-        module_options.append("👷 Worker Attendance")
     if st.session_state.current_role == "ADMIN":
         module_options.append("⚙️ Admin & User Permissions")
 
@@ -386,7 +401,6 @@ with st.sidebar:
     if st.session_state.active_module not in module_options:
         st.session_state.active_module = module_options[0]
 
-    # Compact Navigation Buttons
     for mod_title in module_options:
         is_active = (st.session_state.active_module == mod_title)
         btn_type = "primary" if is_active else "secondary"
@@ -398,7 +412,7 @@ with st.sidebar:
     selected_module = st.session_state.active_module
 
 
-# ----------------- 5. EXECUTIVE TOP-RIGHT HEADER STRIP -----------------
+# ----------------- 5. EXECUTIVE TOP RESPONSIVE HEADER STRIP -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -408,8 +422,7 @@ avatar_html = f'<div class="top-user-avatar">{initials}</div>'
 if st.session_state.get("current_photo"):
     avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="top-user-avatar" />'
 
-# Header Strip Grid
-h_col1, h_col2, h_col3 = st.columns([2.5, 1.2, 0.65], gap="small")
+h_col1, h_col2, h_col3 = st.columns([3.0, 1.4, 0.8], gap="small")
 
 with h_col1:
     st.markdown(
@@ -419,7 +432,7 @@ with h_col1:
             <div>
                 <span style="font-weight: 700; font-size: 1.05rem; color: #0f172a;">Site Operations ERP</span>
                 <span style="color: #cbd5e1; margin: 0 6px;">|</span>
-                <span style="font-size: 0.82rem; color: #475569; font-weight: 500;">Tata Steel West Bokaro Division</span>
+                <span style="font-size: 0.82rem; color: #475569; font-weight: 500;">Tata Steel West Bokaro (ID47)</span>
             </div>
         </div>
         """, 
@@ -444,14 +457,14 @@ with h_col3:
     btn_c1, btn_c2 = st.columns(2)
     with btn_c1:
         st.markdown('<div class="top-action-btn">', unsafe_allow_html=True)
-        if st.button("⚙️", help="Edit Profile & Security Passkey", use_container_width=True):
+        if st.button("⚙️", help="Edit Profile & Security Passkey", use_container_width=True, key="hdr_gear"):
             st.session_state.show_profile_box = not st.session_state.show_profile_box
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
     with btn_c2:
         st.markdown('<div class="top-action-btn top-logout-btn">', unsafe_allow_html=True)
-        # Corporate Power-Off Icon replacement
-        if st.button("⏻", help="Sign Out / Disconnect Session", use_container_width=True):
+        # Corporate Power-Off Icon
+        if st.button("⏻", help="Sign Out / Disconnect Session", use_container_width=True, key="hdr_pwr"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
@@ -531,8 +544,415 @@ if st.session_state.show_profile_box:
 
 # ----------------- 6. OPERATIONAL HUBS VIEWPORT -----------------
 
-# --- HUB 1: TATA STEEL BILLING HUB ---
-if selected_module == "📑 Tata Steel Billing Hub":
+# --- HUB 1: WORKER ATTENDANCE (PRIMARY ACTIVE FOCUS) ---
+if selected_module == "👷 Worker Attendance":
+    st.markdown("### 👷 Site Muster Roll & Worker Management Hub")
+    st.caption("Fleet Crew, Civil Trades, Haazri Marking, Site Khuraki/Advances & Monthly Payouts")
+
+    att_tabs = [t for t in st.session_state.allowed_tabs if TAB_REGISTRY.get(t) == "Attendance"]
+    active_a_tabs = st.tabs(att_tabs)
+
+    for i, tab_title in enumerate(att_tabs):
+        with active_a_tabs[i]:
+            # TAB 1: MASTER DIRECTORY FOR FLEET & CIVIL WORKERS
+            if tab_title == "Worker & Crew Directory":
+                st.markdown("##### 👥 Worker & Crew Master Registration")
+                st.caption("Manage roster for Drivers, Heavy Equipment Operators, Masons, Carpenters, Painters & Site Helpers")
+
+                w_col1, w_col2 = st.columns([1.1, 1.9], gap="large")
+
+                with w_col1:
+                    with st.container(border=True):
+                        st.markdown("###### ➕ Enrol / Update Worker")
+                        with st.form("enrol_worker_form", clear_on_submit=False):
+                            w_id = st.text_input("Worker ID / Badge No.", placeholder="e.g. W-101 or DRV-08").strip().upper()
+                            w_name = st.text_input("Worker Full Name", placeholder="e.g. Mohd Salim").strip()
+                            
+                            c_d1, c_d2 = st.columns(2)
+                            with c_d1:
+                                w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"])
+                            with c_d2:
+                                if w_div == "Fleet Operations":
+                                    w_desig = st.selectbox("Trade / Designation", ["Hyva Driver", "Excavator Operator", "JCB Operator", "Rig Mechanic", "Fleet Helper"])
+                                else:
+                                    w_desig = st.selectbox("Trade / Designation", ["Mason (Rajmistri)", "Carpenter (Shuttering/Gypsum)", "Painter (Putty/Coating)", "Steel/Bar Bender", "Civil Helper"])
+
+                            c_w1, c_w2 = st.columns(2)
+                            with c_w1:
+                                w_wage_type = st.selectbox("Wage Payment Model", ["DAILY_WAGE", "MONTHLY_FIXED"])
+                            with c_w2:
+                                rate_label = "Daily Rate (₹ / Day)" if w_wage_type == "DAILY_WAGE" else "Monthly Salary (₹)"
+                                w_rate = st.number_input(rate_label, min_value=0.0, value=650.0 if w_wage_type == "DAILY_WAGE" else 18000.0, step=50.0)
+
+                            w_ot_rate = st.number_input("OT Rate (₹ / Hour)", min_value=0.0, value=75.0, step=10.0)
+                            w_contact = st.text_input("Mobile / Emergency Contact", placeholder="e.g. 9876543210").strip()
+                            w_asset = st.text_input("Designated Machine / Site", placeholder="e.g. Hyva-01 or Plant Gypsum Work").strip()
+                            w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"])
+
+                            submit_worker = st.form_submit_button("Save Worker Record", use_container_width=True, type="primary")
+
+                            if submit_worker:
+                                if not w_id or not w_name:
+                                    st.error("Worker ID and Name are mandatory.")
+                                else:
+                                    w_df = load_sheet_df("worker_master")
+                                    for col in WORKER_MASTER_COLS:
+                                        if col not in w_df.columns:
+                                            w_df[col] = ""
+
+                                    w_df["_w_chk"] = w_df["Worker_ID"].astype(str).str.strip().str.upper()
+                                    w_df = w_df[w_df["_w_chk"] != w_id].drop(columns=["_w_chk"])
+
+                                    new_row = {
+                                        "Worker_ID": w_id,
+                                        "Full_Name": w_name,
+                                        "Division": w_div,
+                                        "Designation": w_desig,
+                                        "Wage_Type": w_wage_type,
+                                        "Base_Rate": w_rate,
+                                        "OT_Hourly_Rate": w_ot_rate,
+                                        "Contact_No": w_contact,
+                                        "Assigned_Asset": w_asset,
+                                        "Status": w_status,
+                                        "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
+                                    }
+                                    updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
+                                    if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
+                                        st.success(f"Worker {w_id} saved successfully!")
+                                        st.rerun()
+
+                with w_col2:
+                    with st.container(border=True):
+                        st.markdown("###### 📋 Registered Crew & Trade Directory")
+                        w_table = load_sheet_df("worker_master")
+                        if w_table.empty or "Worker_ID" not in w_table.columns:
+                            st.info("No worker profiles found. Enrol workers using the form on the left.")
+                        else:
+                            f_div = st.radio("Filter by Division", ["All", "Fleet Operations", "Civil Construction"], horizontal=True)
+                            disp_table = w_table.copy()
+                            if f_div != "All":
+                                disp_table = disp_table[disp_table["Division"] == f_div]
+
+                            st.dataframe(
+                                disp_table[["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Contact_No", "Status"]],
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                            st.caption("To edit an existing worker, type their Worker ID in the form and re-submit.")
+
+            # TAB 2: DAILY MUSTER ROLL (ATTENDANCE & DAILY KHARCHA)
+            elif tab_title == "Daily Muster Roll (Field Attendance)":
+                st.markdown("##### 📅 Daily Muster Roll & Field Duty Marker")
+                st.caption("Record daily shift attendance (P, HD, A, WO), overtime hours, and spot cash advances/khuraki")
+
+                w_master = load_sheet_df("worker_master")
+                if w_master.empty or "Worker_ID" not in w_master.columns:
+                    st.warning("Please register workers in 'Worker & Crew Directory' first.")
+                else:
+                    active_workers = w_master[w_master["Status"] == "ACTIVE"].copy()
+
+                    top_m1, top_m2, top_m3 = st.columns([1, 1, 1.2])
+                    with top_m1:
+                        muster_date = st.date_input("Attendance Date", value=datetime.date.today())
+                    with top_m2:
+                        sel_division = st.selectbox("Filter Division", ["All Divisions", "Fleet Operations", "Civil Construction"])
+                    with top_m3:
+                        st.metric("Total Active Crew", len(active_workers))
+
+                    if sel_division != "All Divisions":
+                        active_workers = active_workers[active_workers["Division"] == sel_division]
+
+                    muster_df = load_sheet_df("muster_roll")
+                    muster_date_str = muster_date.strftime("%Y-%m-%d")
+                    day_records = pd.DataFrame()
+                    if not muster_df.empty and "Date" in muster_df.columns:
+                        day_records = muster_df[muster_df["Date"].astype(str) == muster_date_str]
+
+                    st.markdown(f"###### 📝 Marking Sheet for `{muster_date_str}` ({sel_division})")
+
+                    with st.form("daily_muster_submission_form"):
+                        marked_rows = []
+                        st.caption("Mark P (Present), HD (Half Day), A (Absent), WO (Weekly Off). Enter Spot Advance & Mode if paid.")
+
+                        for _, w_row in active_workers.iterrows():
+                            wid = str(w_row["Worker_ID"])
+                            wname = str(w_row["Full_Name"])
+                            wdiv = str(w_row["Division"])
+                            wtrade = str(w_row["Designation"])
+
+                            def_att = "P"
+                            def_ot = 0.0
+                            def_adv = 0.0
+                            def_mode = "Cash"
+                            def_rem = ""
+
+                            if not day_records.empty and "Worker_ID" in day_records.columns:
+                                match_prev = day_records[day_records["Worker_ID"].astype(str) == wid]
+                                if not match_prev.empty:
+                                    r0 = match_prev.iloc[0]
+                                    def_att = str(r0.get("Attendance", "P"))
+                                    def_ot = float(r0.get("OT_Hours", 0.0) or 0.0)
+                                    def_adv = float(r0.get("Advance_Amount", 0.0) or 0.0)
+                                    def_mode = str(r0.get("Payment_Mode", "Cash"))
+                                    def_rem = str(r0.get("Remarks", ""))
+
+                            rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([2.0, 1.2, 1.0, 1.2, 1.2, 1.4])
+                            with rc1:
+                                st.markdown(f"**{wname}** (`{wid}`)<br><span style='font-size:0.75rem; color:#64748b;'>{wdiv} • {wtrade}</span>", unsafe_allow_html=True)
+                            with rc2:
+                                att_val = st.selectbox("Haazri", ["P", "HD", "A", "WO"], index=["P", "HD", "A", "WO"].index(def_att) if def_att in ["P", "HD", "A", "WO"] else 0, key=f"att_{wid}", label_visibility="collapsed")
+                            with rc3:
+                                ot_val = st.number_input("OT (Hrs)", min_value=0.0, max_value=16.0, value=def_ot, step=0.5, key=f"ot_{wid}", label_visibility="collapsed")
+                            with rc4:
+                                adv_val = st.number_input("Advance (₹)", min_value=0.0, value=def_adv, step=100.0, key=f"adv_{wid}", label_visibility="collapsed")
+                            with rc5:
+                                mode_val = st.selectbox("Pay Mode", ["Cash", "Online UPI", "Bank Transfer"], index=["Cash", "Online UPI", "Bank Transfer"].index(def_mode) if def_mode in ["Cash", "Online UPI", "Bank Transfer"] else 0, key=f"mode_{wid}", label_visibility="collapsed")
+                            with rc6:
+                                rem_val = st.text_input("Remarks", value=def_rem, placeholder="Notes / Jeb Kharcha", key=f"rem_{wid}", label_visibility="collapsed")
+
+                            marked_rows.append({
+                                "Date": muster_date_str,
+                                "Worker_ID": wid,
+                                "Worker_Name": wname,
+                                "Division": wdiv,
+                                "Attendance": att_val,
+                                "OT_Hours": ot_val,
+                                "Advance_Amount": adv_val,
+                                "Payment_Mode": mode_val if adv_val > 0 else "",
+                                "Supervisor": st.session_state.current_user,
+                                "Remarks": rem_val
+                            })
+                            st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #e2e8f0;' />", unsafe_allow_html=True)
+
+                        save_muster_btn = st.form_submit_button("💾 Commit Attendance & Daily Advances", type="primary", use_container_width=True)
+
+                        if save_muster_btn:
+                            all_muster = load_sheet_df("muster_roll")
+                            for col in MUSTER_ROLL_COLS:
+                                if col not in all_muster.columns:
+                                    all_muster[col] = ""
+
+                            if not all_muster.empty and "Date" in all_muster.columns and "Worker_ID" in all_muster.columns:
+                                m_wids = [r["Worker_ID"] for r in marked_rows]
+                                cond = (all_muster["Date"].astype(str) == muster_date_str) & (all_muster["Worker_ID"].astype(str).isin(m_wids))
+                                all_muster = all_muster[~cond]
+
+                            updated_muster = pd.concat([all_muster, pd.DataFrame(marked_rows)], ignore_index=True)
+                            
+                            # Log spot advances into general advance register automatically
+                            adv_to_log = [r for r in marked_rows if r["Advance_Amount"] > 0]
+                            if adv_to_log:
+                                adv_df = load_sheet_df("worker_advances")
+                                for col in ADVANCE_LOG_COLS:
+                                    if col not in adv_df.columns:
+                                        adv_df[col] = ""
+
+                                new_advs = []
+                                for a in adv_to_log:
+                                    new_advs.append({
+                                        "Txn_ID": f"M-ADV-{int(time.time())}-{a['Worker_ID']}",
+                                        "Date": muster_date_str,
+                                        "Worker_ID": a["Worker_ID"],
+                                        "Worker_Name": a["Worker_Name"],
+                                        "Division": a["Division"],
+                                        "Amount": a["Advance_Amount"],
+                                        "Payment_Mode": a["Payment_Mode"],
+                                        "Supervisor": a["Supervisor"],
+                                        "Remarks": f"Spot Daily Advance: {a['Remarks']}".strip()
+                                    })
+                                updated_adv = pd.concat([adv_df, pd.DataFrame(new_advs)], ignore_index=True)
+                                save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS])
+
+                            if save_sheet_df("muster_roll", updated_muster[MUSTER_ROLL_COLS]):
+                                st.success(f"Muster Roll for {muster_date_str} committed and synced to Google Sheets!")
+                                st.rerun()
+
+            # TAB 3: DEDICATED ADVANCE & KHURAKI REGISTER
+            elif tab_title == "Advance & Khuraki Register":
+                st.markdown("##### 💵 Dedicated Worker Advance & Khuraki Register")
+                st.caption("Record lump-sum cash advances, online transfers, medical allowances, and site pocket kharcha")
+
+                a_col1, a_col2 = st.columns([1.1, 1.9], gap="large")
+
+                w_master = load_sheet_df("worker_master")
+                worker_options = {}
+                if not w_master.empty and "Worker_ID" in w_master.columns:
+                    for _, r in w_master[w_master["Status"] == "ACTIVE"].iterrows():
+                        worker_options[f"{r['Full_Name']} ({r['Worker_ID']}) - {r['Division']}"] = (r['Worker_ID'], r['Full_Name'], r['Division'])
+
+                with a_col1:
+                    with st.container(border=True):
+                        st.markdown("###### ➕ Disburse Advance")
+                        if not worker_options:
+                            st.warning("No active workers found in Master Directory.")
+                        else:
+                            with st.form("disburse_advance_form", clear_on_submit=True):
+                                adv_date = st.date_input("Disbursement Date", value=datetime.date.today())
+                                sel_w_key = st.selectbox("Select Worker", list(worker_options.keys()))
+                                adv_amount = st.number_input("Advance Amount (₹)", min_value=50.0, step=100.0, value=500.0)
+                                adv_mode = st.selectbox("Payment Mode", ["Cash", "Online UPI", "Bank Transfer", "Ration / Fuel Voucher"])
+                                adv_remarks = st.text_input("Remarks / Purpose", placeholder="e.g. Home transfer, Medical, Weekly pocket").strip()
+
+                                submit_adv = st.form_submit_button("Record Advance Entry", type="primary", use_container_width=True)
+
+                                if submit_adv:
+                                    w_id, w_name, w_div = worker_options[sel_w_key]
+                                    adv_df = load_sheet_df("worker_advances")
+                                    for col in ADVANCE_LOG_COLS:
+                                        if col not in adv_df.columns:
+                                            adv_df[col] = ""
+
+                                    new_txn = {
+                                        "Txn_ID": f"ADV-{int(time.time())}",
+                                        "Date": adv_date.strftime("%Y-%m-%d"),
+                                        "Worker_ID": w_id,
+                                        "Worker_Name": w_name,
+                                        "Division": w_div,
+                                        "Amount": adv_amount,
+                                        "Payment_Mode": adv_mode,
+                                        "Supervisor": st.session_state.current_user,
+                                        "Remarks": adv_remarks
+                                    }
+                                    updated_adv_df = pd.concat([adv_df, pd.DataFrame([new_txn])], ignore_index=True)
+                                    if save_sheet_df("worker_advances", updated_adv_df[ADVANCE_LOG_COLS]):
+                                        st.success(f"Advance of ₹{adv_amount:,.2f} recorded for {w_name} via {adv_mode}!")
+                                        st.rerun()
+
+                with a_col2:
+                    with st.container(border=True):
+                        st.markdown("###### 📜 Advance Audit History")
+                        adv_history = load_sheet_df("worker_advances")
+                        if adv_history.empty or "Txn_ID" not in adv_history.columns:
+                            st.info("No recorded advances in ledger yet.")
+                        else:
+                            m_cash = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Cash"]["Amount"], errors="coerce").sum()
+                            m_online = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Online UPI"]["Amount"], errors="coerce").sum()
+                            m_bank = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Bank Transfer"]["Amount"], errors="coerce").sum()
+
+                            sc1, sc2, sc3 = st.columns(3)
+                            sc1.metric("Site Cash Disbursed", f"₹{m_cash:,.0f}")
+                            sc2.metric("Online UPI Disbursed", f"₹{m_online:,.0f}")
+                            sc3.metric("Bank Disbursed", f"₹{m_bank:,.0f}")
+
+                            st.dataframe(
+                                adv_history[["Date", "Worker_Name", "Division", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(25),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+
+            # TAB 4: MONTHLY WAGE ABSTRACT & PAYOUT CONSOLIDATION
+            elif tab_title == "Monthly Wages & Payout Summary":
+                st.markdown("##### 📊 Monthly Attendance Summary & Wage Statement")
+                st.caption("Auto-consolidated gross wages, total advances deducted, and net payable payouts")
+
+                w_master = load_sheet_df("worker_master")
+                muster_df = load_sheet_df("muster_roll")
+                adv_df = load_sheet_df("worker_advances")
+
+                f_c1, f_c2, f_c3 = st.columns([1, 1, 1.2])
+                with f_c1:
+                    sel_year = st.selectbox("Select Year", [2025, 2026, 2027], index=1)
+                with f_c2:
+                    sel_month = st.selectbox("Select Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
+                with f_c3:
+                    f_div_sum = st.selectbox("Filter Operational Division", ["All", "Fleet Operations", "Civil Construction"])
+
+                month_num = list(calendar.month_name).index(sel_month)
+                start_date_str = f"{sel_year}-{month_num:02d}-01"
+                last_day = calendar.monthrange(sel_year, month_num)[1]
+                end_date_str = f"{sel_year}-{month_num:02d}-{last_day:02d}"
+
+                if w_master.empty or "Worker_ID" not in w_master.columns:
+                    st.info("Worker master is empty.")
+                else:
+                    workers = w_master.copy()
+                    if f_div_sum != "All":
+                        workers = workers[workers["Division"] == f_div_sum]
+
+                    summary_rows = []
+                    for _, w in workers.iterrows():
+                        wid = str(w["Worker_ID"])
+                        wname = str(w["Full_Name"])
+                        wdiv = str(w["Division"])
+                        wtype = str(w.get("Wage_Type", "DAILY_WAGE"))
+                        rate = float(w.get("Base_Rate", 0.0) or 0.0)
+                        ot_rate = float(w.get("OT_Hourly_Rate", 0.0) or 0.0)
+
+                        p_days = 0.0
+                        hd_days = 0.0
+                        tot_ot_hrs = 0.0
+
+                        if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
+                            w_att = muster_df[(muster_df["Worker_ID"].astype(str) == wid) & 
+                                              (muster_df["Date"].astype(str) >= start_date_str) & 
+                                              (muster_df["Date"].astype(str) <= end_date_str)]
+                            p_days = len(w_att[w_att["Attendance"] == "P"])
+                            hd_days = len(w_att[w_att["Attendance"] == "HD"])
+                            tot_ot_hrs = pd.to_numeric(w_att["OT_Hours"], errors="coerce").sum()
+
+                        total_effective_haazri = p_days + (hd_days * 0.5)
+
+                        # Wage Calculation Engine
+                        if wtype == "DAILY_WAGE":
+                            base_earnings = total_effective_haazri * rate
+                        else:
+                            # Monthly fixed salary: pro-rated over 30 days
+                            per_day_sal = rate / 30.0 if rate > 0 else 0.0
+                            base_earnings = total_effective_haazri * per_day_sal
+
+                        ot_earnings = tot_ot_hrs * ot_rate
+                        gross_earnings = base_earnings + ot_earnings
+
+                        # Advances Deductions
+                        w_advances = 0.0
+                        if not adv_df.empty and "Date" in adv_df.columns and "Worker_ID" in adv_df.columns:
+                            matched_adv = adv_df[(adv_df["Worker_ID"].astype(str) == wid) & 
+                                                 (adv_df["Date"].astype(str) >= start_date_str) & 
+                                                 (adv_df["Date"].astype(str) <= end_date_str)]
+                            w_advances = pd.to_numeric(matched_adv["Amount"], errors="coerce").sum()
+
+                        net_payable = gross_earnings - w_advances
+
+                        summary_rows.append({
+                            "Worker ID": wid,
+                            "Full Name": wname,
+                            "Division": wdiv,
+                            "Wage Type": wtype,
+                            "Base Rate (₹)": rate,
+                            "Effective Haazri": total_effective_haazri,
+                            "OT Hours": tot_ot_hrs,
+                            "Base Wage (₹)": round(base_earnings, 2),
+                            "OT Wage (₹)": round(ot_earnings, 2),
+                            "Gross Pay (₹)": round(gross_earnings, 2),
+                            "Advances (₹)": round(w_advances, 2),
+                            "Net Payable (₹)": round(net_payable, 2)
+                        })
+
+                    sum_df = pd.DataFrame(summary_rows)
+                    if not sum_df.empty:
+                        t_gross = sum_df["Gross Pay (₹)"].sum()
+                        t_adv = sum_df["Advances (₹)"].sum()
+                        t_net = sum_df["Net Payable (₹)"].sum()
+
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Total Gross Earnings", f"₹{t_gross:,.2f}")
+                        m2.metric("Total Advances Deducted", f"₹{t_adv:,.2f}")
+                        m3.metric("Final Net Payout", f"₹{t_net:,.2f}")
+
+                        st.dataframe(sum_df, use_container_width=True, hide_index=True)
+
+                        csv_exp = sum_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"📥 Download Wage Abstract ({sel_month} {sel_year}) CSV",
+                            data=csv_exp,
+                            file_name=f"Wage_Abstract_{sel_month}_{sel_year}.csv",
+                            mime="text/csv",
+                            type="primary"
+                        )
+
+
+# --- HUB 2: TATA STEEL BILLING HUB ---
+elif selected_module == "📑 Tata Steel Billing Hub":
     st.markdown("### 📑 Tata Steel Commercial & Billing Hub")
     st.caption("Fleet Duty Logs, RA Bill Calculations, Overtime Engine, and Asset Master")
 
@@ -556,7 +976,7 @@ if selected_module == "📑 Tata Steel Billing Hub":
                 st.info("Hiring rates, overtime rates, and fuel factors.")
 
 
-# --- HUB 2: SITE FUEL RECORD (INDEPENDENT) ---
+# --- HUB 3: SITE FUEL RECORD (INDEPENDENT) ---
 elif selected_module == "⛽ Site Fuel Record":
     st.markdown("### ⛽ Diesel & Fuel Management Hub")
     st.caption("Tanker Receipts, Daily Machine Issue Slips & Anti-Pilferage Audit (Decoupled System)")
@@ -573,25 +993,6 @@ elif selected_module == "⛽ Site Fuel Record":
                 st.info("Asset-wise benchmark consumption limits (L/Hr or KM/L).")
             elif tab_title == "Theft & Pilferage Audit":
                 st.info("Variance engine: Logsheet Running Hours vs Diesel Slip Consumption.")
-
-
-# --- HUB 3: WORKER ATTENDANCE (INDEPENDENT) ---
-elif selected_module == "👷 Worker Attendance":
-    st.markdown("### 👷 Site Muster Roll & Worker Operations")
-    st.caption("Driver & Operator Shifts, Daily Site Muster, and Monthly Wage Summaries")
-
-    att_tabs = [t for t in st.session_state.allowed_tabs if TAB_REGISTRY.get(t) == "Attendance"]
-    active_a_tabs = st.tabs(att_tabs)
-
-    for i, tab_title in enumerate(att_tabs):
-        with active_a_tabs[i]:
-            st.subheader(tab_title)
-            if tab_title == "Worker Daily Muster Roll":
-                st.info("Daily marking: P (Present), A (Absent), HD (Half Day), WO (Weekly Off), PH (Paid Holiday).")
-            elif tab_title == "Driver & Operator Pool":
-                st.info("Operator master directory: KYC, Contact, License, and Designated Machine.")
-            elif tab_title == "Monthly Attendance Summary":
-                st.info("Monthly attendance sheet consolidation for contractor wage payouts.")
 
 
 # --- HUB 4: ADMIN COMMAND & RBAC MANAGER (ADMIN ONLY) ---
@@ -620,6 +1021,12 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                 st.markdown("**Permitted Module Access:**")
                 selected_permissions = []
                 
+                with st.expander("Worker Attendance Modules", expanded=True):
+                    for t_name, m_type in TAB_REGISTRY.items():
+                        if m_type == "Attendance":
+                            if st.checkbox(t_name, key=f"p_{t_name}", value=(new_role == "ADMIN")):
+                                selected_permissions.append(t_name)
+
                 with st.expander("Billing Modules", expanded=(new_role == "ADMIN")):
                     for t_name, m_type in TAB_REGISTRY.items():
                         if m_type == "Billing":
@@ -629,12 +1036,6 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
                 with st.expander("Fuel Control Modules", expanded=True):
                     for t_name, m_type in TAB_REGISTRY.items():
                         if m_type == "Fuel":
-                            if st.checkbox(t_name, key=f"p_{t_name}", value=(new_role == "ADMIN")):
-                                selected_permissions.append(t_name)
-
-                with st.expander("Worker Attendance Modules", expanded=True):
-                    for t_name, m_type in TAB_REGISTRY.items():
-                        if m_type == "Attendance":
                             if st.checkbox(t_name, key=f"p_{t_name}", value=(new_role == "ADMIN")):
                                 selected_permissions.append(t_name)
 
