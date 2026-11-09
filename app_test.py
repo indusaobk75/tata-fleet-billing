@@ -665,10 +665,10 @@ if selected_module == "👷 Worker Attendance":
                             )
                             st.caption("To edit an existing worker, type their Worker ID in the form and re-submit.")
 
-            # TAB 2: DAILY MUSTER ROLL (ATTENDANCE & DAILY KHARCHA)
+            # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS GRID)
             elif tab_title == "Daily Muster Roll (Field Attendance)":
                 st.markdown("##### 📅 Daily Muster Roll & Field Duty Marker")
-                st.caption("Record daily shift attendance (P, HD, A, WO), overtime hours, and spot cash advances/khuraki")
+                st.caption("Select workers for batch marking or tap cards individually to adjust Haazri, OT & Spot Advances.")
 
                 w_master = load_sheet_df("worker_master")
                 if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -676,35 +676,31 @@ if selected_module == "👷 Worker Attendance":
                 else:
                     active_workers = w_master[w_master["Status"] == "ACTIVE"].copy()
 
-                    top_m1, top_m2, top_m3 = st.columns([1, 1, 1.2])
+                    # 1. Top Controls (Date, Division Filter & Quick Stats)
+                    top_m1, top_m2, top_m3 = st.columns([1.1, 1.2, 1.2])
                     with top_m1:
-                        muster_date = st.date_input("Attendance Date", value=datetime.date.today())
+                        muster_date = st.date_input("Attendance Date", value=datetime.date.today(), key="muster_dt_pick")
                     with top_m2:
-                        sel_division = st.selectbox("Filter Division", ["All Divisions", "Fleet Operations", "Civil Construction"])
+                        sel_division = st.selectbox("Operational Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
                     with top_m3:
+                        muster_date_str = muster_date.strftime("%Y-%m-%d")
                         st.metric("Total Active Crew", len(active_workers))
 
                     if sel_division != "All Divisions":
                         active_workers = active_workers[active_workers["Division"] == sel_division]
 
+                    # Load today's existing records if already marked
                     muster_df = load_sheet_df("muster_roll")
-                    muster_date_str = muster_date.strftime("%Y-%m-%d")
                     day_records = pd.DataFrame()
                     if not muster_df.empty and "Date" in muster_df.columns:
                         day_records = muster_df[muster_df["Date"].astype(str) == muster_date_str]
 
-                    st.markdown(f"###### 📝 Marking Sheet for `{muster_date_str}` ({sel_division})")
-
-                    with st.form("daily_muster_submission_form"):
-                        marked_rows = []
-                        st.caption("Mark P (Present), HD (Half Day), A (Absent), WO (Weekly Off). Enter Spot Advance & Mode if paid.")
-
-                        for _, w_row in active_workers.iterrows():
-                            wid = str(w_row["Worker_ID"])
-                            wname = str(w_row["Full_Name"])
-                            wdiv = str(w_row["Division"])
-                            wtrade = str(w_row["Designation"])
-
+                    # Initialize Card State Cache in session_state
+                    cache_key = f"att_state_{muster_date_str}"
+                    if cache_key not in st.session_state:
+                        st.session_state[cache_key] = {}
+                        for _, w in active_workers.iterrows():
+                            wid = str(w["Worker_ID"])
                             def_att = "P"
                             def_ot = 0.0
                             def_adv = 0.0
@@ -721,77 +717,208 @@ if selected_module == "👷 Worker Attendance":
                                     def_mode = str(r0.get("Payment_Mode", "Cash"))
                                     def_rem = str(r0.get("Remarks", ""))
 
-                            rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([2.0, 1.2, 1.0, 1.2, 1.2, 1.4])
-                            with rc1:
-                                st.markdown(f"**{wname}** (`{wid}`)<br><span style='font-size:0.75rem; color:#64748b;'>{wdiv} • {wtrade}</span>", unsafe_allow_html=True)
-                            with rc2:
-                                att_val = st.selectbox("Haazri", ["P", "HD", "A", "WO"], index=["P", "HD", "A", "WO"].index(def_att) if def_att in ["P", "HD", "A", "WO"] else 0, key=f"att_{wid}", label_visibility="collapsed")
-                            with rc3:
-                                ot_val = st.number_input("OT (Hrs)", min_value=0.0, max_value=16.0, value=def_ot, step=0.5, key=f"ot_{wid}", label_visibility="collapsed")
-                            with rc4:
-                                adv_val = st.number_input("Advance (₹)", min_value=0.0, value=def_adv, step=100.0, key=f"adv_{wid}", label_visibility="collapsed")
-                            with rc5:
-                                mode_val = st.selectbox("Pay Mode", ["Cash", "Online UPI", "Bank Transfer"], index=["Cash", "Online UPI", "Bank Transfer"].index(def_mode) if def_mode in ["Cash", "Online UPI", "Bank Transfer"] else 0, key=f"mode_{wid}", label_visibility="collapsed")
-                            with rc6:
-                                rem_val = st.text_input("Remarks", value=def_rem, placeholder="Notes / Jeb Kharcha", key=f"rem_{wid}", label_visibility="collapsed")
+                            st.session_state[cache_key][wid] = {
+                                "selected": True,
+                                "att": def_att,
+                                "ot": def_ot,
+                                "adv": def_adv,
+                                "mode": def_mode,
+                                "rem": def_rem
+                            }
+
+                    # --- FEATURE 1: OPTION 2 BULK ACTION TOOLBAR ---
+                    with st.container(border=True):
+                        st.markdown("###### ⚡ Bulk Actions & Multi-Select Toolbar")
+                        ba_col1, ba_col2, ba_col3, ba_col4 = st.columns([1.2, 1, 1, 1])
+
+                        with ba_col1:
+                            all_checked = st.checkbox("Select / Deselect All", value=True, key="bulk_chk_master")
+                            if st.button("Apply Checkbox to All", use_container_width=True):
+                                for wid in active_workers["Worker_ID"].astype(str):
+                                    if wid in st.session_state[cache_key]:
+                                        st.session_state[cache_key][wid]["selected"] = all_checked
+                                st.rerun()
+
+                        with ba_col2:
+                            if st.button("✅ Mark Selected [P]", use_container_width=True, help="Mark all selected workers as Present"):
+                                for wid in active_workers["Worker_ID"].astype(str):
+                                    if wid in st.session_state[cache_key] and st.session_state[cache_key][wid]["selected"]:
+                                        st.session_state[cache_key][wid]["att"] = "P"
+                                st.rerun()
+
+                        with ba_col3:
+                            if st.button("❌ Mark Selected [A]", use_container_width=True, help="Mark all selected workers as Absent"):
+                                for wid in active_workers["Worker_ID"].astype(str):
+                                    if wid in st.session_state[cache_key] and st.session_state[cache_key][wid]["selected"]:
+                                        st.session_state[cache_key][wid]["att"] = "A"
+                                st.rerun()
+
+                        with ba_col4:
+                            if st.button("🔄 Reset All to [P]", use_container_width=True, help="Reset everyone to Present default"):
+                                for wid in active_workers["Worker_ID"].astype(str):
+                                    if wid in st.session_state[cache_key]:
+                                        st.session_state[cache_key][wid]["att"] = "P"
+                                st.rerun()
+
+                    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+                    # --- FEATURE 2: OPTION 3 INTERACTIVE TAP CARDS GRID ---
+                    st.markdown(f"###### 👥 Worker Tap Cards ({len(active_workers)} Workers)")
+                    
+                    grid_cols = st.columns(2, gap="medium")
+                    
+                    for idx, (_, w_row) in enumerate(active_workers.iterrows()):
+                        col_target = grid_cols[idx % 2]
+                        wid = str(w_row["Worker_ID"])
+                        wname = str(w_row["Full_Name"])
+                        wdiv = str(w_row["Division"])
+                        wtrade = str(w_row["Designation"])
+                        w_type = str(w_row.get("Wage_Type", "DAILY_WAGE"))
+
+                        # Fetch state values
+                        cur_state = st.session_state[cache_key].get(wid, {
+                            "selected": True, "att": "P", "ot": 0.0, "adv": 0.0, "mode": "Cash", "rem": ""
+                        })
+
+                        with col_target:
+                            # Card Border Container
+                            with st.container(border=True):
+                                # Top Card Row: Selection Checkbox + Identity Badge
+                                top_c1, top_c2 = st.columns([0.15, 0.85])
+                                with top_c1:
+                                    cur_state["selected"] = st.checkbox("", value=cur_state["selected"], key=f"sel_cb_{wid}", label_visibility="collapsed")
+                                with top_c2:
+                                    st.markdown(
+                                        f"""
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <div>
+                                                <span style="font-weight: 700; font-size: 0.95rem; color: #0f172a;">{wname}</span>
+                                                <span style="font-size: 0.75rem; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; color: #475569; margin-left: 6px;">{wid}</span>
+                                            </div>
+                                            <span style="font-size: 0.72rem; color: #2563eb; font-weight: 600;">{wdiv}</span>
+                                        </div>
+                                        <div style="font-size: 0.76rem; color: #64748b; margin-top: 1px;">{wtrade} • {w_type}</div>
+                                        """,
+                                        unsafe_allow_html=True
+                                    )
+
+                                st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
+
+                                # Tap Chips / Haazri Selector
+                                chip_c1, chip_c2 = st.columns([1.8, 1.2])
+                                with chip_c1:
+                                    att_options = ["P", "HD", "A", "WO"]
+                                    cur_idx = att_options.index(cur_state["att"]) if cur_state["att"] in att_options else 0
+                                    cur_state["att"] = st.radio(
+                                        "Haazri Marking",
+                                        att_options,
+                                        index=cur_idx,
+                                        horizontal=True,
+                                        key=f"rad_att_{wid}",
+                                        label_visibility="collapsed"
+                                    )
+                                with chip_c2:
+                                    cur_state["ot"] = st.number_input(
+                                        "OT (Hrs)",
+                                        min_value=0.0,
+                                        max_value=16.0,
+                                        value=float(cur_state["ot"]),
+                                        step=0.5,
+                                        key=f"card_ot_{wid}"
+                                    )
+
+                                # Advances / Spot Cash Drawer
+                                with st.expander("💵 Spot Advance / Khuraki & Remarks", expanded=(cur_state["adv"] > 0)):
+                                    d_c1, d_c2 = st.columns(2)
+                                    with d_c1:
+                                        cur_state["adv"] = st.number_input(
+                                            "Advance (₹)",
+                                            min_value=0.0,
+                                            value=float(cur_state["adv"]),
+                                            step=100.0,
+                                            key=f"card_adv_{wid}"
+                                        )
+                                    with d_c2:
+                                        mode_opts = ["Cash", "Online UPI", "Bank Transfer"]
+                                        cur_mode_idx = mode_opts.index(cur_state["mode"]) if cur_state["mode"] in mode_opts else 0
+                                        cur_state["mode"] = st.selectbox(
+                                            "Pay Mode",
+                                            mode_opts,
+                                            index=cur_mode_idx,
+                                            key=f"card_mode_{wid}"
+                                        )
+                                    cur_state["rem"] = st.text_input(
+                                        "Remarks",
+                                        value=cur_state["rem"],
+                                        placeholder="Reason / Notes",
+                                        key=f"card_rem_{wid}"
+                                    )
+
+                        st.session_state[cache_key][wid] = cur_state
+
+                    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+                    # --- COMMIT BUTTON ---
+                    if st.button("💾 Save & Commit Muster Roll to Google Sheets", type="primary", use_container_width=True):
+                        marked_rows = []
+                        for _, w_row in active_workers.iterrows():
+                            wid = str(w_row["Worker_ID"])
+                            wname = str(w_row["Full_Name"])
+                            wdiv = str(w_row["Division"])
+                            s_data = st.session_state[cache_key].get(wid, {})
 
                             marked_rows.append({
                                 "Date": muster_date_str,
                                 "Worker_ID": wid,
                                 "Worker_Name": wname,
                                 "Division": wdiv,
-                                "Attendance": att_val,
-                                "OT_Hours": ot_val,
-                                "Advance_Amount": adv_val,
-                                "Payment_Mode": mode_val if adv_val > 0 else "",
+                                "Attendance": s_data.get("att", "P"),
+                                "OT_Hours": s_data.get("ot", 0.0),
+                                "Advance_Amount": s_data.get("adv", 0.0),
+                                "Payment_Mode": s_data.get("mode", "Cash") if s_data.get("adv", 0.0) > 0 else "",
                                 "Supervisor": st.session_state.current_user,
-                                "Remarks": rem_val
+                                "Remarks": s_data.get("rem", "")
                             })
-                            st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #e2e8f0;' />", unsafe_allow_html=True)
 
-                        save_muster_btn = st.form_submit_button("💾 Commit Attendance & Daily Advances", type="primary", use_container_width=True)
+                        all_muster = load_sheet_df("muster_roll")
+                        for col in MUSTER_ROLL_COLS:
+                            if col not in all_muster.columns:
+                                all_muster[col] = ""
 
-                        if save_muster_btn:
-                            all_muster = load_sheet_df("muster_roll")
-                            for col in MUSTER_ROLL_COLS:
-                                if col not in all_muster.columns:
-                                    all_muster[col] = ""
+                        if not all_muster.empty and "Date" in all_muster.columns and "Worker_ID" in all_muster.columns:
+                            m_wids = [r["Worker_ID"] for r in marked_rows]
+                            cond = (all_muster["Date"].astype(str) == muster_date_str) & (all_muster["Worker_ID"].astype(str).isin(m_wids))
+                            all_muster = all_muster[~cond]
 
-                            if not all_muster.empty and "Date" in all_muster.columns and "Worker_ID" in all_muster.columns:
-                                m_wids = [r["Worker_ID"] for r in marked_rows]
-                                cond = (all_muster["Date"].astype(str) == muster_date_str) & (all_muster["Worker_ID"].astype(str).isin(m_wids))
-                                all_muster = all_muster[~cond]
+                        updated_muster = pd.concat([all_muster, pd.DataFrame(marked_rows)], ignore_index=True)
 
-                            updated_muster = pd.concat([all_muster, pd.DataFrame(marked_rows)], ignore_index=True)
-                            
-                            # Log spot advances into general advance register automatically
-                            adv_to_log = [r for r in marked_rows if r["Advance_Amount"] > 0]
-                            if adv_to_log:
-                                adv_df = load_sheet_df("worker_advances")
-                                for col in ADVANCE_LOG_COLS:
-                                    if col not in adv_df.columns:
-                                        adv_df[col] = ""
+                        # Auto-log spot advances to worker_advances
+                        adv_to_log = [r for r in marked_rows if r["Advance_Amount"] > 0]
+                        if adv_to_log:
+                            adv_df = load_sheet_df("worker_advances")
+                            for col in ADVANCE_LOG_COLS:
+                                if col not in adv_df.columns:
+                                    adv_df[col] = ""
 
-                                new_advs = []
-                                for a in adv_to_log:
-                                    new_advs.append({
-                                        "Txn_ID": f"M-ADV-{int(time.time())}-{a['Worker_ID']}",
-                                        "Date": muster_date_str,
-                                        "Worker_ID": a["Worker_ID"],
-                                        "Worker_Name": a["Worker_Name"],
-                                        "Division": a["Division"],
-                                        "Amount": a["Advance_Amount"],
-                                        "Payment_Mode": a["Payment_Mode"],
-                                        "Supervisor": a["Supervisor"],
-                                        "Remarks": f"Spot Daily Advance: {a['Remarks']}".strip()
-                                    })
-                                updated_adv = pd.concat([adv_df, pd.DataFrame(new_advs)], ignore_index=True)
-                                save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS])
+                            new_advs = []
+                            for a in adv_to_log:
+                                new_advs.append({
+                                    "Txn_ID": f"M-ADV-{int(time.time())}-{a['Worker_ID']}",
+                                    "Date": muster_date_str,
+                                    "Worker_ID": a["Worker_ID"],
+                                    "Worker_Name": a["Worker_Name"],
+                                    "Division": a["Division"],
+                                    "Amount": a["Advance_Amount"],
+                                    "Payment_Mode": a["Payment_Mode"],
+                                    "Supervisor": a["Supervisor"],
+                                    "Remarks": f"Spot Daily Advance: {a['Remarks']}".strip()
+                                })
+                            updated_adv = pd.concat([adv_df, pd.DataFrame(new_advs)], ignore_index=True)
+                            save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS])
 
-                            if save_sheet_df("muster_roll", updated_muster[MUSTER_ROLL_COLS]):
-                                st.success(f"Muster Roll for {muster_date_str} committed and synced to Google Sheets!")
-                                st.rerun()
-
+                        if save_sheet_df("muster_roll", updated_muster[MUSTER_ROLL_COLS]):
+                            st.success(f"Muster Roll for {muster_date_str} successfully synchronized!")
+                            st.rerun()
             # TAB 3: DEDICATED ADVANCE & KHURAKI REGISTER
             elif tab_title == "Advance & Khuraki Register":
                 st.markdown("##### 💵 Dedicated Worker Advance & Khuraki Register")
