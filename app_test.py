@@ -113,37 +113,38 @@ TAB_REGISTRY = {
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.8rem; padding-bottom: 2rem; }
-    
-    /* Executive Profile Card */
-    .profile-card {
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid #334155;
+    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
+
+    /* Top Executive Navigation Bar */
+    .top-navbar-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
         border-radius: 12px;
-        padding: 14px;
-        color: #f8fafc;
-        margin-bottom: 0.8rem;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        padding: 10px 18px;
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
     }
-    .profile-avatar {
-        width: 46px;
-        height: 46px;
+    .top-user-avatar {
+        width: 38px;
+        height: 38px;
         border-radius: 50%;
         background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
         display: flex;
         align-items: center;
         justify-content: center;
         font-weight: 700;
-        font-size: 1.05rem;
+        font-size: 0.95rem;
         color: white;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.25);
         object-fit: cover;
     }
     .status-badge {
         display: inline-block;
         padding: 2px 8px;
         border-radius: 9999px;
-        font-size: 0.70rem;
+        font-size: 0.68rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -200,6 +201,8 @@ def init_session():
         st.session_state.current_photo = ""
     if "active_module" not in st.session_state:
         st.session_state.active_module = None
+    if "show_profile_box" not in st.session_state:
+        st.session_state.show_profile_box = False
 
 init_session()
 
@@ -208,7 +211,7 @@ def login_screen():
     with c2:
         st.markdown(
             """
-            <div style="text-align: center; margin-bottom: 24px;">
+            <div style="text-align: center; margin-bottom: 24px; margin-top: 40px;">
                 <h2 style="margin-bottom: 4px;">🏗️ Site Operations ERP</h2>
                 <span style="font-size: 0.9rem; color: #64748b; font-weight: 500;">
                     M/S INDU SAO | Tata Steel West Bokaro Division
@@ -282,7 +285,6 @@ def login_screen():
                             permitted = [t.strip() for t in raw_tabs.split(",") if t.strip() in TAB_REGISTRY]
                             st.session_state.allowed_tabs = permitted
                             
-                            # Set first available module as default
                             mods = set([TAB_REGISTRY[t] for t in permitted])
                             if "Billing" in mods:
                                 st.session_state.active_module = "📑 Tata Steel Billing Hub"
@@ -302,12 +304,11 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. PROFESSIONAL COLLAPSIBLE SIDEBAR -----------------
+# ----------------- 4. CLEAN SIDEBAR (NAVIGATION ONLY) -----------------
 with st.sidebar:
-    # 1. Branding Header
     st.markdown(
         """
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
             <div style="background: #e0f2fe; padding: 8px; border-radius: 8px; display: inline-flex;">
                 <span style="font-size: 1.3rem;">🏗️</span>
             </div>
@@ -320,108 +321,8 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    # 2. Executive Aesthetic User Card with Photo or Initials
-    user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
-    name_parts = str(user_display_name).strip().split()
-    initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
-    badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
+    st.markdown("<div style='margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
 
-    avatar_html = f'<div class="profile-avatar">{initials}</div>'
-    if st.session_state.get("current_photo"):
-        avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="profile-avatar" />'
-
-    st.markdown(
-        f"""
-        <div class="profile-card">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                {avatar_html}
-                <div style="overflow: hidden;">
-                    <div style="font-weight: 600; font-size: 0.92rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
-                        {user_display_name}
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
-                        <span class="status-badge {badge_class}">{st.session_state.current_role}</span>
-                        <span style="color: #94a3b8; font-size: 0.75rem;">• @{st.session_state.current_user}</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # 3. Dedicated User Profile Editor (Supervisors & Admins)
-    with st.expander("👤 My Profile & Contact", expanded=False):
-        with st.form("my_profile_update_form"):
-            prof_name = st.text_input("Full Name", value=st.session_state.current_name or "")
-            prof_contact = st.text_input("Mobile / WhatsApp No.", value=st.session_state.current_contact or "")
-            prof_emer = st.text_input("Emergency Contact", value=st.session_state.current_emergency or "")
-            prof_pass = st.text_input("Update Passkey", placeholder="Type new password to change", type="password")
-            
-            uploaded_photo = st.file_uploader("Upload Photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
-            
-            save_prof_btn = st.form_submit_button("Save Profile Changes", use_container_width=True, type="primary")
-
-            if save_prof_btn:
-                users_df = load_sheet_df("app_users")
-                for col in USER_COLUMNS:
-                    if col not in users_df.columns:
-                        users_df[col] = ""
-
-                users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
-                c_u = st.session_state.current_user.lower()
-
-                photo_b64 = st.session_state.current_photo
-                if uploaded_photo:
-                    photo_b64 = base64.b64encode(uploaded_photo.read()).decode("utf-8")
-
-                if not users_df[users_df["_u_clean"] == c_u].empty:
-                    idx = users_df[users_df["_u_clean"] == c_u].index[0]
-                    users_df.at[idx, "Full_Name"] = prof_name
-                    users_df.at[idx, "Contact_No"] = prof_contact
-                    users_df.at[idx, "Emergency_Contact"] = prof_emer
-                    if prof_pass.strip():
-                        users_df.at[idx, "Password"] = prof_pass.strip()
-                    if photo_b64:
-                        users_df.at[idx, "Photo_Base64"] = photo_b64
-
-                    if save_sheet_df("app_users", users_df[USER_COLUMNS]):
-                        st.session_state.current_name = prof_name
-                        st.session_state.current_contact = prof_contact
-                        st.session_state.current_emergency = prof_emer
-                        st.session_state.current_photo = photo_b64
-                        st.success("Profile successfully updated!")
-                        st.rerun()
-                else:
-                    st.info("Admin master profile updated for this session.")
-
-    # 4. Clean Role-Based Session / Logout
-    if st.session_state.current_role == "ADMIN":
-        with st.expander("🛠️ Diagnostics & Security", expanded=False):
-            st.caption(f"**Database:** `{SHEET_NAME}`")
-            st.caption(f"**Role:** `{st.session_state.current_role}`")
-            st.caption(f"**Permitted Tabs:** `{len(st.session_state.allowed_tabs)} active`")
-            if st.button("🚪 Terminate Session", use_container_width=True, type="secondary", key="admin_logout"):
-                st.session_state.user_authenticated = False
-                st.session_state.current_user = None
-                st.session_state.current_name = None
-                st.session_state.current_role = None
-                st.session_state.allowed_tabs = []
-                st.session_state.active_module = None
-                st.rerun()
-    else:
-        if st.button("🚪 Logout", use_container_width=True, type="secondary", key="user_logout"):
-            st.session_state.user_authenticated = False
-            st.session_state.current_user = None
-            st.session_state.current_name = None
-            st.session_state.current_role = None
-            st.session_state.allowed_tabs = []
-            st.session_state.active_module = None
-            st.rerun()
-
-    st.markdown("<div style='margin-top: 14px; margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
-
-    # 5. Professional Module Selection Tiles (No Radio Dots)
     available_modules = set()
     for tab_name in st.session_state.allowed_tabs:
         available_modules.add(TAB_REGISTRY.get(tab_name))
@@ -443,18 +344,147 @@ with st.sidebar:
     if st.session_state.active_module not in module_options:
         st.session_state.active_module = module_options[0]
 
-    # Render each workspace as an Enterprise Nav Tile Button
+    # Clean Navigation Tiles
     for mod_title in module_options:
         is_active = (st.session_state.active_module == mod_title)
         btn_type = "primary" if is_active else "secondary"
         if st.button(mod_title, key=f"nav_tile_{mod_title}", use_container_width=True, type=btn_type):
             st.session_state.active_module = mod_title
+            st.session_state.show_profile_box = False
             st.rerun()
 
     selected_module = st.session_state.active_module
 
 
-# ----------------- 5. OPERATIONAL HUBS VIEWPORT -----------------
+# ----------------- 5. EXECUTIVE TOP-RIGHT HEADER STRIP -----------------
+user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
+name_parts = str(user_display_name).strip().split()
+initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
+badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
+
+avatar_html = f'<div class="top-user-avatar">{initials}</div>'
+if st.session_state.get("current_photo"):
+    avatar_html = f'<img src="data:image/png;base64,{st.session_state.current_photo}" class="top-user-avatar" />'
+
+# Header Container
+with st.container():
+    h_col1, h_col2, h_col3 = st.columns([2.2, 1.2, 0.6], gap="small")
+    
+    with h_col1:
+        st.markdown(
+            f"""
+            <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0;">
+                <div>
+                    <span style="font-weight: 700; font-size: 1.15rem; color: #0f172a;">Site Operations ERP</span>
+                    <span style="margin: 0 8px; color: #cbd5e1;">|</span>
+                    <span style="font-size: 0.85rem; color: #64748b; font-weight: 500;">Tata Steel West Bokaro Division</span>
+                </div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+
+    with h_col2:
+        st.markdown(
+            f"""
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 4px 0;">
+                {avatar_html}
+                <div style="text-align: left; line-height: 1.2;">
+                    <div style="font-weight: 600; font-size: 0.88rem; color: #0f172a;">{user_display_name}</div>
+                    <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                        <span class="status-badge {badge_class}">{st.session_state.current_role}</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with h_col3:
+        btn_c1, btn_c2 = st.columns(2)
+        with btn_c1:
+            if st.button("⚙️", help="My Profile & Security Settings", use_container_width=True):
+                st.session_state.show_profile_box = not st.session_state.show_profile_box
+                st.rerun()
+        with btn_c2:
+            if st.button("🚪", help="Logout Session", use_container_width=True):
+                st.session_state.user_authenticated = False
+                st.session_state.current_user = None
+                st.session_state.current_name = None
+                st.session_state.current_role = None
+                st.session_state.allowed_tabs = []
+                st.session_state.active_module = None
+                st.session_state.show_profile_box = False
+                st.rerun()
+
+    st.markdown("<hr style='margin-top: 4px; margin-bottom: 16px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
+
+
+# --- TOP PROFILE EDIT CARD (TOGGLED VIA ⚙️ BUTTON) ---
+if st.session_state.show_profile_box:
+    with st.container(border=True):
+        p_c1, p_c2 = st.columns([1, 2], gap="medium")
+        
+        with p_c1:
+            st.markdown("##### 👤 Profile Overview")
+            if st.session_state.get("current_photo"):
+                st.markdown(f'<img src="data:image/png;base64,{st.session_state.current_photo}" style="width: 100px; height: 100px; border-radius: 50%; object-fit: cover; margin-bottom: 12px; border: 2px solid #3b82f6;" />', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="top-user-avatar" style="width: 80px; height: 80px; font-size: 1.8rem; margin-bottom: 12px;">{initials}</div>', unsafe_allow_html=True)
+            
+            st.caption(f"**Username:** `@{st.session_state.current_user}`")
+            st.caption(f"**Role Access:** `{st.session_state.current_role}`")
+            st.caption(f"**Permitted Tabs:** `{len(st.session_state.allowed_tabs)} modules`")
+
+        with p_c2:
+            st.markdown("##### ✏️ Update Contact & Security Passkey")
+            with st.form("top_profile_form"):
+                f_name = st.text_input("Full Name", value=st.session_state.current_name or "")
+                f_contact = st.text_input("Mobile / WhatsApp Number", value=st.session_state.current_contact or "")
+                f_emer = st.text_input("Emergency Contact Number", value=st.session_state.current_emergency or "")
+                f_pass = st.text_input("Update Passkey", placeholder="Type new password to change", type="password")
+                f_photo = st.file_uploader("Upload Profile Picture", type=["png", "jpg", "jpeg"])
+
+                sub_prof = st.form_submit_button("Save & Synchronize Profile", type="primary", use_container_width=True)
+
+                if sub_prof:
+                    users_df = load_sheet_df("app_users")
+                    for col in USER_COLUMNS:
+                        if col not in users_df.columns:
+                            users_df[col] = ""
+
+                    users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
+                    c_u = st.session_state.current_user.lower()
+
+                    photo_b64 = st.session_state.current_photo
+                    if f_photo:
+                        photo_b64 = base64.b64encode(f_photo.read()).decode("utf-8")
+
+                    if not users_df[users_df["_u_clean"] == c_u].empty:
+                        idx = users_df[users_df["_u_clean"] == c_u].index[0]
+                        users_df.at[idx, "Full_Name"] = f_name
+                        users_df.at[idx, "Contact_No"] = f_contact
+                        users_df.at[idx, "Emergency_Contact"] = f_emer
+                        if f_pass.strip():
+                            users_df.at[idx, "Password"] = f_pass.strip()
+                        if photo_b64:
+                            users_df.at[idx, "Photo_Base64"] = photo_b64
+
+                        if save_sheet_df("app_users", users_df[USER_COLUMNS]):
+                            st.session_state.current_name = f_name
+                            st.session_state.current_contact = f_contact
+                            st.session_state.current_emergency = f_emer
+                            st.session_state.current_photo = photo_b64
+                            st.session_state.show_profile_box = False
+                            st.success("Profile updated successfully!")
+                            st.rerun()
+                    else:
+                        st.session_state.show_profile_box = False
+                        st.info("Master Admin profile synchronized for this session.")
+                        st.rerun()
+
+
+# ----------------- 6. OPERATIONAL HUBS VIEWPORT -----------------
 
 # --- HUB 1: TATA STEEL BILLING HUB ---
 if selected_module == "📑 Tata Steel Billing Hub":
