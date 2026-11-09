@@ -115,6 +115,7 @@ st.markdown("""
 <style>
     .block-container { padding-top: 1.8rem; padding-bottom: 2rem; }
     
+    /* Executive Profile Card */
     .profile-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         border: 1px solid #334155;
@@ -128,7 +129,7 @@ st.markdown("""
         width: 46px;
         height: 46px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -150,17 +151,30 @@ st.markdown("""
     .status-admin { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
     .status-user { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #2563eb; }
 
-    div[data-testid="stSidebar"] div[role="radiogroup"] > label {
-        background-color: #f8fafc;
+    /* Custom Professional Nav Button Styles */
+    div[data-testid="stSidebar"] div.stButton > button {
+        text-align: left;
+        justify-content: flex-start;
+        border-radius: 9px;
+        font-weight: 500;
+        padding: 10px 14px;
+        margin-bottom: 4px;
         border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 8px 12px;
-        margin-bottom: 6px;
-        transition: all 0.2s ease-in-out;
+        background-color: #ffffff;
+        color: #1e293b;
+        transition: all 0.2s ease;
     }
-    div[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+    div[data-testid="stSidebar"] div.stButton > button:hover {
         background-color: #f1f5f9;
         border-color: #cbd5e1;
+        color: #0f172a;
+    }
+    div[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #1e293b 0%, #334155 100%) !important;
+        color: #ffffff !important;
+        border-color: #1e293b !important;
+        font-weight: 600 !important;
+        box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.15);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -184,6 +198,8 @@ def init_session():
         st.session_state.current_emergency = ""
     if "current_photo" not in st.session_state:
         st.session_state.current_photo = ""
+    if "active_module" not in st.session_state:
+        st.session_state.active_module = None
 
 init_session()
 
@@ -225,6 +241,7 @@ def login_screen():
                     st.session_state.current_name = DEFAULT_ADMIN_NAME
                     st.session_state.current_role = "ADMIN"
                     st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
+                    st.session_state.active_module = "📑 Tata Steel Billing Hub"
                     st.rerun()
 
                 # PRIORITY 2: DATABASE USERS AUTHENTICATION
@@ -259,10 +276,20 @@ def login_screen():
 
                         if u_role == "ADMIN":
                             st.session_state.allowed_tabs = list(TAB_REGISTRY.keys())
+                            st.session_state.active_module = "📑 Tata Steel Billing Hub"
                         else:
                             raw_tabs = str(u_row.get("Allowed_Tabs", ""))
                             permitted = [t.strip() for t in raw_tabs.split(",") if t.strip() in TAB_REGISTRY]
                             st.session_state.allowed_tabs = permitted
+                            
+                            # Set first available module as default
+                            mods = set([TAB_REGISTRY[t] for t in permitted])
+                            if "Billing" in mods:
+                                st.session_state.active_module = "📑 Tata Steel Billing Hub"
+                            elif "Fuel" in mods:
+                                st.session_state.active_module = "⛽ Site Fuel Record"
+                            elif "Attendance" in mods:
+                                st.session_state.active_module = "👷 Worker Attendance"
 
                         st.rerun()
                     else:
@@ -326,10 +353,10 @@ with st.sidebar:
     # 3. Dedicated User Profile Editor (Supervisors & Admins)
     with st.expander("👤 My Profile & Contact", expanded=False):
         with st.form("my_profile_update_form"):
-            prof_name = st.text_input("My Full Name", value=st.session_state.current_name or "")
+            prof_name = st.text_input("Full Name", value=st.session_state.current_name or "")
             prof_contact = st.text_input("Mobile / WhatsApp No.", value=st.session_state.current_contact or "")
             prof_emer = st.text_input("Emergency Contact", value=st.session_state.current_emergency or "")
-            prof_pass = st.text_input("Update Passkey (Visible to Admin)", placeholder="Type new password to change", type="password")
+            prof_pass = st.text_input("Update Passkey", placeholder="Type new password to change", type="password")
             
             uploaded_photo = st.file_uploader("Upload Photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
             
@@ -344,7 +371,6 @@ with st.sidebar:
                 users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
                 c_u = st.session_state.current_user.lower()
 
-                # Agar photo upload hui hai to base64 encode karenge
                 photo_b64 = st.session_state.current_photo
                 if uploaded_photo:
                     photo_b64 = base64.b64encode(uploaded_photo.read()).decode("utf-8")
@@ -364,7 +390,7 @@ with st.sidebar:
                         st.session_state.current_contact = prof_contact
                         st.session_state.current_emergency = prof_emer
                         st.session_state.current_photo = photo_b64
-                        st.success("Profile successfully synchronized!")
+                        st.success("Profile successfully updated!")
                         st.rerun()
                 else:
                     st.info("Admin master profile updated for this session.")
@@ -381,20 +407,21 @@ with st.sidebar:
                 st.session_state.current_name = None
                 st.session_state.current_role = None
                 st.session_state.allowed_tabs = []
+                st.session_state.active_module = None
                 st.rerun()
     else:
-        # Standard Users: Clean single Logout button
         if st.button("🚪 Logout", use_container_width=True, type="secondary", key="user_logout"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
             st.session_state.current_role = None
             st.session_state.allowed_tabs = []
+            st.session_state.active_module = None
             st.rerun()
 
-    st.markdown("<div style='margin-top: 10px; margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 14px; margin-bottom: 8px; font-size: 0.75rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
 
-    # 5. Filter Available Workspace Modules
+    # 5. Professional Module Selection Tiles (No Radio Dots)
     available_modules = set()
     for tab_name in st.session_state.allowed_tabs:
         available_modules.add(TAB_REGISTRY.get(tab_name))
@@ -413,7 +440,18 @@ with st.sidebar:
         st.warning("No operational modules have been provisioned for this account.")
         st.stop()
 
-    selected_module = st.radio("Navigation", module_options, label_visibility="collapsed")
+    if st.session_state.active_module not in module_options:
+        st.session_state.active_module = module_options[0]
+
+    # Render each workspace as an Enterprise Nav Tile Button
+    for mod_title in module_options:
+        is_active = (st.session_state.active_module == mod_title)
+        btn_type = "primary" if is_active else "secondary"
+        if st.button(mod_title, key=f"nav_tile_{mod_title}", use_container_width=True, type=btn_type):
+            st.session_state.active_module = mod_title
+            st.rerun()
+
+    selected_module = st.session_state.active_module
 
 
 # ----------------- 5. OPERATIONAL HUBS VIEWPORT -----------------
@@ -579,7 +617,6 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
             if users_table.empty or "Username" not in users_table.columns:
                 st.info("No auxiliary user accounts found in 'app_users' ledger.")
             else:
-                # ADMIN KE LIYE PASSWORD LIVE VISIBLE RAHEGA
                 disp_cols = [c for c in ["Username", "Password", "Full_Name", "Role", "Contact_No", "Status", "Allowed_Tabs"] if c in users_table.columns]
                 st.dataframe(users_table[disp_cols], use_container_width=True, hide_index=True)
                 st.caption("🔒 All credentials shown in clear text for master administrative oversight. Re-submit Username on left to overwrite or reset.")
