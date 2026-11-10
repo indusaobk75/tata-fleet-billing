@@ -17,12 +17,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ----------------- 0. BULLETPROOF ADMIN MASTER CONFIG -----------------
+# ----------------- 0. SYSTEM MASTER CONFIGURATION -----------------
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "Admin@2026"
 DEFAULT_ADMIN_NAME = "Indu Sao (Owner)"
 
-# ----------------- 1. DATABASE & CONFIG (TEST ISOLATION) -----------------
+# ----------------- 1. DATABASE & SECRETS CONFIGURATION -----------------
 SHEET_NAME = st.secrets.get("test_spreadsheet_name", st.secrets.get("spreadsheet_name", "Tata_Steel_ERP_TEST_DB"))
 
 USER_COLUMNS = [
@@ -101,7 +101,7 @@ def save_sheet_df(worksheet_name, df):
             if "429" in str(e):
                 time.sleep(1.5 * (attempt + 1))
                 continue
-            st.error(f"Error persisting to {worksheet_name}: {e}")
+            st.error(f"Error persisting data to {worksheet_name}: {e}")
             return False
     return False
 
@@ -126,7 +126,7 @@ def generate_next_worker_id(division, existing_df):
     return f"{prefix}-{max(matched_nums) + 1}"
 
 
-# ----------------- 2. MASTER REGISTRY & ENTERPRISE UI STYLING -----------------
+# ----------------- 2. MASTER REGISTRY & USER INTERFACE STYLING -----------------
 TAB_REGISTRY = {
     # MODULE 1: CLIENT BILLING HUB
     "Daily Logsheet Entry": "Billing",
@@ -144,17 +144,18 @@ TAB_REGISTRY = {
     # MODULE 3: WORKER ATTENDANCE (MULTI-TRADE)
     "Worker & Crew Directory": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
-    "Advance & Khuraki Register": "Attendance",
+    "Advance & Expense Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance"
 }
 
 TAB_ALIASES = {
     "Worker Daily Muster Roll": "Daily Muster Roll (Field Attendance)",
     "Driver & Operator Pool": "Worker & Crew Directory",
-    "Monthly Attendance Summary": "Monthly Wages & Payout Summary"
+    "Monthly Attendance Summary": "Monthly Wages & Payout Summary",
+    "Advance & Khuraki Register": "Advance & Expense Register"
 }
 
-# Letterhead Official Oval Vector Logo[cite: 2]
+# Letterhead Vector Logo
 INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" cy="74" r="5" fill="#0b2a75"/></svg>"""
 
 st.markdown("""
@@ -266,7 +267,7 @@ def init_session():
 
 init_session()
 
-# FAILSAFE GATEKEEPER
+# Session Verification Gatekeeper
 if st.session_state.user_authenticated and not st.session_state.allowed_tabs:
     st.session_state.user_authenticated = False
     st.session_state.current_user = None
@@ -292,15 +293,16 @@ def login_screen():
 
         with st.container(border=True):
             st.markdown("##### Portal Authentication")
-            st.caption("Sign in with your authorized operational credentials")
+            st.caption("Enter authorized enterprise credentials to access the workspace")
             
-            username = st.text_input("Username / Operator ID", placeholder="e.g. admin or supervisor1").strip()
-            password = st.text_input("Security Passkey", type="password", placeholder="••••••••").strip()
-            submitted = st.button("Sign In to Workspace", use_container_width=True, type="primary")
+            # Neutral fields without placeholder hints or suggestions
+            username = st.text_input("Username").strip()
+            password = st.text_input("Password", type="password").strip()
+            submitted = st.button("Sign In", use_container_width=True, type="primary")
 
             if submitted:
                 if not username or not password:
-                    st.warning("Please enter both Username and Passkey.")
+                    st.warning("Please provide both Username and Password.")
                     return
 
                 u_lower = username.lower()
@@ -317,7 +319,7 @@ def login_screen():
 
                 users_df = load_sheet_df("app_users")
                 if users_df.empty or "Username" not in users_df.columns:
-                    st.error("Authentication database is offline. Use master admin credentials.")
+                    st.error("Authentication service unavailable. Please contact the administrator.")
                     return
 
                 users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
@@ -331,7 +333,7 @@ def login_screen():
                     u_name = str(u_row.get("Full_Name", username)).strip()
 
                     if u_status != "ACTIVE":
-                        st.error("Account access revoked. Contact system administrator.")
+                        st.error("Account access is disabled. Please contact the administrator.")
                         return
 
                     if password == u_pass:
@@ -360,7 +362,7 @@ def login_screen():
                                 permitted = [
                                     "Worker & Crew Directory",
                                     "Daily Muster Roll (Field Attendance)",
-                                    "Advance & Khuraki Register",
+                                    "Advance & Expense Register",
                                     "Monthly Wages & Payout Summary"
                                 ]
 
@@ -375,9 +377,9 @@ def login_screen():
 
                         st.rerun()
                     else:
-                        st.error("Incorrect password entered.")
+                        st.error("Invalid credentials provided.")
                 else:
-                    st.error("Authorized user profile not found.")
+                    st.error("User profile not found.")
 
 if not st.session_state.user_authenticated:
     login_screen()
@@ -417,8 +419,8 @@ with st.sidebar:
         module_options.append("⚙️ Admin & User Permissions")
 
     if not module_options:
-        st.warning("No operational modules have been provisioned for this account.")
-        if st.button("🔄 Reset & Login Again", use_container_width=True, type="primary"):
+        st.warning("No operational modules have been assigned to this account.")
+        if st.button("Reset Session & Sign In", use_container_width=True, type="primary"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
@@ -487,13 +489,13 @@ with h_col3:
     btn_c1, btn_c2 = st.columns(2)
     with btn_c1:
         st.markdown('<div class="top-action-btn">', unsafe_allow_html=True)
-        if st.button("⚙️", help="Edit Profile & Security Passkey", use_container_width=True, key="hdr_gear"):
+        if st.button("⚙️", help="Edit Profile & Password", use_container_width=True, key="hdr_gear"):
             st.session_state.show_profile_box = not st.session_state.show_profile_box
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
     with btn_c2:
         st.markdown('<div class="top-action-btn top-logout-btn">', unsafe_allow_html=True)
-        if st.button("⏻", help="Sign Out / Disconnect Session", use_container_width=True, key="hdr_pwr"):
+        if st.button("⏻", help="Sign Out", use_container_width=True, key="hdr_pwr"):
             st.session_state.user_authenticated = False
             st.session_state.current_user = None
             st.session_state.current_name = None
@@ -517,17 +519,17 @@ if st.session_state.show_profile_box:
             else:
                 st.markdown(f'<div class="top-user-avatar" style="width: 80px; height: 80px; font-size: 1.8rem; margin-bottom: 12px;">{initials}</div>', unsafe_allow_html=True)
             st.caption(f"**Username:** `@{st.session_state.current_user}`")
-            st.caption(f"**Role Access:** `{st.session_state.current_role}`")
+            st.caption(f"**Role:** `{st.session_state.current_role}`")
         with p_c2:
-            st.markdown("##### ✏️ Update Contact & Passkey")
+            st.markdown("##### ✏️ Update Contact & Password")
             with st.form("top_profile_form"):
                 f_name = st.text_input("Full Name", value=st.session_state.current_name or "")
-                f_contact = st.text_input("Mobile / WhatsApp Number", value=st.session_state.current_contact or "")
+                f_contact = st.text_input("Contact Number", value=st.session_state.current_contact or "")
                 f_emer = st.text_input("Emergency Contact Number", value=st.session_state.current_emergency or "")
-                f_pass = st.text_input("Update Passkey", placeholder="Type new password to change", type="password")
-                f_photo = st.file_uploader("Upload Profile Picture", type=["png", "jpg", "jpeg"])
+                f_pass = st.text_input("New Password", type="password")
+                f_photo = st.file_uploader("Upload Profile Photo", type=["png", "jpg", "jpeg"])
 
-                if st.form_submit_button("Save & Synchronize Profile", type="primary", use_container_width=True):
+                if st.form_submit_button("Update Profile", type="primary", use_container_width=True):
                     users_df = load_sheet_df("app_users")
                     for col in USER_COLUMNS:
                         if col not in users_df.columns:
@@ -555,11 +557,11 @@ if st.session_state.show_profile_box:
                             st.session_state.current_emergency = f_emer
                             st.session_state.current_photo = photo_b64
                             st.session_state.show_profile_box = False
-                            st.success("Profile updated successfully!")
+                            st.success("Profile successfully updated.")
                             st.rerun()
                     else:
                         st.session_state.show_profile_box = False
-                        st.info("Master Admin profile synchronized for this session.")
+                        st.info("Administrative profile synchronized for the active session.")
                         st.rerun()
 
 
@@ -568,7 +570,7 @@ if st.session_state.show_profile_box:
 # --- HUB 1: WORKER ATTENDANCE & MULTI-TRADE SYSTEM ---
 if selected_module == "👷 Worker Attendance":
     st.markdown("### 👷 Site Muster Roll & Worker Management Hub")
-    st.caption("Fleet Crew, Civil Trades, Haazri Marking, Site Khuraki/Advances & Monthly Payouts")[cite: 1]
+    st.caption("Fleet Crew, Civil Trades, Shift Attendance, Site Advances, and Monthly Payroll Statements")
 
     att_tabs = [t for t in st.session_state.allowed_tabs if TAB_REGISTRY.get(t) == "Attendance"]
     active_a_tabs = st.tabs(att_tabs)
@@ -578,26 +580,26 @@ if selected_module == "👷 Worker Attendance":
             # TAB 1: WORKER DIRECTORY + ATM ID CARD ENGINE
             if tab_title == "Worker & Crew Directory":
                 st.markdown("##### 👥 Worker & Crew Master Registration")
-                st.caption("Manage roster for Drivers, Heavy Equipment Operators, Masons, Carpenters, Painters & Site Helpers")[cite: 1]
+                st.caption("Manage employee directory for Drivers, Equipment Operators, Masons, Carpenters, Painters, and Helpers")
 
                 w_col1, w_col2 = st.columns([1.1, 1.9], gap="large")
 
                 with w_col1:
-                    entry_mode = st.radio("Registration Mode", ["➕ Single Worker Form", "📁 Bulk Excel/CSV Upload"], horizontal=True)
+                    entry_mode = st.radio("Registration Method", ["➕ Single Employee Form", "📁 Bulk Excel/CSV Upload"], horizontal=True)
 
-                    if entry_mode == "➕ Single Worker Form":
+                    if entry_mode == "➕ Single Employee Form":
                         with st.container(border=True):
-                            st.markdown("###### Enrol Single Worker")
+                            st.markdown("###### Register Employee")
                             w_df_current = load_sheet_df("worker_master")
                             
                             w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"])
                             next_wid = generate_next_worker_id(w_div, w_df_current)
 
-                            st.info(f"Assigned Worker ID: **{next_wid}** (Auto-Generated)")
+                            st.info(f"Assigned Employee ID: **{next_wid}** (Auto-Generated)")
 
                             with st.form("enrol_worker_form_auto"):
-                                w_name = st.text_input("Worker Full Name", placeholder="e.g. Ramesh Kumar").strip()
-                                w_ref = st.text_input("Govt ID / Verification Ref", placeholder="For distinguishing duplicate names").strip()
+                                w_name = st.text_input("Full Name").strip()
+                                w_ref = st.text_input("Verification ID Reference").strip()
                                 
                                 if w_div == "Fleet Operations":
                                     w_desig = st.selectbox("Trade / Designation", ["Hyva Driver", "Excavator Operator", "JCB Operator", "Rig Mechanic", "Fleet Helper"])
@@ -606,20 +608,20 @@ if selected_module == "👷 Worker Attendance":
 
                                 c_w1, c_w2 = st.columns(2)
                                 with c_w1:
-                                    w_wage_type = st.selectbox("Wage Payment Model", ["DAILY_WAGE", "MONTHLY_FIXED"])
+                                    w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"])
                                 with c_w2:
-                                    rate_label = "Daily Rate (₹/Day)" if w_wage_type == "DAILY_WAGE" else "Monthly Salary (₹)"
+                                    rate_label = "Daily Wage Rate (₹/Day)" if w_wage_type == "DAILY_WAGE" else "Monthly Base Salary (₹)"
                                     w_rate = st.number_input(rate_label, min_value=0.0, value=650.0 if w_wage_type == "DAILY_WAGE" else 18000.0, step=50.0)
 
-                                w_ot_rate = st.number_input("OT Rate (₹ / Hour)", min_value=0.0, value=75.0, step=10.0)
-                                w_contact = st.text_input("Mobile / Emergency Contact", placeholder="e.g. 9876543210").strip()
+                                w_ot_rate = st.number_input("Overtime Hourly Rate (₹/Hour)", min_value=0.0, value=75.0, step=10.0)
+                                w_contact = st.text_input("Contact Number").strip()
                                 w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"])
 
-                                submit_worker = st.form_submit_button("Save Worker Record", use_container_width=True, type="primary")
+                                submit_worker = st.form_submit_button("Save Employee Record", use_container_width=True, type="primary")
 
                                 if submit_worker:
                                     if not w_name:
-                                        st.error("Worker Name is mandatory.")
+                                        st.error("Employee Name is required.")
                                     else:
                                         w_df = load_sheet_df("worker_master")
                                         for col in WORKER_MASTER_COLS:
@@ -641,12 +643,12 @@ if selected_module == "👷 Worker Attendance":
                                         }
                                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                                            st.success(f"Worker {w_name} ({next_wid}) saved successfully!")
+                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered.")
                                             st.rerun()
 
                     else:
                         with st.container(border=True):
-                            st.markdown("###### 📁 Bulk Upload Workers")
+                            st.markdown("###### 📁 Bulk Upload Employees")
                             sample_df = pd.DataFrame([
                                 {
                                     "Full_Name": "Ramesh Kumar", "Govt_ID_Ref": "Ref-01", "Division": "Fleet Operations",
@@ -657,18 +659,18 @@ if selected_module == "👷 Worker Attendance":
                             st.download_button(
                                 "📥 Download Sample Template (CSV)",
                                 data=sample_df.to_csv(index=False).encode('utf-8'),
-                                file_name="Worker_Upload_Template.csv",
+                                file_name="Employee_Upload_Template.csv",
                                 mime="text/csv",
                                 use_container_width=True
                             )
-                            up_file = st.file_uploader("Upload CSV / Excel", type=["csv", "xlsx"])
+                            up_file = st.file_uploader("Upload File (CSV or Excel)", type=["csv", "xlsx"])
                             if up_file:
                                 b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
                                 b_df.columns = [str(c).strip() for c in b_df.columns]
-                                st.write(f"Preview ({len(b_df)} rows):")
+                                st.write(f"Dataset Preview ({len(b_df)} rows):")
                                 st.dataframe(b_df.head(3), use_container_width=True)
 
-                                if st.button("Commit Uploaded Workers", type="primary", use_container_width=True):
+                                if st.button("Commit Uploaded Employees", type="primary", use_container_width=True):
                                     w_df = load_sheet_df("worker_master")
                                     appended_rows = []
                                     for _, b_row in b_df.iterrows():
@@ -691,17 +693,17 @@ if selected_module == "👷 Worker Attendance":
                                         })
                                     fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
                                     if save_sheet_df("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                        st.success(f"{len(appended_rows)} Workers added with auto-generated IDs!")
+                                        st.success(f"{len(appended_rows)} employee records imported successfully.")
                                         st.rerun()
 
                 with w_col2:
                     with st.container(border=True):
-                        st.markdown("###### 📋 Registered Crew & Pocket ATM ID Cards")
+                        st.markdown("###### 📋 Employee Roster & ATM-Sized ID Passes")
                         w_table = load_sheet_df("worker_master")
                         if w_table.empty or "Worker_ID" not in w_table.columns:
-                            st.info("No worker profiles found. Register crew on the left.")
+                            st.info("No employee profiles found. Register employees on the left.")
                         else:
-                            f_div = st.radio("Filter Roster", ["All", "Fleet Operations", "Civil Construction"], horizontal=True)
+                            f_div = st.radio("Filter Division", ["All", "Fleet Operations", "Civil Construction"], horizontal=True)
                             disp_table = w_table.copy()
                             if f_div != "All":
                                 disp_table = disp_table[disp_table["Division"] == f_div]
@@ -772,15 +774,15 @@ if selected_module == "👷 Worker Attendance":
             <div class="worker-trade">{wtrade}</div>
             <div class="meta-row">
                 <div><b>ID:</b> <span class="wid-badge">{wid}</span></div>
-                <div><b>Div:</b> {wdiv}</div>
-                <div><b>Mob:</b> {wcontact}</div>
-                <div><b>Ref:</b> [ID Ref Verified]</div>
+                <div><b>Division:</b> {wdiv}</div>
+                <div><b>Contact:</b> {wcontact}</div>
+                <div><b>Verification:</b> [Verified]</div>
             </div>
         </div>
     </div>
     <div class="card-footer">
-        <div>Site Access Card • Tata Steel Ops</div>
-        <div style="text-align: right; font-weight: 600; color: #0f172a;">Auth Signatory</div>
+        <div>Site Access Card • Tata Steel Operations</div>
+        <div style="text-align: right; font-weight: 600; color: #0f172a;">Authorized Signatory</div>
     </div>
 </div>
 </body>
@@ -788,11 +790,11 @@ if selected_module == "👷 Worker Attendance":
 
                             th1, th2, th3, th4, th5, th6 = st.columns([1.1, 2.2, 1.4, 1.4, 1.2, 1.4])
                             with th1: st.markdown("**ID**")
-                            with th2: st.markdown("**Worker Name**")
+                            with th2: st.markdown("**Employee Name**")
                             with th3: st.markdown("**Division**")
                             with th4: st.markdown("**Trade**")
-                            with th5: st.markdown("**Wage Type**")
-                            with th6: st.markdown("**Action**")
+                            with th5: st.markdown("**Wage Model**")
+                            with th6: st.markdown("**Actions**")
                             st.markdown("<hr style='margin: 4px 0 10px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
 
                             for _, w_row in disp_table.iterrows():
@@ -811,23 +813,23 @@ if selected_module == "👷 Worker Attendance":
                                 with r6:
                                     card_content = generate_atm_id_card_html(w_row)
                                     st.download_button(
-                                        label="🪪 Download",
+                                        label="🪪 Download Pass",
                                         data=card_content,
                                         file_name=f"ID_{wid}_{wname.replace(' ', '_')}.html",
                                         mime="text/html",
                                         key=f"dl_id_{wid}",
-                                        help="Download ATM-sized CR80 Pass"
+                                        help="Download standard ATM-sized CR80 Pass"
                                     )
                                 st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #f1f5f9;' />", unsafe_allow_html=True)
 
             # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS + MANUAL OT)
             elif tab_title == "Daily Muster Roll (Field Attendance)":
-                st.markdown("##### 📅 Daily Muster Roll & Field Duty Marker")
-                st.caption("Batch select for fast marking or tap individual cards to adjust Haazri, direct OT hours, and Spot Advances.")[cite: 1]
+                st.markdown("##### 📅 Daily Muster Roll & Shift Attendance")
+                st.caption("Apply bulk status updates or adjust individual cards for attendance, overtime hours, and spot advances.")
 
                 w_master = load_sheet_df("worker_master")
                 if w_master.empty or "Worker_ID" not in w_master.columns:
-                    st.warning("Please register workers in 'Worker & Crew Directory' first.")
+                    st.warning("Please register employees in the 'Worker & Crew Directory' tab first.")
                 else:
                     active_workers = w_master[w_master["Status"] == "ACTIVE"].copy()
 
@@ -878,14 +880,14 @@ if selected_module == "👷 Worker Attendance":
                                 "rem": def_rem
                             }
 
-                    # Bulk Action Toolbar
+                    # Bulk Actions Toolbar
                     with st.container(border=True):
-                        st.markdown("###### ⚡ Bulk Actions Toolbar")
+                        st.markdown("###### ⚡ Bulk Batch Actions")
                         ba_col1, ba_col2, ba_col3, ba_col4 = st.columns([1.2, 1, 1, 1])
 
                         with ba_col1:
                             all_checked = st.checkbox("Select / Deselect All", value=True, key="bulk_chk_master")
-                            if st.button("Apply Checkbox", use_container_width=True):
+                            if st.button("Apply Selection", use_container_width=True):
                                 for wid in active_workers["Worker_ID"].astype(str):
                                     if wid in st.session_state[cache_key]:
                                         st.session_state[cache_key][wid]["selected"] = all_checked
@@ -913,7 +915,7 @@ if selected_module == "👷 Worker Attendance":
                                 st.rerun()
 
                     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-                    st.markdown(f"###### 👥 Worker Tap Cards ({len(active_workers)} Workers)")
+                    st.markdown(f"###### 👥 Attendance Cards ({len(active_workers)} Employees)")
                     
                     grid_cols = st.columns(2, gap="medium")
                     
@@ -956,7 +958,7 @@ if selected_module == "👷 Worker Attendance":
                                     att_options = ["P", "HD", "A", "WO"]
                                     cur_idx = att_options.index(cur_state["att"]) if cur_state["att"] in att_options else 0
                                     cur_state["att"] = st.radio(
-                                        "Haazri Marking",
+                                        "Attendance Status",
                                         att_options,
                                         index=cur_idx,
                                         horizontal=True,
@@ -965,7 +967,7 @@ if selected_module == "👷 Worker Attendance":
                                     )
                                 with chip_c2:
                                     cur_state["ot"] = st.number_input(
-                                        "OT (Hrs)",
+                                        "OT Hours",
                                         min_value=0.0,
                                         max_value=16.0,
                                         value=float(cur_state["ot"]),
@@ -977,7 +979,7 @@ if selected_module == "👷 Worker Attendance":
                                     d_c1, d_c2 = st.columns(2)
                                     with d_c1:
                                         cur_state["adv"] = st.number_input(
-                                            "Advance (₹)",
+                                            "Advance Amount (₹)",
                                             min_value=0.0,
                                             value=float(cur_state["adv"]),
                                             step=100.0,
@@ -987,15 +989,14 @@ if selected_module == "👷 Worker Attendance":
                                         mode_opts = ["Cash", "Online UPI", "Bank Transfer"]
                                         cur_mode_idx = mode_opts.index(cur_state["mode"]) if cur_state["mode"] in mode_opts else 0
                                         cur_state["mode"] = st.selectbox(
-                                            "Pay Mode",
+                                            "Payment Mode",
                                             mode_opts,
                                             index=cur_mode_idx,
                                             key=f"card_mode_{wid}"
                                         )
                                     cur_state["rem"] = st.text_input(
-                                        "Remarks",
+                                        "Remarks / Details",
                                         value=cur_state["rem"],
-                                        placeholder="Reason / Notes",
                                         key=f"card_rem_{wid}"
                                     )
 
@@ -1003,7 +1004,7 @@ if selected_module == "👷 Worker Attendance":
 
                     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
-                    if st.button("💾 Save & Commit Muster Roll to Google Sheets", type="primary", use_container_width=True):
+                    if st.button("💾 Commit Daily Muster Roll", type="primary", use_container_width=True):
                         marked_rows = []
                         for _, w_row in active_workers.iterrows():
                             wid = str(w_row["Worker_ID"])
@@ -1054,19 +1055,19 @@ if selected_module == "👷 Worker Attendance":
                                     "Amount": a["Advance_Amount"],
                                     "Payment_Mode": a["Payment_Mode"],
                                     "Supervisor": a["Supervisor"],
-                                    "Remarks": f"Spot Daily Advance: {a['Remarks']}".strip()
+                                    "Remarks": f"Daily Spot Advance: {a['Remarks']}".strip()
                                 })
                             updated_adv = pd.concat([adv_df, pd.DataFrame(new_advs)], ignore_index=True)
                             save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS])
 
                         if save_sheet_df("muster_roll", updated_muster[MUSTER_ROLL_COLS]):
-                            st.success(f"Muster Roll for {muster_date_str} successfully synchronized!")
+                            st.success(f"Attendance for {muster_date_str} committed and synchronized successfully.")
                             st.rerun()
 
             # TAB 3: DEDICATED ADVANCE REGISTER
-            elif tab_title == "Advance & Khuraki Register":
-                st.markdown("##### 💵 Dedicated Worker Advance & Khuraki Register")
-                st.caption("Record lump-sum cash advances, online transfers, and site pocket kharcha")[cite: 1]
+            elif tab_title == "Advance & Expense Register":
+                st.markdown("##### 💵 Advance & Field Expense Register")
+                st.caption("Record lump-sum cash advances, bank/UPI disbursements, and site allowances")
 
                 a_col1, a_col2 = st.columns([1.1, 1.9], gap="large")
 
@@ -1078,18 +1079,18 @@ if selected_module == "👷 Worker Attendance":
 
                 with a_col1:
                     with st.container(border=True):
-                        st.markdown("###### ➕ Disburse Advance")
+                        st.markdown("###### Record Advance Payment")
                         if not worker_options:
-                            st.warning("No active workers found.")
+                            st.warning("No active employees found.")
                         else:
                             with st.form("disburse_advance_form", clear_on_submit=True):
                                 adv_date = st.date_input("Disbursement Date", value=datetime.date.today())
-                                sel_w_key = st.selectbox("Select Worker", list(worker_options.keys()))
+                                sel_w_key = st.selectbox("Select Employee", list(worker_options.keys()))
                                 adv_amount = st.number_input("Advance Amount (₹)", min_value=50.0, step=100.0, value=500.0)
-                                adv_mode = st.selectbox("Payment Mode", ["Cash", "Online UPI", "Bank Transfer", "Ration / Fuel Voucher"])
-                                adv_remarks = st.text_input("Remarks / Purpose", placeholder="e.g. Home transfer, Medical, Weekly pocket").strip()
+                                adv_mode = st.selectbox("Payment Mode", ["Cash", "Online UPI", "Bank Transfer", "Voucher"])
+                                adv_remarks = st.text_input("Remarks / Purpose").strip()
 
-                                submit_adv = st.form_submit_button("Record Advance Entry", type="primary", use_container_width=True)
+                                submit_adv = st.form_submit_button("Disburse Advance", type="primary", use_container_width=True)
 
                                 if submit_adv:
                                     w_id, w_name, w_div = worker_options[sel_w_key]
@@ -1111,24 +1112,24 @@ if selected_module == "👷 Worker Attendance":
                                     }
                                     updated_adv_df = pd.concat([adv_df, pd.DataFrame([new_txn])], ignore_index=True)
                                     if save_sheet_df("worker_advances", updated_adv_df[ADVANCE_LOG_COLS]):
-                                        st.success(f"Advance of ₹{adv_amount:,.2f} recorded for {w_name} via {adv_mode}!")
+                                        st.success(f"Advance of ₹{adv_amount:,.2f} recorded for {w_name} via {adv_mode}.")
                                         st.rerun()
 
                 with a_col2:
                     with st.container(border=True):
-                        st.markdown("###### 📜 Advance Audit History")
+                        st.markdown("###### 📜 Advance Disbursement Ledger")
                         adv_history = load_sheet_df("worker_advances")
                         if adv_history.empty or "Txn_ID" not in adv_history.columns:
-                            st.info("No recorded advances in ledger yet.")
+                            st.info("No recorded advance transactions found.")
                         else:
                             m_cash = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Cash"]["Amount"], errors="coerce").sum()
                             m_online = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Online UPI"]["Amount"], errors="coerce").sum()
                             m_bank = pd.to_numeric(adv_history[adv_history["Payment_Mode"] == "Bank Transfer"]["Amount"], errors="coerce").sum()
 
                             sc1, sc2, sc3 = st.columns(3)
-                            sc1.metric("Site Cash Disbursed", f"₹{m_cash:,.0f}")
-                            sc2.metric("Online UPI Disbursed", f"₹{m_online:,.0f}")
-                            sc3.metric("Bank Disbursed", f"₹{m_bank:,.0f}")
+                            sc1.metric("Cash Disbursed", f"₹{m_cash:,.2f}")
+                            sc2.metric("Online UPI Disbursed", f"₹{m_online:,.2f}")
+                            sc3.metric("Bank Disbursed", f"₹{m_bank:,.2f}")
 
                             st.dataframe(
                                 adv_history[["Date", "Worker_Name", "Division", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(25),
@@ -1139,7 +1140,7 @@ if selected_module == "👷 Worker Attendance":
             # TAB 4: MONTHLY WAGE ABSTRACT
             elif tab_title == "Monthly Wages & Payout Summary":
                 st.markdown("##### 📊 Monthly Attendance Summary & Wage Statement")
-                st.caption("Consolidated gross wages, total advances deducted, and net payable payouts")[cite: 1]
+                st.caption("Consolidated gross wages, total advance deductions, and net payable settlements")
 
                 w_master = load_sheet_df("worker_master")
                 muster_df = load_sheet_df("muster_roll")
@@ -1147,11 +1148,11 @@ if selected_module == "👷 Worker Attendance":
 
                 f_c1, f_c2, f_c3 = st.columns([1, 1, 1.2])
                 with f_c1:
-                    sel_year = st.selectbox("Select Year", [2025, 2026, 2027], index=1)
+                    sel_year = st.selectbox("Calendar Year", [2025, 2026, 2027], index=1)
                 with f_c2:
-                    sel_month = st.selectbox("Select Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
+                    sel_month = st.selectbox("Payroll Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
                 with f_c3:
-                    f_div_sum = st.selectbox("Filter Operational Division", ["All", "Fleet Operations", "Civil Construction"])
+                    f_div_sum = st.selectbox("Filter Division", ["All", "Fleet Operations", "Civil Construction"])
 
                 month_num = list(calendar.month_name).index(sel_month)
                 start_date_str = f"{sel_year}-{month_num:02d}-01"
@@ -1159,7 +1160,7 @@ if selected_module == "👷 Worker Attendance":
                 end_date_str = f"{sel_year}-{month_num:02d}-{last_day:02d}"
 
                 if w_master.empty or "Worker_ID" not in w_master.columns:
-                    st.info("Worker master is empty.")
+                    st.info("Employee master directory is empty.")
                 else:
                     workers = w_master.copy()
                     if f_div_sum != "All":
@@ -1186,13 +1187,13 @@ if selected_module == "👷 Worker Attendance":
                             hd_days = len(w_att[w_att["Attendance"] == "HD"])
                             tot_ot_hrs = pd.to_numeric(w_att["OT_Hours"], errors="coerce").sum()
 
-                        total_effective_haazri = p_days + (hd_days * 0.5)
+                        total_effective_attendance = p_days + (hd_days * 0.5)
 
                         if wtype == "DAILY_WAGE":
-                            base_earnings = total_effective_haazri * rate
+                            base_earnings = total_effective_attendance * rate
                         else:
                             per_day_sal = rate / 30.0 if rate > 0 else 0.0
-                            base_earnings = total_effective_haazri * per_day_sal
+                            base_earnings = total_effective_attendance * per_day_sal
 
                         ot_earnings = tot_ot_hrs * ot_rate
                         gross_earnings = base_earnings + ot_earnings
@@ -1207,38 +1208,38 @@ if selected_module == "👷 Worker Attendance":
                         net_payable = gross_earnings - w_advances
 
                         summary_rows.append({
-                            "Worker ID": wid,
+                            "Employee ID": wid,
                             "Full Name": wname,
                             "Division": wdiv,
-                            "Wage Type": wtype,
+                            "Wage Model": wtype,
                             "Base Rate (₹)": rate,
-                            "Effective Haazri": total_effective_haazri,
+                            "Effective Shifts": total_effective_attendance,
                             "OT Hours": tot_ot_hrs,
-                            "Base Wage (₹)": round(base_earnings, 2),
-                            "OT Wage (₹)": round(ot_earnings, 2),
-                            "Gross Pay (₹)": round(gross_earnings, 2),
-                            "Advances (₹)": round(w_advances, 2),
+                            "Base Earnings (₹)": round(base_earnings, 2),
+                            "OT Earnings (₹)": round(ot_earnings, 2),
+                            "Gross Earnings (₹)": round(gross_earnings, 2),
+                            "Advance Deductions (₹)": round(w_advances, 2),
                             "Net Payable (₹)": round(net_payable, 2)
                         })
 
                     sum_df = pd.DataFrame(summary_rows)
                     if not sum_df.empty:
-                        t_gross = sum_df["Gross Pay (₹)"].sum()
-                        t_adv = sum_df["Advances (₹)"].sum()
+                        t_gross = sum_df["Gross Earnings (₹)"].sum()
+                        t_adv = sum_df["Advance Deductions (₹)"].sum()
                         t_net = sum_df["Net Payable (₹)"].sum()
 
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Total Gross Earnings", f"₹{t_gross:,.2f}")
-                        m2.metric("Total Advances Deducted", f"₹{t_adv:,.2f}")
-                        m3.metric("Final Net Payout", f"₹{t_net:,.2f}")
+                        m2.metric("Total Deductions", f"₹{t_adv:,.2f}")
+                        m3.metric("Total Net Settlement", f"₹{t_net:,.2f}")
 
                         st.dataframe(sum_df, use_container_width=True, hide_index=True)
 
                         csv_exp = sum_df.to_csv(index=False).encode('utf-8')
                         st.download_button(
-                            label=f"📥 Download Wage Abstract ({sel_month} {sel_year}) CSV",
+                            label=f"📥 Export Payroll Abstract ({sel_month} {sel_year}) CSV",
                             data=csv_exp,
-                            file_name=f"Wage_Abstract_{sel_month}_{sel_year}.csv",
+                            file_name=f"Payroll_Statement_{sel_month}_{sel_year}.csv",
                             mime="text/csv",
                             type="primary"
                         )
@@ -1258,21 +1259,21 @@ elif selected_module == "📑 Tata Steel Billing Hub":
             if tab_title == "Daily Logsheet Entry":
                 st.info("Field Duty Slips & Bulk Calendar Upload (06:30 PM & 10-Hr Overtime Engine).")
             elif tab_title == "Monthly Statement & Abstract":
-                st.info("RA Bill Cockpit with Dynamic RA Bill [Next] Dropdown and Direct Start/End Date Pickers.")
+                st.info("RA Bill Cockpit with Dynamic RA Bill Dropdown and Date Pickers.")
             elif tab_title == "Locked RA Bills Repository":
-                st.info("Committed Bill Archive with PDF & Excel downloads.")
+                st.info("Committed Bill Archive with PDF & Excel export options.")
             elif tab_title == "Delivery Order (DO) Contract Management":
-                st.info("Baseline Qty, Rate, and 1:1 LUMPSUM Fuel ledger setup.")
+                st.info("Baseline Quantity, Rate, and Lumpsum Fuel ledger setup.")
             elif tab_title == "Vehicle Fleet Master Mapping":
                 st.info("Equipment asset IDs mapped to contract DOs.")
             elif tab_title == "Commercial Rate Master":
-                st.info("Hiring rates, overtime rates, and fuel factors.")
+                st.info("Contractual hiring rates, overtime rates, and fuel factors.")
 
 
 # --- HUB 3: SITE FUEL RECORD (INDEPENDENT) ---
 elif selected_module == "⛽ Site Fuel Record":
     st.markdown("### ⛽ Diesel & Fuel Management Hub")
-    st.caption("Tanker Receipts, Daily Machine Issue Slips & Anti-Pilferage Audit (Decoupled System)")
+    st.caption("Tanker Receipts, Daily Machine Issue Slips & Anti-Pilferage Audit")
 
     fuel_tabs = [t for t in st.session_state.allowed_tabs if TAB_REGISTRY.get(t) == "Fuel"]
     active_f_tabs = st.tabs(fuel_tabs)
@@ -1281,9 +1282,9 @@ elif selected_module == "⛽ Site Fuel Record":
         with active_f_tabs[i]:
             st.subheader(tab_title)
             if tab_title == "Daily Diesel Issue Slip":
-                st.info("Field Slip logger: Vehicle No, Driver, Meter Reading, Liters Issued, Slip Photo Upload.")
+                st.info("Field Slip logger: Vehicle Number, Driver, Meter Reading, Liters Issued, and Slip Photo.")
             elif tab_title == "Fleet Fuel Benchmark Master":
-                st.info("Asset-wise benchmark consumption limits (L/Hr or KM/L).")
+                st.info("Asset-wise benchmark consumption limits (Liters/Hour or KM/Liter).")
             elif tab_title == "Theft & Pilferage Audit":
                 st.info("Variance engine: Logsheet Running Hours vs Diesel Slip Consumption.")
 
@@ -1291,7 +1292,7 @@ elif selected_module == "⛽ Site Fuel Record":
 # --- HUB 4: ADMIN COMMAND & RBAC MANAGER (ADMIN ONLY) ---
 elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.current_role == "ADMIN":
     st.markdown("### ⚙️ Identity & Access Management (RBAC)")
-    st.caption("Provision employee credentials, define modular access boundaries, and audit live user credentials")
+    st.caption("Provision credentials, define modular access boundaries, and manage user accounts")
 
     col_u1, col_u2 = st.columns([1.1, 1.9], gap="large")
 
@@ -1300,10 +1301,10 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
             st.markdown("##### ➕ Provision / Update User")
             
             with st.form("create_user_form", clear_on_submit=False):
-                new_username = st.text_input("Username (Unique ID)", placeholder="e.g. sup_ramesh").strip()
-                new_password = st.text_input("Password (Plain Text)", placeholder="Set initial password").strip()
-                new_name = st.text_input("Full Name", placeholder="e.g. Ramesh Kumar").strip()
-                new_contact = st.text_input("Contact Number", placeholder="e.g. 9876543210").strip()
+                new_username = st.text_input("Username").strip()
+                new_password = st.text_input("Password", type="password").strip()
+                new_name = st.text_input("Full Name").strip()
+                new_contact = st.text_input("Contact Number").strip()
                 
                 f_c1, f_c2 = st.columns(2)
                 with f_c1:
@@ -1375,16 +1376,16 @@ elif selected_module == "⚙️ Admin & User Permissions" and st.session_state.c
 
                         updated_users = pd.concat([users_df, pd.DataFrame(rows_to_append)], ignore_index=True)
                         if save_sheet_df("app_users", updated_users[USER_COLUMNS]):
-                            st.success(f"User account '{new_username}' saved and synchronized!")
+                            st.success(f"User account '{new_username}' saved successfully.")
                             st.rerun()
 
     with col_u2:
         with st.container(border=True):
-            st.markdown("##### 👥 Active Enterprise Users & Credentials Master")
+            st.markdown("##### 👥 Active System Users & Credentials Ledger")
             users_table = load_sheet_df("app_users")
             if users_table.empty or "Username" not in users_table.columns:
-                st.info("No auxiliary user accounts found in 'app_users' ledger.")
+                st.info("No system user records found in the database.")
             else:
                 disp_cols = [c for c in ["Username", "Password", "Full_Name", "Role", "Contact_No", "Status", "Allowed_Tabs"] if c in users_table.columns]
                 st.dataframe(users_table[disp_cols], use_container_width=True, hide_index=True)
-                st.caption("🔒 All credentials shown in clear text for master administrative oversight. Re-submit Username on left to overwrite or reset.")
+                st.caption("Re-submit a username on the left to overwrite or update an account.")
