@@ -30,7 +30,6 @@ USER_COLUMNS = [
     "Contact_No", "Emergency_Contact", "Photo_Base64"
 ]
 
-# OT_Hourly_Rate completely dropped from Worker Master
 WORKER_MASTER_COLS = [
     "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type", 
     "Base_Rate", "Contact_No", "Status", "Created_Date"
@@ -172,8 +171,9 @@ TAB_REGISTRY = {
     "Fleet Fuel Benchmark Master": "Fuel",
     "Theft & Pilferage Audit": "Fuel",
 
-    # MODULE 3: WORKER ATTENDANCE (MULTI-TRADE)
-    "Worker & Crew Directory": "Attendance",
+    # MODULE 3: WORKER ATTENDANCE (SPLIT & ENHANCED)
+    "➕ Employee Enrolment": "Attendance",
+    "📋 Employee Master Register": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
     "Advance & Expense Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance"
@@ -181,7 +181,8 @@ TAB_REGISTRY = {
 
 TAB_ALIASES = {
     "Worker Daily Muster Roll": "Daily Muster Roll (Field Attendance)",
-    "Driver & Operator Pool": "Worker & Crew Directory",
+    "Driver & Operator Pool": "📋 Employee Master Register",
+    "Worker & Crew Directory": "📋 Employee Master Register",
     "Monthly Attendance Summary": "Monthly Wages & Payout Summary",
     "Advance & Khuraki Register": "Advance & Expense Register"
 }
@@ -294,6 +295,8 @@ def init_session():
         st.session_state.active_module = None
     if "show_profile_box" not in st.session_state:
         st.session_state.show_profile_box = False
+    if "selected_worker_drilldown" not in st.session_state:
+        st.session_state.selected_worker_drilldown = None
 
 init_session()
 
@@ -388,7 +391,8 @@ def login_screen():
                             
                             if not permitted:
                                 permitted = [
-                                    "Worker & Crew Directory",
+                                    "➕ Employee Enrolment",
+                                    "📋 Employee Master Register",
                                     "Daily Muster Roll (Field Attendance)",
                                     "Advance & Expense Register",
                                     "Monthly Wages & Payout Summary"
@@ -467,6 +471,7 @@ with st.sidebar:
         if st.button(mod_title, key=f"nav_tile_{mod_title}", use_container_width=True, type=btn_type):
             st.session_state.active_module = mod_title
             st.session_state.show_profile_box = False
+            st.session_state.selected_worker_drilldown = None
             st.rerun()
 
     selected_module = st.session_state.active_module
@@ -592,7 +597,157 @@ if st.session_state.show_profile_box:
                         st.rerun()
 
 
-# ----------------- 6. OPERATIONAL HUBS VIEWPORT -----------------
+# ----------------- 6. REUSABLE A4 MULTI-PAGE BATCH PASS ENGINE -----------------
+def generate_a4_batch_id_sheet_html(workers_list):
+    """
+    Renders ATM CR80 cards in batches of 8 per A4 page with cutting guides.
+    Automatically handles multi-page pagination.
+    """
+    if not workers_list:
+        return ""
+
+    chunks = [workers_list[i:i + 8] for i in range(0, len(workers_list), 8)]
+    total_pages = len(chunks)
+    
+    pages_html = ""
+    for page_idx, chunk in enumerate(chunks, start=1):
+        cards_html = ""
+        for w in chunk:
+            wid = str(w.get("Worker_ID", ""))
+            wname = str(w.get("Full_Name", ""))
+            wdiv = str(w.get("Division", ""))
+            wrole = str(w.get("Designation", ""))
+            wcontact = str(w.get("Contact_No", "N/A"))
+            
+            cards_html += f"""
+            <div class="atm-card">
+                <div class="card-header">
+                    <div>
+                        <div class="co-title">M/s INDU SAO</div>
+                        <div class="co-sub">Vendor Code: ID47 | Tata Steel West Bokaro</div>
+                    </div>
+                    <div class="iso-tag">ISO 45001</div>
+                </div>
+                <div class="card-body">
+                    <div class="photo-slot">PHOTO</div>
+                    <div class="info-col">
+                        <div class="worker-name">{wname}</div>
+                        <div class="worker-trade">{wrole}</div>
+                        <div class="meta-row">
+                            <div><b>ID:</b> <span class="wid-badge">{wid}</span></div>
+                            <div><b>Div:</b> {wdiv}</div>
+                            <div><b>Mob:</b> {wcontact}</div>
+                            <div><b>Ref:</b> [ID Verified]</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <div>Site Access Pass</div>
+                    <div style="font-weight: 600; color: #0f172a;">Auth Signatory</div>
+                </div>
+            </div>
+            """
+
+        pages_html += f"""
+        <div class="sheet-page">
+            {cards_html}
+            <div class="page-footer-note">Page {page_idx} of {total_pages} • M/s INDU SAO Authorized Site Passes</div>
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Batch ID Passes - A4 Multi-Page Print</title>
+<style>
+    @page {{
+        size: A4 portrait;
+        margin: 8mm 10mm;
+    }}
+    * {{
+        box-sizing: border-box;
+    }}
+    body {{
+        margin: 0;
+        padding: 0;
+        background: #f1f5f9;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }}
+    .sheet-page {{
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0 auto 10mm auto;
+        padding: 6mm 6mm;
+        background: #ffffff;
+        display: grid;
+        grid-template-columns: repeat(2, 85.6mm);
+        grid-auto-rows: 53.98mm;
+        gap: 5.5mm 8mm;
+        justify-content: center;
+        page-break-after: always;
+        break-after: page;
+        position: relative;
+    }}
+    .page-footer-note {{
+        grid-column: span 2;
+        text-align: center;
+        font-size: 5pt;
+        color: #94a3b8;
+        padding-top: 1mm;
+    }}
+    .atm-card {{
+        width: 85.6mm;
+        height: 53.98mm;
+        background: #ffffff;
+        border: 1px dashed #94a3b8;
+        border-radius: 3.5mm;
+        padding: 3mm 4mm;
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }}
+    .card-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1.2px solid #0b2a75;
+        padding-bottom: 1.2mm;
+    }}
+    .co-title {{ font-size: 8pt; font-weight: 800; color: #0b2a75; line-height: 1; }}
+    .co-sub {{ font-size: 5pt; font-weight: 600; color: #475569; margin-top: 0.4mm; }}
+    .iso-tag {{ font-size: 4.5pt; background: #064e3b; color: #34d399; padding: 0.6mm 1.2mm; border-radius: 0.8mm; font-weight: 700; }}
+    .card-body {{ display: flex; gap: 2.5mm; align-items: center; margin-top: 0.8mm; }}
+    .photo-slot {{
+        width: 17mm; height: 21mm; border: 0.8px dashed #94a3b8; border-radius: 1.5mm;
+        background: #f8fafc; display: flex; align-items: center; justify-content: center;
+        font-size: 4.8pt; color: #94a3b8; text-align: center; font-weight: 700;
+    }}
+    .info-col {{ flex: 1; line-height: 1.22; }}
+    .worker-name {{ font-size: 7.8pt; font-weight: 800; color: #0f172a; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55mm; }}
+    .worker-trade {{ font-size: 6.2pt; font-weight: 700; color: #2563eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55mm; }}
+    .meta-row {{ font-size: 5.2pt; color: #334155; margin-top: 0.8mm; }}
+    .wid-badge {{ background: #e2e8f0; padding: 0.3mm 1mm; border-radius: 0.8mm; font-weight: 700; color: #0f172a; }}
+    .card-footer {{
+        border-top: 0.8px solid #cbd5e1; padding-top: 0.8mm;
+        display: flex; justify-content: space-between; align-items: flex-end; font-size: 4.6pt; color: #64748b;
+    }}
+    @media print {{
+        body {{ background: transparent; }}
+        .sheet-page {{ margin: 0; padding: 0; box-shadow: none; width: auto; min-height: auto; }}
+        .atm-card {{ border: 1px dashed #cbd5e1 !important; }}
+    }}
+</style>
+</head>
+<body onload="window.print()">
+    {pages_html}
+</body>
+</html>"""
+
+
+# ----------------- 7. OPERATIONAL HUBS VIEWPORT -----------------
 
 # --- HUB 1: WORKER ATTENDANCE & MULTI-TRADE SYSTEM ---
 if selected_module == "👷 Worker Attendance":
@@ -604,258 +759,364 @@ if selected_module == "👷 Worker Attendance":
 
     for i, tab_title in enumerate(att_tabs):
         with active_a_tabs[i]:
-            # TAB 1: WORKER DIRECTORY + ATM ID CARD ENGINE
-            if tab_title == "Worker & Crew Directory":
-                st.markdown("##### 👥 Worker & Crew Master Registration")
-                st.caption("Manage employee directory for Fleet Operations and Civil Construction divisions")
+            
+            # ----------------- TAB A: EMPLOYEE ENROLMENT -----------------
+            if tab_title == "➕ Employee Enrolment":
+                st.markdown("##### ➕ Dedicated Employee Enrolment Portal")
+                st.caption("Register individual workforce members or bulk import site roster using templates")
 
-                w_col1, w_col2 = st.columns([1.15, 1.85], gap="large")
+                entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload"], horizontal=True)
 
-                with w_col1:
-                    entry_mode = st.radio("Registration Method", ["➕ Single Employee Form", "📁 Bulk Excel/CSV Upload"], horizontal=True)
-
-                    if entry_mode == "➕ Single Employee Form":
+                if entry_mode == "Single Employee Form":
+                    c_form, c_info = st.columns([1.3, 0.7], gap="large")
+                    with c_form:
                         with st.container(border=True):
-                            st.markdown("###### Register Employee")
+                            st.markdown("###### New Employee Onboarding")
                             w_df_current = load_sheet_df("worker_master")
                             
-                            w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"])
+                            w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"], key="enrol_div")
                             next_wid = generate_next_worker_id(w_div, w_df_current)
 
-                            st.info(f"Assigned Employee ID: **{next_wid}** (Auto-Generated)")
+                            st.info(f"System Assigned ID: **{next_wid}** (Auto-Generated)")
 
-                            with st.form("enrol_worker_form_auto"):
-                                w_name = st.text_input("Full Name").strip()
-                                w_ref = st.text_input("Verification ID Reference").strip()
-                                
-                                role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
-                                sel_role = st.selectbox("Designation / Role", role_choices)
-                                custom_role = st.text_input("Specify Custom Role (If 'Other' selected)").strip()
+                            w_name = st.text_input("Full Official Name", key="enrol_name").strip()
+                            w_ref = st.text_input("Identity Verification Reference", key="enrol_ref", help="Used to distinguish duplicate names").strip()
 
-                                c_w1, c_w2 = st.columns(2)
-                                with c_w1:
-                                    w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"])
-                                with c_w2:
-                                    rate_label = "Daily Wage Rate (₹/Day)" if w_wage_type == "DAILY_WAGE" else "Monthly Base Salary (₹)"
-                                    w_rate = st.number_input(rate_label, min_value=0.0, value=650.0 if w_wage_type == "DAILY_WAGE" else 18000.0, step=50.0)
+                            role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
+                            sel_role = st.selectbox("Designation / Role", role_choices, key="enrol_role")
+                            
+                            # Dynamic field for Other Role
+                            custom_role = ""
+                            if sel_role == "Other (Custom Entry)":
+                                custom_role = st.text_input("Specify Custom Role", key="enrol_custom_role").strip()
 
-                                w_contact = st.text_input("Contact Number").strip()
-                                w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"])
+                            # Interactive Reactive Wage Model
+                            w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"], key="enrol_wage_type")
+                            
+                            if w_wage_type == "DAILY_WAGE":
+                                w_rate = st.number_input("Daily Wage Rate (₹ / Shift)", min_value=100.0, value=650.0, step=50.0, key="enrol_rate_daily")
+                            else:
+                                w_rate = st.number_input("Monthly Fixed Base Salary (₹ / Month)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
 
-                                submit_worker = st.form_submit_button("Save Employee Record", use_container_width=True, type="primary")
+                            w_contact = st.text_input("Contact Mobile Number", key="enrol_contact").strip()
+                            w_status = st.selectbox("Initial Employment Status", ["ACTIVE", "INACTIVE"], key="enrol_status")
 
-                                if submit_worker:
-                                    final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
-                                    if not w_name:
-                                        st.error("Employee Name is required.")
-                                    elif sel_role == "Other (Custom Entry)" and not custom_role:
-                                        st.error("Please specify the custom Designation / Role.")
-                                    else:
-                                        w_df = load_sheet_df("worker_master")
-                                        for col in WORKER_MASTER_COLS:
-                                            if col not in w_df.columns:
-                                                w_df[col] = ""
-
-                                        new_row = {
-                                            "Worker_ID": next_wid,
-                                            "Full_Name": w_name,
-                                            "Govt_ID_Ref": w_ref,
-                                            "Division": w_div,
-                                            "Designation": final_role,
-                                            "Wage_Type": w_wage_type,
-                                            "Base_Rate": w_rate,
-                                            "Contact_No": w_contact,
-                                            "Status": w_status,
-                                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
-                                        }
-                                        updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
-                                        if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered.")
-                                            st.rerun()
-
-                    else:
-                        with st.container(border=True):
-                            st.markdown("###### 📁 Bulk Upload Employees")
-                            sample_df = pd.DataFrame([
-                                {
-                                    "Full_Name": "Ramesh Kumar", "Govt_ID_Ref": "Ref-01", "Division": "Fleet Operations",
-                                    "Designation": "Hyva Tipper Driver", "Wage_Type": "MONTHLY_FIXED", "Base_Rate": 18000.0,
-                                    "Contact_No": "9876543210", "Status": "ACTIVE"
-                                }
-                            ])
-                            st.download_button(
-                                "📥 Download Sample Template (CSV)",
-                                data=sample_df.to_csv(index=False).encode('utf-8'),
-                                file_name="Employee_Upload_Template.csv",
-                                mime="text/csv",
-                                use_container_width=True
-                            )
-                            up_file = st.file_uploader("Upload File (CSV or Excel)", type=["csv", "xlsx"])
-                            if up_file:
-                                b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
-                                b_df.columns = [str(c).strip() for c in b_df.columns]
-                                st.write(f"Dataset Preview ({len(b_df)} rows):")
-                                st.dataframe(b_df.head(3), use_container_width=True)
-
-                                if st.button("Commit Uploaded Employees", type="primary", use_container_width=True):
+                            if st.button("Save & Commit Employee Record", type="primary", use_container_width=True):
+                                final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
+                                if not w_name:
+                                    st.error("Employee Name is required.")
+                                elif sel_role == "Other (Custom Entry)" and not custom_role:
+                                    st.error("Please specify the custom role name.")
+                                else:
                                     w_df = load_sheet_df("worker_master")
-                                    appended_rows = []
-                                    for _, b_row in b_df.iterrows():
-                                        div_val = str(b_row.get("Division", "Fleet Operations"))
-                                        cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                                        new_gen_id = generate_next_worker_id(div_val, cur_merged)
+                                    for col in WORKER_MASTER_COLS:
+                                        if col not in w_df.columns:
+                                            w_df[col] = ""
 
-                                        appended_rows.append({
-                                            "Worker_ID": new_gen_id,
-                                            "Full_Name": str(b_row.get("Full_Name", "")),
-                                            "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")),
-                                            "Division": div_val,
-                                            "Designation": str(b_row.get("Designation", "Civil Construction Helper")),
-                                            "Wage_Type": str(b_row.get("Wage_Type", "DAILY_WAGE")).upper(),
-                                            "Base_Rate": float(b_row.get("Base_Rate", 600.0) or 600.0),
-                                            "Contact_No": str(b_row.get("Contact_No", "")),
-                                            "Status": str(b_row.get("Status", "ACTIVE")).upper(),
-                                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
-                                        })
-                                    fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                                    if save_sheet_df("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                        st.success(f"{len(appended_rows)} employee records imported successfully.")
+                                    new_row = {
+                                        "Worker_ID": next_wid,
+                                        "Full_Name": w_name,
+                                        "Govt_ID_Ref": w_ref,
+                                        "Division": w_div,
+                                        "Designation": final_role,
+                                        "Wage_Type": w_wage_type,
+                                        "Base_Rate": w_rate,
+                                        "Contact_No": w_contact,
+                                        "Status": w_status,
+                                        "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
+                                    }
+                                    updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
+                                    if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
+                                        st.success(f"Employee {w_name} ({next_wid}) registered successfully.")
                                         st.rerun()
 
-                with w_col2:
+                    with c_info:
+                        with st.container(border=True):
+                            st.markdown("###### ℹ️ Enrolment Rules")
+                            st.caption("• **Auto Worker IDs:** Assigned sequentially per division (`FLT-1001` or `CIV-1001`).")
+                            st.caption("• **Overtime Calculation:** OT hourly rate is automatically derived from standard 8-hour shift base.")
+                            st.caption("• **Distinction Ref:** Keep government verification references clean for audit readiness.")
+
+                else:
                     with st.container(border=True):
-                        st.markdown("###### 📋 Employee Roster & ATM-Sized ID Passes")
-                        w_table = load_sheet_df("worker_master")
-                        if w_table.empty or "Worker_ID" not in w_table.columns:
-                            st.info("No employee profiles found. Register employees on the left.")
-                        else:
-                            f_div = st.radio("Filter Division", ["All", "Fleet Operations", "Civil Construction"], horizontal=True)
-                            disp_table = w_table.copy()
-                            if f_div != "All":
-                                disp_table = disp_table[disp_table["Division"] == f_div]
+                        st.markdown("###### 📁 Bulk Upload Employee Roster")
+                        st.caption("Upload CSV or Excel file. Blank designations are automatically assigned as 'Unassigned'.")
 
-                            def generate_atm_id_card_html(row):
-                                wid = str(row.get("Worker_ID", ""))
-                                wname = str(row.get("Full_Name", ""))
-                                wdiv = str(row.get("Division", ""))
-                                wrole = str(row.get("Designation", ""))
-                                wcontact = str(row.get("Contact_No", "N/A"))
-                                
-                                return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>ID Pass - {wid}</title>
-<style>
-    @page {{ size: 85.6mm 53.98mm; margin: 0; }}
-    body {{
-        margin: 0; padding: 0; background: #f1f5f9;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        display: flex; align-items: center; justify-content: center; height: 100vh;
-    }}
-    .atm-card {{
-        width: 85.6mm; height: 53.98mm; background: #ffffff;
-        border: 1px solid #0f172a; border-radius: 4mm; box-sizing: border-box;
-        padding: 3.5mm 4mm; position: relative; overflow: hidden;
-        display: flex; flex-direction: column; justify-content: space-between;
-    }}
-    .card-header {{
-        display: flex; align-items: center; justify-content: space-between;
-        border-bottom: 1.5px solid #0b2a75; padding-bottom: 1.5mm;
-    }}
-    .co-title {{ font-size: 8.5pt; font-weight: 800; color: #0b2a75; line-height: 1; }}
-    .co-sub {{ font-size: 5.2pt; font-weight: 600; color: #475569; margin-top: 0.5mm; }}
-    .iso-tag {{ font-size: 4.8pt; background: #064e3b; color: #34d399; padding: 0.8mm 1.5mm; border-radius: 1mm; font-weight: 700; }}
-    .card-body {{ display: flex; gap: 3mm; align-items: center; margin-top: 1mm; }}
-    .photo-slot {{
-        width: 18mm; height: 22mm; border: 0.8px dashed #64748b; border-radius: 2mm;
-        background: #f8fafc; display: flex; align-items: center; justify-content: center;
-        font-size: 5pt; color: #94a3b8; text-align: center; font-weight: 700;
-    }}
-    .info-col {{ flex: 1; line-height: 1.25; }}
-    .worker-name {{ font-size: 8pt; font-weight: 800; color: #0f172a; text-transform: uppercase; }}
-    .worker-trade {{ font-size: 6.5pt; font-weight: 700; color: #2563eb; }}
-    .meta-row {{ font-size: 5.5pt; color: #334155; margin-top: 1mm; }}
-    .wid-badge {{ background: #e2e8f0; padding: 0.4mm 1.2mm; border-radius: 1mm; font-weight: 700; color: #0f172a; }}
-    .card-footer {{
-        border-top: 0.8px solid #cbd5e1; padding-top: 1mm;
-        display: flex; justify-content: space-between; align-items: flex-end; font-size: 4.8pt; color: #64748b;
-    }}
-    @media print {{ body {{ background: transparent; }} .atm-card {{ border: 1px solid #94a3b8; box-shadow: none; }} }}
-</style>
-</head>
-<body onload="window.print()">
-<div class="atm-card">
-    <div class="card-header">
-        <div>
-            <div class="co-title">M/s INDU SAO</div>
-            <div class="co-sub">Vendor Code: ID47 | Tata Steel West Bokaro</div>
-        </div>
-        <div class="iso-tag">ISO 45001:2018</div>
-    </div>
-    <div class="card-body">
-        <div class="photo-slot">PHOTO</div>
-        <div class="info-col">
-            <div class="worker-name">{wname}</div>
-            <div class="worker-trade">{wrole}</div>
-            <div class="meta-row">
-                <div><b>ID:</b> <span class="wid-badge">{wid}</span></div>
-                <div><b>Division:</b> {wdiv}</div>
-                <div><b>Contact:</b> {wcontact}</div>
-                <div><b>Verification:</b> [Verified]</div>
-            </div>
-        </div>
-    </div>
-    <div class="card-footer">
-        <div>Site Access Pass • Tata Steel Operations</div>
-        <div style="text-align: right; font-weight: 600; color: #0f172a;">Authorized Signatory</div>
-    </div>
-</div>
-</body>
-</html>"""
+                        sample_df = pd.DataFrame([
+                            {
+                                "Full_Name": "Ramesh Kumar", "Govt_ID_Ref": "Ref-01", "Division": "Fleet Operations",
+                                "Designation": "Hyva Tipper Driver", "Wage_Type": "MONTHLY_FIXED", "Base_Rate": 18000.0,
+                                "Contact_No": "9876543210", "Status": "ACTIVE"
+                            },
+                            {
+                                "Full_Name": "Suresh Mistri", "Govt_ID_Ref": "Ref-02", "Division": "Civil Construction",
+                                "Designation": "", "Wage_Type": "DAILY_WAGE", "Base_Rate": 700.0,
+                                "Contact_No": "9876543211", "Status": "ACTIVE"
+                            }
+                        ])
 
-                            th1, th2, th3, th4, th5, th6 = st.columns([1.1, 2.2, 1.4, 1.6, 1.2, 1.4])
-                            with th1: st.markdown("**ID**")
-                            with th2: st.markdown("**Employee Name**")
-                            with th3: st.markdown("**Division**")
-                            with th4: st.markdown("**Designation / Role**")
-                            with th5: st.markdown("**Wage Model**")
-                            with th6: st.markdown("**Actions**")
-                            st.markdown("<hr style='margin: 4px 0 10px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
+                        st.download_button(
+                            "📥 Download Clean Template (CSV)",
+                            data=sample_df.to_csv(index=False).encode('utf-8'),
+                            file_name="Employee_Import_Template.csv",
+                            mime="text/csv"
+                        )
 
-                            for _, w_row in disp_table.iterrows():
-                                wid = str(w_row.get("Worker_ID", ""))
-                                wname = str(w_row.get("Full_Name", ""))
-                                wdiv = str(w_row.get("Division", ""))
-                                wrole = str(w_row.get("Designation", ""))
-                                wwage = str(w_row.get("Wage_Type", ""))
+                        up_file = st.file_uploader("Upload Excel / CSV File", type=["csv", "xlsx"])
+                        if up_file:
+                            b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
+                            b_df.columns = [str(c).strip() for c in b_df.columns]
+                            st.write(f"Parsed Preview ({len(b_df)} records):")
+                            st.dataframe(b_df.head(4), use_container_width=True)
 
-                                r1, r2, r3, r4, r5, r6 = st.columns([1.1, 2.2, 1.4, 1.6, 1.2, 1.4])
-                                with r1: st.markdown(f"`{wid}`")
-                                with r2: st.markdown(f"**{wname}**")
-                                with r3: st.caption(wdiv)
-                                with r4: st.caption(wrole)
-                                with r5: st.caption(wwage)
-                                with r6:
-                                    card_content = generate_atm_id_card_html(w_row)
-                                    st.download_button(
-                                        label="🪪 Download Pass",
-                                        data=card_content,
-                                        file_name=f"ID_{wid}_{wname.replace(' ', '_')}.html",
-                                        mime="text/html",
-                                        key=f"dl_id_{wid}",
-                                        help="Download standard ATM-sized CR80 Pass"
+                            if st.button("Commit Bulk Records", type="primary", use_container_width=True):
+                                w_df = load_sheet_df("worker_master")
+                                appended_rows = []
+                                for _, b_row in b_df.iterrows():
+                                    div_val = str(b_row.get("Division", "Fleet Operations")).strip()
+                                    cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
+                                    new_gen_id = generate_next_worker_id(div_val, cur_merged)
+
+                                    raw_desig = str(b_row.get("Designation", "")).strip()
+                                    clean_desig = raw_desig if raw_desig and raw_desig.lower() != "nan" else "Unassigned"
+
+                                    appended_rows.append({
+                                        "Worker_ID": new_gen_id,
+                                        "Full_Name": str(b_row.get("Full_Name", "")).strip(),
+                                        "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")).strip(),
+                                        "Division": div_val,
+                                        "Designation": clean_desig,
+                                        "Wage_Type": str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper(),
+                                        "Base_Rate": float(b_row.get("Base_Rate", 600.0) or 600.0),
+                                        "Contact_No": str(b_row.get("Contact_No", "")).strip(),
+                                        "Status": str(b_row.get("Status", "ACTIVE")).strip().upper(),
+                                        "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
+                                    })
+
+                                fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
+                                if save_sheet_df("worker_master", fin_w_df[WORKER_MASTER_COLS]):
+                                    st.success(f"{len(appended_rows)} workers successfully synchronized.")
+                                    st.rerun()
+
+            # ----------------- TAB B: EMPLOYEE MASTER REGISTER & 360 DRILLDOWN -----------------
+            elif tab_title == "📋 Employee Master Register":
+                st.markdown("##### 📋 Employee Master Register & Field Passes")
+                st.caption("Active workforce records, interactive attendance drilldowns, and zero-waste A4 multi-pass printing")
+
+                w_table = load_sheet_df("worker_master")
+                if w_table.empty or "Worker_ID" not in w_table.columns:
+                    st.info("No employee profiles found. Register employees under '➕ Employee Enrolment'.")
+                else:
+                    # Top Metrics Overview
+                    t_tot = len(w_table[w_table["Status"] == "ACTIVE"])
+                    t_flt = len(w_table[(w_table["Status"] == "ACTIVE") & (w_table["Division"] == "Fleet Operations")])
+                    t_civ = len(w_table[(w_table["Status"] == "ACTIVE") & (w_table["Division"] == "Civil Construction")])
+                    
+                    sm1, sm2, sm3, sm4 = st.columns(4)
+                    sm1.metric("Active Strength", t_tot)
+                    sm2.metric("Fleet Crew", t_flt)
+                    sm3.metric("Civil Trades", t_civ)
+                    sm4.metric("Unassigned Roles", len(w_table[w_table["Designation"] == "Unassigned"]))
+
+                    st.markdown("<hr style='margin: 8px 0 14px 0; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
+
+                    # Filters & Batch Actions Toolbar
+                    flt_c1, flt_c2, flt_c3 = st.columns([1.2, 1.2, 2.0])
+                    with flt_c1:
+                        f_div = st.selectbox("Filter Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
+                    with flt_c2:
+                        f_wage = st.selectbox("Filter Wage Model", ["All", "DAILY_WAGE", "MONTHLY_FIXED"], key="reg_wage_f")
+                    with flt_c3:
+                        f_search = st.text_input("Search Employee Name or ID", placeholder="Type name or ID to filter...").strip().lower()
+
+                    disp_table = w_table.copy()
+                    if f_div != "All":
+                        disp_table = disp_table[disp_table["Division"] == f_div]
+                    if f_wage != "All":
+                        disp_table = disp_table[disp_table["Wage_Type"] == f_wage]
+                    if f_search:
+                        disp_table = disp_table[
+                            disp_table["Full_Name"].astype(str).str.lower().str.contains(f_search) |
+                            disp_table["Worker_ID"].astype(str).str.lower().str.contains(f_search)
+                        ]
+
+                    # Multi-Page A4 Batch Pass Download Trigger
+                    all_selected_records = disp_table.to_dict(orient="records")
+                    tot_sel = len(all_selected_records)
+                    tot_pages = (tot_sel + 7) // 8 if tot_sel > 0 else 0
+
+                    btn_c, _ = st.columns([2.2, 1.8])
+                    with btn_c:
+                        if tot_sel > 0:
+                            st.download_button(
+                                label=f"🖨️ Download Batch ID Passes ({tot_sel} Cards • {tot_pages} A4 Sheet{'s' if tot_pages > 1 else ''})",
+                                data=generate_a4_batch_id_sheet_html(all_selected_records),
+                                file_name=f"Batch_Passes_{tot_sel}_Workers_{datetime.date.today().strftime('%Y%m%d')}.html",
+                                mime="text/html",
+                                type="primary",
+                                use_container_width=True,
+                                help="Download ATM-sized passes arranged 8 per A4 sheet with cutting guides"
+                            )
+
+                    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+                    # Interactive Directory Table
+                    th1, th2, th3, th4, th5, th6 = st.columns([1.1, 2.0, 1.3, 1.6, 1.2, 1.4])
+                    with th1: st.markdown("**ID (Clickable)**")
+                    with th2: st.markdown("**Employee Name**")
+                    with th3: st.markdown("**Division**")
+                    with th4: st.markdown("**Designation / Role**")
+                    with th5: st.markdown("**Base Rate**")
+                    with th6: st.markdown("**Profile Actions**")
+                    st.markdown("<hr style='margin: 4px 0 10px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
+
+                    for _, w_row in disp_table.iterrows():
+                        wid = str(w_row.get("Worker_ID", ""))
+                        wname = str(w_row.get("Full_Name", ""))
+                        wdiv = str(w_row.get("Division", ""))
+                        wrole = str(w_row.get("Designation", ""))
+                        wwage = str(w_row.get("Wage_Type", ""))
+                        wrate = float(w_row.get("Base_Rate", 0.0) or 0.0)
+
+                        r1, r2, r3, r4, r5, r6 = st.columns([1.1, 2.0, 1.3, 1.6, 1.2, 1.4])
+                        with r1:
+                            if st.button(f"🔍 {wid}", key=f"drill_{wid}", help="Click to open 360° Monthly Attendance & In-Place Editor"):
+                                st.session_state.selected_worker_drilldown = wid
+                                st.rerun()
+                        with r2: st.markdown(f"**{wname}**")
+                        with r3: st.caption(wdiv)
+                        with r4: st.caption(wrole)
+                        with r5: st.caption(f"₹{wrate:,.0f} {'/d' if wwage == 'DAILY_WAGE' else '/m'}")
+                        with r6:
+                            # Single card instant download
+                            single_card_html = generate_a4_batch_id_sheet_html([w_row.to_dict()])
+                            st.download_button(
+                                label="🪪 Card",
+                                data=single_card_html,
+                                file_name=f"Pass_{wid}_{wname.replace(' ', '_')}.html",
+                                mime="text/html",
+                                key=f"dl_single_{wid}",
+                                help="Download individual pass"
+                            )
+                        st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #f1f5f9;' />", unsafe_allow_html=True)
+
+                    # ----------------- 360° ATTENDANCE DRILLDOWN & IN-PLACE EDITOR -----------------
+                    if st.session_state.selected_worker_drilldown:
+                        sel_wid = st.session_state.selected_worker_drilldown
+                        w_match = w_table[w_table["Worker_ID"].astype(str) == sel_wid]
+                        
+                        if not w_match.empty:
+                            w_curr = w_match.iloc[0]
+                            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+                            with st.container(border=True):
+                                c_top1, c_top2 = st.columns([3.0, 1.0])
+                                with c_top1:
+                                    st.markdown(f"#### 🔍 360° Attendance Ledger: **{w_curr['Full_Name']}** (`{sel_wid}`)")
+                                    st.caption(f"Division: **{w_curr['Division']}** | Role: **{w_curr['Designation']}** | Model: **{w_curr['Wage_Type']}**")
+                                with c_top2:
+                                    if st.button("✖️ Close Ledger", use_container_width=True):
+                                        st.session_state.selected_worker_drilldown = None
+                                        st.rerun()
+
+                                # Month Selector for Worker
+                                m_c1, m_c2, _ = st.columns([1.2, 1.2, 2.0])
+                                with m_c1:
+                                    drill_year = st.selectbox("Select Year", [2025, 2026, 2027], index=1, key="drill_yr")
+                                with m_c2:
+                                    drill_month = st.selectbox("Select Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1, key="drill_mo")
+
+                                d_month_num = list(calendar.month_name).index(drill_month)
+                                d_start_str = f"{drill_year}-{d_month_num:02d}-01"
+                                d_last_day = calendar.monthrange(drill_year, d_month_num)[1]
+                                d_end_str = f"{drill_year}-{d_month_num:02d}-{d_last_day:02d}"
+
+                                muster_df = load_sheet_df("muster_roll")
+                                worker_logs = pd.DataFrame()
+                                if not muster_df.empty and "Date" in muster_df.columns:
+                                    worker_logs = muster_df[
+                                        (muster_df["Worker_ID"].astype(str) == sel_wid) &
+                                        (muster_df["Date"].astype(str) >= d_start_str) &
+                                        (muster_df["Date"].astype(str) <= d_end_str)
+                                    ].sort_values(by="Date", ascending=True)
+
+                                # Scorecard Metrics
+                                p_cnt = len(worker_logs[worker_logs["Attendance"] == "P"]) if not worker_logs.empty else 0
+                                hd_cnt = len(worker_logs[worker_logs["Attendance"] == "HD"]) if not worker_logs.empty else 0
+                                a_cnt = len(worker_logs[worker_logs["Attendance"] == "A"]) if not worker_logs.empty else 0
+                                tot_ot = pd.to_numeric(worker_logs["OT_Hours"], errors="coerce").sum() if not worker_logs.empty else 0.0
+                                tot_adv = pd.to_numeric(worker_logs["Advance_Amount"], errors="coerce").sum() if not worker_logs.empty else 0.0
+
+                                sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+                                sc1.metric("Present (P)", p_cnt)
+                                sc2.metric("Half Days (HD)", hd_cnt)
+                                sc3.metric("Absent (A)", a_cnt)
+                                sc4.metric("OT Hours", f"{tot_ot:.1f} Hrs")
+                                sc5.metric("Spot Advances", f"₹{tot_adv:,.0f}")
+
+                                st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
+
+                                # In-Place Attendance Correction Form
+                                st.markdown("###### ✏️ In-Place Shift Correction")
+                                with st.form(f"edit_attendance_worker_{sel_wid}"):
+                                    ec1, ec2, ec3, ec4, ec5 = st.columns([1.2, 1.0, 1.0, 1.2, 1.2])
+                                    with ec1:
+                                        edit_date = st.date_input("Target Date to Correct", value=datetime.date.today(), key=f"e_dt_{sel_wid}")
+                                    with ec2:
+                                        edit_att = st.selectbox("Status", ["P", "HD", "A", "WO"], key=f"e_att_{sel_wid}")
+                                    with ec3:
+                                        edit_ot = st.number_input("OT Hours", min_value=0.0, max_value=16.0, step=0.5, value=0.0, key=f"e_ot_{sel_wid}")
+                                    with ec4:
+                                        edit_adv = st.number_input("Advance (₹)", min_value=0.0, step=100.0, value=0.0, key=f"e_adv_{sel_wid}")
+                                    with ec5:
+                                        edit_rem = st.text_input("Remarks", placeholder="Adjustment reason", key=f"e_rem_{sel_wid}").strip()
+
+                                    if st.form_submit_button("Update Shift Record", type="primary", use_container_width=True):
+                                        edit_dt_str = edit_date.strftime("%Y-%m-%d")
+                                        all_m = load_sheet_df("muster_roll")
+                                        for c in MUSTER_ROLL_COLS:
+                                            if c not in all_m.columns:
+                                                all_m[c] = ""
+
+                                        # Drop existing row for that date/worker
+                                        if not all_m.empty and "Date" in all_m.columns and "Worker_ID" in all_m.columns:
+                                            all_m = all_m[~((all_m["Date"].astype(str) == edit_dt_str) & (all_m["Worker_ID"].astype(str) == sel_wid))]
+
+                                        corrected_row = {
+                                            "Date": edit_dt_str,
+                                            "Worker_ID": sel_wid,
+                                            "Worker_Name": w_curr["Full_Name"],
+                                            "Division": w_curr["Division"],
+                                            "Attendance": edit_att,
+                                            "OT_Hours": edit_ot,
+                                            "Advance_Amount": edit_adv,
+                                            "Payment_Mode": "Cash" if edit_adv > 0 else "",
+                                            "Supervisor": st.session_state.current_user,
+                                            "Remarks": f"[Admin Edit] {edit_rem}".strip()
+                                        }
+                                        updated_m = pd.concat([all_m, pd.DataFrame([corrected_row])], ignore_index=True)
+                                        if save_sheet_df("muster_roll", updated_m[MUSTER_ROLL_COLS]):
+                                            st.success(f"Shift record for {edit_dt_str} updated successfully.")
+                                            st.rerun()
+
+                                # Historical Log Table
+                                st.markdown("###### 📜 Month Shift Log")
+                                if worker_logs.empty:
+                                    st.info(f"No shift entries recorded for {drill_month} {drill_year}.")
+                                else:
+                                    st.dataframe(
+                                        worker_logs[["Date", "Attendance", "OT_Hours", "Advance_Amount", "Supervisor", "Remarks"]],
+                                        use_container_width=True,
+                                        hide_index=True
                                     )
-                                st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #f1f5f9;' />", unsafe_allow_html=True)
 
-            # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS + DIRECT OT)
+            # ----------------- TAB C: DAILY MUSTER ROLL -----------------
             elif tab_title == "Daily Muster Roll (Field Attendance)":
                 st.markdown("##### 📅 Daily Muster Roll & Shift Attendance")
                 st.caption("Apply bulk status updates or adjust individual cards for attendance, direct overtime hours, and spot advances")
 
                 w_master = load_sheet_df("worker_master")
                 if w_master.empty or "Worker_ID" not in w_master.columns:
-                    st.warning("Please register employees in the 'Worker & Crew Directory' tab first.")
+                    st.warning("Please register employees in '➕ Employee Enrolment' first.")
                 else:
                     active_workers = w_master[w_master["Status"] == "ACTIVE"].copy()
 
@@ -1089,7 +1350,7 @@ if selected_module == "👷 Worker Attendance":
                             st.success(f"Attendance for {muster_date_str} committed and synchronized successfully.")
                             st.rerun()
 
-            # TAB 3: DEDICATED ADVANCE REGISTER
+            # ----------------- TAB D: DEDICATED ADVANCE REGISTER -----------------
             elif tab_title == "Advance & Expense Register":
                 st.markdown("##### 💵 Advance & Field Expense Register")
                 st.caption("Record lump-sum cash advances, bank/UPI disbursements, and site allowances")
@@ -1162,7 +1423,7 @@ if selected_module == "👷 Worker Attendance":
                                 hide_index=True
                             )
 
-            # TAB 4: MONTHLY WAGE ABSTRACT (WITH 8-HR STANDARD SHIFT AUTO-OT ENGINE)
+            # ----------------- TAB E: MONTHLY WAGE ABSTRACT -----------------
             elif tab_title == "Monthly Wages & Payout Summary":
                 st.markdown("##### 📊 Monthly Attendance Summary & Wage Statement")
                 st.caption("Consolidated gross wages, automatic 8-hour overtime calculation, total advance deductions, and net payouts")
@@ -1213,7 +1474,7 @@ if selected_module == "👷 Worker Attendance":
 
                         total_effective_attendance = p_days + (hd_days * 0.5)
 
-                        # Standard 8-Hour Shift Rate Engine:
+                        # Automatic 8-Hour Overtime Shift Engine
                         if wtype == "DAILY_WAGE":
                             base_earnings = total_effective_attendance * rate
                             effective_hourly_rate = (rate / 8.0) if rate > 0 else 0.0
