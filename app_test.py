@@ -45,38 +45,34 @@ ADVANCE_LOG_COLS = [
     "Payment_Mode", "Supervisor", "Remarks"
 ]
 
-# Comprehensive Designation Master Options
 FLEET_ROLES = [
     "Hyva Tipper Driver",
-    "Excavator Operator",
+    "Excavator Operator (Heavy)",
     "JCB Backhoe Operator",
     "Wheel Loader Operator",
-    "Motor Grader Operator",
-    "Transit Mixer Driver",
-    "Water Tanker Driver",
+    "Dozer Operator",
+    "Hydra Crane Operator",
     "Heavy Equipment Mechanic",
     "Auto Electrician",
-    "Tyre Fitter",
-    "Fleet Rigger",
-    "Fleet Helper",
-    "Other (Specify Custom Role)"
+    "Tyre Fitter / Service Mechanic",
+    "Fleet Maintenance Helper",
+    "Fleet Supervisor",
+    "Other (Custom Entry)"
 ]
 
 CIVIL_ROLES = [
-    "Site Supervisor",
-    "Mason (Brickwork / Plaster)",
-    "Tile & Stone Mason",
-    "Carpenter (Shuttering / Formwork)",
-    "Carpenter (Gypsum / False Ceiling)",
-    "Painter (Putty / Primer / Emulsion)",
-    "Bar Bender / Steel Fixer",
-    "Structural Welder / Fabricator",
-    "Plumber / Pipe Fitter",
-    "Electrician (Wiring / Conduit)",
-    "Civil Rigger",
-    "Semi-Skilled Laborer",
-    "Unskilled Civil Helper",
-    "Other (Specify Custom Role)"
+    "Mason (Rajmistri)",
+    "Shuttering / Framework Carpenter",
+    "Gypsum & False Ceiling Installer",
+    "Civil Painter (Putty / Coating)",
+    "Steel & Bar Bender",
+    "Welder & Structural Fabricator",
+    "Plumber & Pipe Fitter",
+    "Rigger / Scaffolding Specialist",
+    "Tile & Stone Layer",
+    "Civil Construction Helper",
+    "Civil Site Supervisor",
+    "Other (Custom Entry)"
 ]
 
 @st.cache_resource
@@ -87,7 +83,7 @@ def get_gspread_client():
     elif "gcp_service_account" in st.secrets:
         creds_info = dict(st.secrets["gcp_service_account"])
     else:
-        raise KeyError("Neither 'gcp_json_raw' nor 'gcp_service_account' found in secrets!")
+        raise KeyError("Neither 'gcp_json_raw' nor 'gcp_service_account' found in secrets configuration.")
     credentials = Credentials.from_service_account_info(creds_info, scopes=scopes)
     return gspread.authorize(credentials)
 
@@ -189,7 +185,6 @@ TAB_ALIASES = {
     "Advance & Khuraki Register": "Advance & Expense Register"
 }
 
-# Official Letterhead SVG Vector Logo
 INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" cy="74" r="5" fill="#0b2a75"/></svg>"""
 
 st.markdown("""
@@ -301,7 +296,6 @@ def init_session():
 
 init_session()
 
-# Session Verification Gatekeeper
 if st.session_state.user_authenticated and not st.session_state.allowed_tabs:
     st.session_state.user_authenticated = False
     st.session_state.current_user = None
@@ -329,7 +323,6 @@ def login_screen():
             st.markdown("##### Portal Authentication")
             st.caption("Enter authorized enterprise credentials to access the workspace")
             
-            # Neutral fields without placeholder hints or suggestions
             username = st.text_input("Username").strip()
             password = st.text_input("Password", type="password").strip()
             submitted = st.button("Sign In", use_container_width=True, type="primary")
@@ -542,7 +535,6 @@ with h_col3:
 
 st.markdown("<hr style='margin-top: 6px; margin-bottom: 14px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
 
-# Top Profile Edit Card
 if st.session_state.show_profile_box:
     with st.container(border=True):
         p_c1, p_c2 = st.columns([1, 2], gap="medium")
@@ -614,7 +606,7 @@ if selected_module == "👷 Worker Attendance":
             # TAB 1: WORKER DIRECTORY + ATM ID CARD ENGINE
             if tab_title == "Worker & Crew Directory":
                 st.markdown("##### 👥 Worker & Crew Master Registration")
-                st.caption("Manage employee directory for Drivers, Equipment Operators, Masons, Carpenters, Painters, and Helpers")
+                st.caption("Manage employee directory for Fleet Operations and Civil Construction divisions")
 
                 w_col1, w_col2 = st.columns([1.15, 1.85], gap="large")
 
@@ -633,12 +625,11 @@ if selected_module == "👷 Worker Attendance":
 
                             with st.form("enrol_worker_form_auto"):
                                 w_name = st.text_input("Full Name").strip()
-                                w_ref = st.text_input("Verification ID Reference (Govt ID Ref)").strip()
+                                w_ref = st.text_input("Verification ID Reference").strip()
                                 
-                                # Comprehensive Designation / Role Master
                                 role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
                                 sel_role = st.selectbox("Designation / Role", role_choices)
-                                custom_role = st.text_input("Specify Custom Role (If 'Other' selected)", placeholder="e.g. Hydro Crane Operator").strip()
+                                custom_role = st.text_input("Specify Custom Role (If 'Other' selected)").strip()
 
                                 c_w1, c_w2 = st.columns(2)
                                 with c_w1:
@@ -654,12 +645,11 @@ if selected_module == "👷 Worker Attendance":
                                 submit_worker = st.form_submit_button("Save Employee Record", use_container_width=True, type="primary")
 
                                 if submit_worker:
-                                    final_role = custom_role if sel_role == "Other (Specify Custom Role)" and custom_role else sel_role
-                                    
+                                    final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
                                     if not w_name:
                                         st.error("Employee Name is required.")
-                                    elif sel_role == "Other (Specify Custom Role)" and not custom_role:
-                                        st.error("Please specify the custom role name in the text box.")
+                                    elif sel_role == "Other (Custom Entry)" and not custom_role:
+                                        st.error("Please specify the custom Designation / Role.")
                                     else:
                                         w_df = load_sheet_df("worker_master")
                                         for col in WORKER_MASTER_COLS:
@@ -681,7 +671,7 @@ if selected_module == "👷 Worker Attendance":
                                         }
                                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered as {final_role}.")
+                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered.")
                                             st.rerun()
 
                     else:
@@ -721,7 +711,7 @@ if selected_module == "👷 Worker Attendance":
                                             "Full_Name": str(b_row.get("Full_Name", "")),
                                             "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")),
                                             "Division": div_val,
-                                            "Designation": str(b_row.get("Designation", "Helper")),
+                                            "Designation": str(b_row.get("Designation", "Civil Construction Helper")),
                                             "Wage_Type": str(b_row.get("Wage_Type", "DAILY_WAGE")).upper(),
                                             "Base_Rate": float(b_row.get("Base_Rate", 600.0) or 600.0),
                                             "OT_Hourly_Rate": float(b_row.get("OT_Hourly_Rate", 75.0) or 75.0),
@@ -786,7 +776,7 @@ if selected_module == "👷 Worker Attendance":
     }}
     .info-col {{ flex: 1; line-height: 1.25; }}
     .worker-name {{ font-size: 8pt; font-weight: 800; color: #0f172a; text-transform: uppercase; }}
-    .worker-role {{ font-size: 6.5pt; font-weight: 700; color: #2563eb; }}
+    .worker-trade {{ font-size: 6.5pt; font-weight: 700; color: #2563eb; }}
     .meta-row {{ font-size: 5.5pt; color: #334155; margin-top: 1mm; }}
     .wid-badge {{ background: #e2e8f0; padding: 0.4mm 1.2mm; border-radius: 1mm; font-weight: 700; color: #0f172a; }}
     .card-footer {{
@@ -809,24 +799,24 @@ if selected_module == "👷 Worker Attendance":
         <div class="photo-slot">PHOTO</div>
         <div class="info-col">
             <div class="worker-name">{wname}</div>
-            <div class="worker-role">{wrole}</div>
+            <div class="worker-trade">{wrole}</div>
             <div class="meta-row">
                 <div><b>ID:</b> <span class="wid-badge">{wid}</span></div>
                 <div><b>Division:</b> {wdiv}</div>
-                <div><b>Mob:</b> {wcontact}</div>
+                <div><b>Contact:</b> {wcontact}</div>
                 <div><b>Verification:</b> [Verified]</div>
             </div>
         </div>
     </div>
     <div class="card-footer">
-        <div>Site Access Card • Tata Steel Operations</div>
+        <div>Site Access Pass • Tata Steel Operations</div>
         <div style="text-align: right; font-weight: 600; color: #0f172a;">Authorized Signatory</div>
     </div>
 </div>
 </body>
 </html>"""
 
-                            th1, th2, th3, th4, th5, th6 = st.columns([1.1, 2.2, 1.4, 1.4, 1.2, 1.4])
+                            th1, th2, th3, th4, th5, th6 = st.columns([1.1, 2.2, 1.4, 1.6, 1.2, 1.4])
                             with th1: st.markdown("**ID**")
                             with th2: st.markdown("**Employee Name**")
                             with th3: st.markdown("**Division**")
@@ -842,7 +832,7 @@ if selected_module == "👷 Worker Attendance":
                                 wrole = str(w_row.get("Designation", ""))
                                 wwage = str(w_row.get("Wage_Type", ""))
 
-                                r1, r2, r3, r4, r5, r6 = st.columns([1.1, 2.2, 1.4, 1.4, 1.2, 1.4])
+                                r1, r2, r3, r4, r5, r6 = st.columns([1.1, 2.2, 1.4, 1.6, 1.2, 1.4])
                                 with r1: st.markdown(f"`{wid}`")
                                 with r2: st.markdown(f"**{wname}**")
                                 with r3: st.caption(wdiv)
@@ -863,7 +853,7 @@ if selected_module == "👷 Worker Attendance":
             # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS + MANUAL OT)
             elif tab_title == "Daily Muster Roll (Field Attendance)":
                 st.markdown("##### 📅 Daily Muster Roll & Shift Attendance")
-                st.caption("Apply bulk status updates or adjust individual cards for attendance, overtime hours, and spot advances.")
+                st.caption("Apply bulk status updates or adjust individual cards for attendance, overtime hours, and spot advances")
 
                 w_master = load_sheet_df("worker_master")
                 if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -918,7 +908,6 @@ if selected_module == "👷 Worker Attendance":
                                 "rem": def_rem
                             }
 
-                    # Bulk Actions Toolbar
                     with st.container(border=True):
                         st.markdown("###### ⚡ Bulk Batch Actions")
                         ba_col1, ba_col2, ba_col3, ba_col4 = st.columns([1.2, 1, 1, 1])
