@@ -30,9 +30,10 @@ USER_COLUMNS = [
     "Contact_No", "Emergency_Contact", "Photo_Base64"
 ]
 
+# OT_Hourly_Rate completely dropped from Worker Master
 WORKER_MASTER_COLS = [
     "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type", 
-    "Base_Rate", "OT_Hourly_Rate", "Contact_No", "Status", "Created_Date"
+    "Base_Rate", "Contact_No", "Status", "Created_Date"
 ]
 
 MUSTER_ROLL_COLS = [
@@ -638,7 +639,6 @@ if selected_module == "👷 Worker Attendance":
                                     rate_label = "Daily Wage Rate (₹/Day)" if w_wage_type == "DAILY_WAGE" else "Monthly Base Salary (₹)"
                                     w_rate = st.number_input(rate_label, min_value=0.0, value=650.0 if w_wage_type == "DAILY_WAGE" else 18000.0, step=50.0)
 
-                                w_ot_rate = st.number_input("Overtime Hourly Rate (₹/Hour)", min_value=0.0, value=75.0, step=10.0)
                                 w_contact = st.text_input("Contact Number").strip()
                                 w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"])
 
@@ -664,7 +664,6 @@ if selected_module == "👷 Worker Attendance":
                                             "Designation": final_role,
                                             "Wage_Type": w_wage_type,
                                             "Base_Rate": w_rate,
-                                            "OT_Hourly_Rate": w_ot_rate,
                                             "Contact_No": w_contact,
                                             "Status": w_status,
                                             "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
@@ -681,7 +680,7 @@ if selected_module == "👷 Worker Attendance":
                                 {
                                     "Full_Name": "Ramesh Kumar", "Govt_ID_Ref": "Ref-01", "Division": "Fleet Operations",
                                     "Designation": "Hyva Tipper Driver", "Wage_Type": "MONTHLY_FIXED", "Base_Rate": 18000.0,
-                                    "OT_Hourly_Rate": 80.0, "Contact_No": "9876543210", "Status": "ACTIVE"
+                                    "Contact_No": "9876543210", "Status": "ACTIVE"
                                 }
                             ])
                             st.download_button(
@@ -714,7 +713,6 @@ if selected_module == "👷 Worker Attendance":
                                             "Designation": str(b_row.get("Designation", "Civil Construction Helper")),
                                             "Wage_Type": str(b_row.get("Wage_Type", "DAILY_WAGE")).upper(),
                                             "Base_Rate": float(b_row.get("Base_Rate", 600.0) or 600.0),
-                                            "OT_Hourly_Rate": float(b_row.get("OT_Hourly_Rate", 75.0) or 75.0),
                                             "Contact_No": str(b_row.get("Contact_No", "")),
                                             "Status": str(b_row.get("Status", "ACTIVE")).upper(),
                                             "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
@@ -850,10 +848,10 @@ if selected_module == "👷 Worker Attendance":
                                     )
                                 st.markdown("<hr style='margin: 4px 0; border: none; border-top: 1px dashed #f1f5f9;' />", unsafe_allow_html=True)
 
-            # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS + MANUAL OT)
+            # TAB 2: MERGED DAILY MUSTER ROLL (BULK ACTIONS + TAP CARDS + DIRECT OT)
             elif tab_title == "Daily Muster Roll (Field Attendance)":
                 st.markdown("##### 📅 Daily Muster Roll & Shift Attendance")
-                st.caption("Apply bulk status updates or adjust individual cards for attendance, overtime hours, and spot advances")
+                st.caption("Apply bulk status updates or adjust individual cards for attendance, direct overtime hours, and spot advances")
 
                 w_master = load_sheet_df("worker_master")
                 if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -1164,10 +1162,10 @@ if selected_module == "👷 Worker Attendance":
                                 hide_index=True
                             )
 
-            # TAB 4: MONTHLY WAGE ABSTRACT
+            # TAB 4: MONTHLY WAGE ABSTRACT (WITH 8-HR STANDARD SHIFT AUTO-OT ENGINE)
             elif tab_title == "Monthly Wages & Payout Summary":
                 st.markdown("##### 📊 Monthly Attendance Summary & Wage Statement")
-                st.caption("Consolidated gross wages, total advance deductions, and net payable settlements")
+                st.caption("Consolidated gross wages, automatic 8-hour overtime calculation, total advance deductions, and net payouts")
 
                 w_master = load_sheet_df("worker_master")
                 muster_df = load_sheet_df("muster_roll")
@@ -1200,7 +1198,6 @@ if selected_module == "👷 Worker Attendance":
                         wdiv = str(w["Division"])
                         wtype = str(w.get("Wage_Type", "DAILY_WAGE"))
                         rate = float(w.get("Base_Rate", 0.0) or 0.0)
-                        ot_rate = float(w.get("OT_Hourly_Rate", 0.0) or 0.0)
 
                         p_days = 0.0
                         hd_days = 0.0
@@ -1216,13 +1213,16 @@ if selected_module == "👷 Worker Attendance":
 
                         total_effective_attendance = p_days + (hd_days * 0.5)
 
+                        # Standard 8-Hour Shift Rate Engine:
                         if wtype == "DAILY_WAGE":
                             base_earnings = total_effective_attendance * rate
+                            effective_hourly_rate = (rate / 8.0) if rate > 0 else 0.0
                         else:
                             per_day_sal = rate / 30.0 if rate > 0 else 0.0
                             base_earnings = total_effective_attendance * per_day_sal
+                            effective_hourly_rate = (per_day_sal / 8.0) if per_day_sal > 0 else 0.0
 
-                        ot_earnings = tot_ot_hrs * ot_rate
+                        ot_earnings = tot_ot_hrs * effective_hourly_rate
                         gross_earnings = base_earnings + ot_earnings
 
                         w_advances = 0.0
