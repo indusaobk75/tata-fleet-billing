@@ -2,9 +2,10 @@ import io
 import os
 import json
 import time
-import base64
+import re
 import datetime
 import calendar
+import pypdf
 import pandas as pd
 import streamlit as st
 import gspread
@@ -97,7 +98,7 @@ def load_sheet_df(worksheet_name):
             data = ws.get_all_records()
             df = pd.DataFrame(data)
             
-            # AUTO-HEALING SCHEMA GUARD: Ensure newly introduced columns exist without KeyError
+            # Auto-healing schema: auto-populate any missing master columns
             if worksheet_name == "worker_master":
                 for col in WORKER_MASTER_COLS:
                     if col not in df.columns:
@@ -170,8 +171,80 @@ def generate_next_worker_id(division, existing_df):
         return f"{prefix}-1001"
     return f"{prefix}-{max(matched_nums) + 1}"
 
+def parse_tata_form_xvii_pdf(uploaded_pdf_file):
+    """
+    Directly extracts Worker Name, Days Worked (Col 4), and Net Amount Paid (Col 14)
+    from multi-page Tata Steel Form XVII [Rule 78(2)(a)] statutory PDF.
+    """
+    reader = pypdf.PdfReader(uploaded_pdf_file)
+    records = []
+    
+    header_keywords = [
+        "FORM XVII", "REGISTER OF WAGES", "Name and address", "WAGES PERIOD", 
+        "Certified that the amount", "Signatory of the Certifying", "Total:-",
+        "CIVIL WORK", "West Bokaro", "INDU SAO", "Serial No.", "Designation"
+    ]
+    
+    all_lines = []
+    for page in reader.pages:
+        txt = page.extract_text()
+        if not txt:
+            continue
+        page_lines = [l.strip() for l in txt.split("\n") if l.strip()]
+        for l in page_lines:
+            if any(k in l for k in header_keywords) or re.search(r"^\d+(\s+\d+){5,}", l):
+                continue
+            all_lines.append(l)
 
-# ----------------- 2. GRANULAR ACCESS & RBAC DEFINITION -----------------
+    buffer = ""
+    for line in all_lines:
+        buffer = (buffer + " " + line).strip()
+        
+        # Look for wage calculation formula token (e.g. 350+215=565, 494+300=794, 579-354=933)
+        if re.search(r"\d+\+\d+[\=\-]\d+", buffer):
+            parts = buffer.split()
+            if len(parts) >= 8 and parts[-1].isdigit():
+                formula_idx = -1
+                for p_i, p in enumerate(parts):
+                    if re.search(r"\d+\+\d+[\=\-]\d+", p):
+                        formula_idx = p_i
+                        break
+                
+                if formula_idx > 2:
+                    days_worked = float(parts[formula_idx - 1])
+                    net_amount = float(parts[-1])
+                    
+                    sl = parts[0] if parts[0].isdigit() else ""
+                    rest = parts[1:] if sl else parts
+                    pre_days = rest[: formula_idx - (1 if sl else 0) - 1]
+                    
+                    serial = ""
+                    s_idx = -1
+                    for idx, t in enumerate(pre_days):
+                        if t.isdigit() and len(t) <= 3:
+                            serial = t
+                            s_idx = idx
+                            break
+                            
+                    if s_idx != -1:
+                        name = " ".join(pre_days[:s_idx])
+                    else:
+                        name = " ".join(pre_days)
+                        
+                    clean_name = re.sub(r"^[0-9\.\s]+", "", name).strip()
+                    if clean_name:
+                        records.append({
+                            "Worker_Name": clean_name.upper(),
+                            "Serial_No": serial,
+                            "Approved_Days": days_worked,
+                            "Net_Amount_Paid": net_amount
+                        })
+                    buffer = ""
+                    
+    return pd.DataFrame(records)
+
+
+# ----------------- 2. HIERARCHICAL WORKSPACES & RBAC -----------------
 TAB_REGISTRY = {
     # MODULE 1: WORKER ATTENDANCE (GRANULAR ACCESS)
     "➕ Employee Enrolment": "Attendance",
@@ -202,7 +275,6 @@ TAB_ALIASES = {
     "Advance & Khuraki Register": "Advance & Expense Register"
 }
 
-# Workspace Hierarchical Structure
 WORKSPACES_TREE = [
     {
         "id": "Attendance",
@@ -238,12 +310,12 @@ WORKSPACES_TREE = [
     }
 ]
 
-INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" cy="74" r="5" fill="#0b2a75"/></svg>"""
+INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" r="5" fill="#0b2a75"/></svg>"""
 
 st.markdown("""
 <style>
     .block-container { 
-        padding-top: 3.0rem !important; 
+        padding-top: 2.8rem !important; 
         padding-bottom: 2rem !important;
         padding-left: 2rem !important;
         padding-right: 2rem !important;
@@ -251,8 +323,8 @@ st.markdown("""
         width: 100% !important;
     }
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        width: 290px !important;
-        min-width: 290px !important;
+        width: 295px !important;
+        min-width: 295px !important;
     }
     .top-user-avatar {
         width: 36px;
@@ -279,7 +351,6 @@ st.markdown("""
     .status-admin { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
     .status-user { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #2563eb; }
 
-    /* Parent Workspace Buttons */
     div[data-testid="stSidebar"] div.stButton > button {
         text-align: left;
         justify-content: flex-start;
@@ -313,18 +384,10 @@ def init_session():
         st.session_state.current_role = None
     if "allowed_tabs" not in st.session_state:
         st.session_state.allowed_tabs = []
-    if "current_contact" not in st.session_state:
-        st.session_state.current_contact = ""
-    if "current_emergency" not in st.session_state:
-        st.session_state.current_emergency = ""
-    if "current_photo" not in st.session_state:
-        st.session_state.current_photo = ""
     if "active_workspace" not in st.session_state:
         st.session_state.active_workspace = "Attendance"
     if "active_subtab" not in st.session_state:
         st.session_state.active_subtab = "Daily Muster Roll (Field Attendance)"
-    if "show_profile_box" not in st.session_state:
-        st.session_state.show_profile_box = False
 
 init_session()
 
@@ -408,7 +471,6 @@ def login_screen():
                                     permitted.append(TAB_ALIASES[t_clean])
                             st.session_state.allowed_tabs = list(set(permitted))
 
-                        # Set default view to first permitted tab
                         if "Daily Muster Roll (Field Attendance)" in st.session_state.allowed_tabs:
                             st.session_state.active_workspace = "Attendance"
                             st.session_state.active_subtab = "Daily Muster Roll (Field Attendance)"
@@ -446,25 +508,21 @@ with st.sidebar:
 
     st.markdown("<div style='margin-bottom: 6px; font-size: 0.72rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
 
-    # Render each workspace accordion
     for ws in WORKSPACES_TREE:
         ws_id = ws["id"]
         ws_title = ws["title"]
         
-        # Check permissions for this workspace
         permitted_submenus = []
         for disp_name, reg_key in ws["submenus"]:
             if st.session_state.current_role == "ADMIN" or reg_key in st.session_state.allowed_tabs:
                 permitted_submenus.append((disp_name, reg_key))
 
-        # If user has no access to any sub-item in this workspace, hide it
         if not permitted_submenus and st.session_state.current_role != "ADMIN":
             continue
 
         is_open = (st.session_state.active_workspace == ws_id)
         arrow = "▼" if is_open else "▶"
 
-        # Parent Workspace Header Button
         parent_style = "primary" if is_open else "secondary"
         if st.button(f"{ws_title}  {arrow}", key=f"ws_btn_{ws_id}", use_container_width=True, type=parent_style):
             st.session_state.active_workspace = ws_id
@@ -472,12 +530,9 @@ with st.sidebar:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
-        # Render Child Sub-menus when expanded
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
-                
-                # Styled indented button
                 sub_label = f"  └─ {disp_name}"
                 btn_kind = "primary" if is_sub_active else "secondary"
                 
@@ -485,7 +540,6 @@ with st.sidebar:
                     st.session_state.active_subtab = reg_key
                     st.rerun()
 
-    # ADMIN MODULE ACCORDION (ADMIN ONLY)
     if st.session_state.current_role == "ADMIN":
         is_admin_open = (st.session_state.active_workspace == "Admin")
         adm_arrow = "▼" if is_admin_open else "▶"
@@ -549,7 +603,7 @@ with h_col3:
 st.markdown("<hr style='margin-top: 4px; margin-bottom: 12px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
 
 
-# ----------------- 6. PRINT-READY COVERING AUTHORITY LETTER GENERATOR -----------------
+# ----------------- 6. COVERING AUTHORITY LETTER GENERATOR -----------------
 def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no, cheque_date):
     total_amount = sum([float(r.get("AMOUNT", 0.0) or 0.0) for r in records_list])
     
@@ -714,7 +768,7 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
 </html>"""
 
 
-# ----------------- 7. MAIN VIEW ROUTING (NO HORIZONTAL TABS) -----------------
+# ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
 # ----------------- VIEW 1: EMPLOYEE ENROLMENT -----------------
@@ -801,28 +855,6 @@ if current_view == "➕ Employee Enrolment":
             st.markdown("###### 📁 Bulk Upload Employee Roster (CSV / Excel)")
             st.caption("Synchronize bulk workforce records including bank particulars.")
 
-            sample_df = pd.DataFrame([
-                {
-                    "Full_Name": "BAHAMUNI DEVI", "Govt_ID_Ref": "Ref-21", "Division": "Civil Construction",
-                    "Designation": "Civil Construction Helper", "Wage_Type": "DAILY_WAGE", "Base_Rate": 565.0,
-                    "Contact_No": "9876543210", "Bank_Account_No": "486910110006418", "Bank_IFSC_Code": "BKID0004869",
-                    "Bank_Branch_Details": "BOI SARUBERA", "Status": "ACTIVE"
-                },
-                {
-                    "Full_Name": "ANJALI DEVI", "Govt_ID_Ref": "Ref-67", "Division": "Civil Construction",
-                    "Designation": "Civil Construction Helper", "Wage_Type": "DAILY_WAGE", "Base_Rate": 565.0,
-                    "Contact_No": "9876543211", "Bank_Account_No": "36316450526", "Bank_IFSC_Code": "SBIN0009013",
-                    "Bank_Branch_Details": "SBI LALPANIA", "Status": "ACTIVE"
-                }
-            ])
-
-            st.download_button(
-                "📥 Download Bulk Import Template (CSV)",
-                data=sample_df.to_csv(index=False).encode('utf-8'),
-                file_name="Employee_Bulk_Bank_Template.csv",
-                mime="text/csv"
-            )
-
             up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
             if up_file:
                 b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
@@ -896,7 +928,6 @@ elif current_view == "📋 Employee Master Register":
                 disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
             ]
 
-        # Safe Column Display Safeguard
         req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
         safe_cols = [c for c in req_cols if c in disp_table.columns]
 
@@ -940,7 +971,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
             st.session_state[cache_key] = {}
             for _, w in active_workers.iterrows():
                 wid = str(w["Worker_ID"])
-                def_att, def_ot, def_loc, def_adv, def_mode, def_rem = "P", 0.0, "Tata Site (In-Plant)", 0.0, "Cash", ""
+                def_att, def_ot, def_loc = "P", 0.0, "Tata Site (In-Plant)"
 
                 if not day_records.empty and "Worker_ID" in day_records.columns:
                     match_prev = day_records[day_records["Worker_ID"].astype(str) == wid]
@@ -954,7 +985,6 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     "att": def_att, "ot": def_ot, "loc": def_loc
                 }
 
-        # Bulk Actions
         with st.container(border=True):
             st.markdown("###### ⚡ Bulk Actions")
             b_c1, b_c2, b_c3 = st.columns(3)
@@ -1106,55 +1136,59 @@ elif current_view == "Monthly Wages & Payout Summary":
 
     wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
 
-    # Form XVII Importer
-    with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages)", expanded=tata_df.empty):
-        st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** for period **{wage_period_str}**")
-        xvii_file = st.file_uploader("Upload Form XVII (CSV / Excel)", type=["csv", "xlsx"])
-
-        sample_xvii = pd.DataFrame([
-            {"Name_of_Workman": "Bahamuni Devi", "Serial_No": "21", "No_of_days_worked": 14, "Net_Amount_Paid": 6901.0},
-            {"Name_of_Workman": "Anjali Devi", "Serial_No": "67", "No_of_days_worked": 3, "Net_Amount_Paid": 1479.0},
-            {"Name_of_Workman": "Devnaryan Soren", "Serial_No": "39", "No_of_days_worked": 25, "Net_Amount_Paid": 12816.0}
-        ])
-        st.download_button("📥 Sample Form XVII CSV", sample_xvii.to_csv(index=False).encode('utf-8'), "Sample_Form_XVII.csv", "text/csv")
+    # Native PDF / CSV / XLSX Importer for Tata Form XVII
+    with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages PDF / CSV)", expanded=tata_df.empty):
+        st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** received from Tata Steel for **{wage_period_str}**")
+        xvii_file = st.file_uploader("Upload Form XVII File", type=["pdf", "csv", "xlsx"])
 
         if xvii_file:
-            x_df = pd.read_csv(xvii_file) if xvii_file.name.endswith(".csv") else pd.read_excel(xvii_file)
-            x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
-            st.write(f"Parsed Preview ({len(x_df)} workers):")
-            st.dataframe(x_df.head(4), use_container_width=True)
+            if xvii_file.name.lower().endswith(".pdf"):
+                with st.spinner("Extracting data directly from Form XVII PDF pages..."):
+                    x_df = parse_tata_form_xvii_pdf(xvii_file)
+            elif xvii_file.name.lower().endswith(".csv"):
+                x_df = pd.read_csv(xvii_file)
+                x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
+            else:
+                x_df = pd.read_excel(xvii_file)
+                x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
 
-            if st.button("Commit Form XVII Compliance Data", type="primary"):
-                new_records = []
-                for _, xr in x_df.iterrows():
-                    w_name_raw = str(xr.get("Name_of_Workman", xr.get("Name", ""))).strip()
-                    appr_days = float(xr.get("No._of_days_worked", xr.get("No_of_days_worked", 0.0)) or 0.0)
-                    net_paid = float(xr.get("Net_Amount_Paid", xr.get("Net_Amount", 0.0)) or 0.0)
+            if not x_df.empty:
+                st.success(f"Successfully extracted {len(x_df)} workers from file! Total Net Wages: ₹{x_df['Net_Amount_Paid'].sum():,.0f}")
+                st.dataframe(x_df.head(5), use_container_width=True)
 
-                    matched_wid = ""
-                    if not w_master.empty and "Full_Name" in w_master.columns:
-                        match_w = w_master[w_master["Full_Name"].astype(str).str.lower() == w_name_raw.lower()]
-                        if not match_w.empty:
-                            matched_wid = str(match_w.iloc[0]["Worker_ID"])
+                if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
+                    new_records = []
+                    for _, xr in x_df.iterrows():
+                        w_name_raw = str(xr.get("Worker_Name", xr.get("Name_of_Workman", xr.get("Name", "")))).strip()
+                        appr_days = float(xr.get("Approved_Days", xr.get("No._of_days_worked", xr.get("No_of_days_worked", 0.0))) or 0.0)
+                        net_paid = float(xr.get("Net_Amount_Paid", xr.get("Net_Amount", 0.0)) or 0.0)
 
-                    new_records.append({
-                        "Wages_Period": wage_period_str,
-                        "Worker_ID": matched_wid,
-                        "Worker_Name": w_name_raw,
-                        "Approved_Days": appr_days,
-                        "Net_Amount_Paid": net_paid,
-                        "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                        matched_wid = ""
+                        if not w_master.empty and "Full_Name" in w_master.columns:
+                            match_w = w_master[w_master["Full_Name"].astype(str).str.upper() == w_name_raw.upper()]
+                            if not match_w.empty:
+                                matched_wid = str(match_w.iloc[0]["Worker_ID"])
 
-                if not tata_df.empty and "Wages_Period" in tata_df.columns:
-                    tata_df = tata_df[tata_df["Wages_Period"] != wage_period_str]
+                        new_records.append({
+                            "Wages_Period": wage_period_str,
+                            "Worker_ID": matched_wid,
+                            "Worker_Name": w_name_raw,
+                            "Approved_Days": appr_days,
+                            "Net_Amount_Paid": net_paid,
+                            "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
 
-                final_tata = pd.concat([tata_df, pd.DataFrame(new_records)], ignore_index=True)
-                if save_sheet_df("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
-                    st.success(f"Form XVII for {wage_period_str} imported successfully.")
-                    st.rerun()
+                    if not tata_df.empty and "Wages_Period" in tata_df.columns:
+                        tata_df = tata_df[tata_df["Wages_Period"] != wage_period_str]
 
-    # Attendance Mismatch Cockpit & Bank Batch Engine
+                    final_tata = pd.concat([tata_df, pd.DataFrame(new_records)], ignore_index=True)
+                    if save_sheet_df("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
+                        st.success(f"Form XVII for {wage_period_str} synchronized.")
+                        st.rerun()
+            else:
+                st.error("Could not parse records from uploaded file. Please verify layout.")
+
+    # Mismatch Cockpit & Bank Batch Engine
     st.markdown("<hr style='margin: 12px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
     st.markdown("###### 🔍 Attendance Reconciliation Cockpit (Field Duty vs Form XVII)")
 
@@ -1176,7 +1210,7 @@ elif current_view == "Monthly Wages & Payout Summary":
             b_ifsc = str(w.get("Bank_IFSC_Code", "")).strip().upper()
             b_branch = str(w.get("Bank_Branch_Details", "")).strip().upper()
 
-            # Supervisor days (Tata Site)
+            # Supervisor field days
             sup_days = 0.0
             if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
                 w_m = muster_df[(muster_df["Worker_ID"].astype(str) == wid) & 
@@ -1185,8 +1219,8 @@ elif current_view == "Monthly Wages & Payout Summary":
                                (muster_df["Duty_Location"] == "Tata Site (In-Plant)")]
                 sup_days = len(w_m[w_m["Attendance"] == "P"]) + (len(w_m[w_m["Attendance"] == "HD"]) * 0.5)
 
-            # Tata Approved Data
-            tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.lower() == wname.lower()]
+            # Tata Form XVII Net & Days
+            tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.upper() == wname.upper()]
             tata_approved_days = float(tata_match.iloc[0]["Approved_Days"]) if not tata_match.empty else 0.0
             tata_net_paid = float(tata_match.iloc[0]["Net_Amount_Paid"]) if not tata_match.empty else 0.0
 
@@ -1209,7 +1243,6 @@ elif current_view == "Monthly Wages & Payout Summary":
                 "Bank Details": b_branch
             })
 
-            # Auto-Route to Bank Batches
             if final_bank_transfer > 0 and b_acc:
                 item = {
                     "NAME": wname,
