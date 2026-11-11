@@ -28,7 +28,7 @@ COMPANY_HEADER = {
     "ADDRESS": "Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)",
     "PIN_CALL": "Pin No. 829134 | Call: 9234779896, 9661152652",
     "EMAIL": "Email: indusao_bk@yahoo.com",
-    "GST": "GST No. 20AUQPK2982K1ZC | Vendor Code - 47",
+    "GST": "GST No. 20AUQPK2982K1ZC | Vendor Code - ID47",
     "ISO": "ISO Certified Company 45001:2018",
     "CURRENT_AC": "482025110000105"
 }
