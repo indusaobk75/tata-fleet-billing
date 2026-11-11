@@ -45,6 +45,40 @@ ADVANCE_LOG_COLS = [
     "Payment_Mode", "Supervisor", "Remarks"
 ]
 
+# Comprehensive Designation Master Options
+FLEET_ROLES = [
+    "Hyva Tipper Driver",
+    "Excavator Operator",
+    "JCB Backhoe Operator",
+    "Wheel Loader Operator",
+    "Motor Grader Operator",
+    "Transit Mixer Driver",
+    "Water Tanker Driver",
+    "Heavy Equipment Mechanic",
+    "Auto Electrician",
+    "Tyre Fitter",
+    "Fleet Rigger",
+    "Fleet Helper",
+    "Other (Specify Custom Role)"
+]
+
+CIVIL_ROLES = [
+    "Site Supervisor",
+    "Mason (Brickwork / Plaster)",
+    "Tile & Stone Mason",
+    "Carpenter (Shuttering / Formwork)",
+    "Carpenter (Gypsum / False Ceiling)",
+    "Painter (Putty / Primer / Emulsion)",
+    "Bar Bender / Steel Fixer",
+    "Structural Welder / Fabricator",
+    "Plumber / Pipe Fitter",
+    "Electrician (Wiring / Conduit)",
+    "Civil Rigger",
+    "Semi-Skilled Laborer",
+    "Unskilled Civil Helper",
+    "Other (Specify Custom Role)"
+]
+
 @st.cache_resource
 def get_gspread_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -155,7 +189,7 @@ TAB_ALIASES = {
     "Advance & Khuraki Register": "Advance & Expense Register"
 }
 
-# Letterhead Vector Logo
+# Official Letterhead SVG Vector Logo
 INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" cy="74" r="5" fill="#0b2a75"/></svg>"""
 
 st.markdown("""
@@ -582,7 +616,7 @@ if selected_module == "👷 Worker Attendance":
                 st.markdown("##### 👥 Worker & Crew Master Registration")
                 st.caption("Manage employee directory for Drivers, Equipment Operators, Masons, Carpenters, Painters, and Helpers")
 
-                w_col1, w_col2 = st.columns([1.1, 1.9], gap="large")
+                w_col1, w_col2 = st.columns([1.15, 1.85], gap="large")
 
                 with w_col1:
                     entry_mode = st.radio("Registration Method", ["➕ Single Employee Form", "📁 Bulk Excel/CSV Upload"], horizontal=True)
@@ -599,12 +633,12 @@ if selected_module == "👷 Worker Attendance":
 
                             with st.form("enrol_worker_form_auto"):
                                 w_name = st.text_input("Full Name").strip()
-                                w_ref = st.text_input("Verification ID Reference").strip()
+                                w_ref = st.text_input("Verification ID Reference (Govt ID Ref)").strip()
                                 
-                                if w_div == "Fleet Operations":
-                                    w_desig = st.selectbox("Trade / Designation", ["Hyva Driver", "Excavator Operator", "JCB Operator", "Rig Mechanic", "Fleet Helper"])
-                                else:
-                                    w_desig = st.selectbox("Trade / Designation", ["Mason (Rajmistri)", "Carpenter (Shuttering/Gypsum)", "Painter (Putty/Coating)", "Steel/Bar Bender", "Civil Helper"])
+                                # Comprehensive Designation / Role Master
+                                role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
+                                sel_role = st.selectbox("Designation / Role", role_choices)
+                                custom_role = st.text_input("Specify Custom Role (If 'Other' selected)", placeholder="e.g. Hydro Crane Operator").strip()
 
                                 c_w1, c_w2 = st.columns(2)
                                 with c_w1:
@@ -620,8 +654,12 @@ if selected_module == "👷 Worker Attendance":
                                 submit_worker = st.form_submit_button("Save Employee Record", use_container_width=True, type="primary")
 
                                 if submit_worker:
+                                    final_role = custom_role if sel_role == "Other (Specify Custom Role)" and custom_role else sel_role
+                                    
                                     if not w_name:
                                         st.error("Employee Name is required.")
+                                    elif sel_role == "Other (Specify Custom Role)" and not custom_role:
+                                        st.error("Please specify the custom role name in the text box.")
                                     else:
                                         w_df = load_sheet_df("worker_master")
                                         for col in WORKER_MASTER_COLS:
@@ -633,7 +671,7 @@ if selected_module == "👷 Worker Attendance":
                                             "Full_Name": w_name,
                                             "Govt_ID_Ref": w_ref,
                                             "Division": w_div,
-                                            "Designation": w_desig,
+                                            "Designation": final_role,
                                             "Wage_Type": w_wage_type,
                                             "Base_Rate": w_rate,
                                             "OT_Hourly_Rate": w_ot_rate,
@@ -643,7 +681,7 @@ if selected_module == "👷 Worker Attendance":
                                         }
                                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered.")
+                                            st.success(f"Employee {w_name} ({next_wid}) successfully registered as {final_role}.")
                                             st.rerun()
 
                     else:
@@ -652,7 +690,7 @@ if selected_module == "👷 Worker Attendance":
                             sample_df = pd.DataFrame([
                                 {
                                     "Full_Name": "Ramesh Kumar", "Govt_ID_Ref": "Ref-01", "Division": "Fleet Operations",
-                                    "Designation": "Hyva Driver", "Wage_Type": "MONTHLY_FIXED", "Base_Rate": 18000.0,
+                                    "Designation": "Hyva Tipper Driver", "Wage_Type": "MONTHLY_FIXED", "Base_Rate": 18000.0,
                                     "OT_Hourly_Rate": 80.0, "Contact_No": "9876543210", "Status": "ACTIVE"
                                 }
                             ])
@@ -712,7 +750,7 @@ if selected_module == "👷 Worker Attendance":
                                 wid = str(row.get("Worker_ID", ""))
                                 wname = str(row.get("Full_Name", ""))
                                 wdiv = str(row.get("Division", ""))
-                                wtrade = str(row.get("Designation", ""))
+                                wrole = str(row.get("Designation", ""))
                                 wcontact = str(row.get("Contact_No", "N/A"))
                                 
                                 return f"""<!DOCTYPE html>
@@ -748,7 +786,7 @@ if selected_module == "👷 Worker Attendance":
     }}
     .info-col {{ flex: 1; line-height: 1.25; }}
     .worker-name {{ font-size: 8pt; font-weight: 800; color: #0f172a; text-transform: uppercase; }}
-    .worker-trade {{ font-size: 6.5pt; font-weight: 700; color: #2563eb; }}
+    .worker-role {{ font-size: 6.5pt; font-weight: 700; color: #2563eb; }}
     .meta-row {{ font-size: 5.5pt; color: #334155; margin-top: 1mm; }}
     .wid-badge {{ background: #e2e8f0; padding: 0.4mm 1.2mm; border-radius: 1mm; font-weight: 700; color: #0f172a; }}
     .card-footer {{
@@ -771,11 +809,11 @@ if selected_module == "👷 Worker Attendance":
         <div class="photo-slot">PHOTO</div>
         <div class="info-col">
             <div class="worker-name">{wname}</div>
-            <div class="worker-trade">{wtrade}</div>
+            <div class="worker-role">{wrole}</div>
             <div class="meta-row">
                 <div><b>ID:</b> <span class="wid-badge">{wid}</span></div>
                 <div><b>Division:</b> {wdiv}</div>
-                <div><b>Contact:</b> {wcontact}</div>
+                <div><b>Mob:</b> {wcontact}</div>
                 <div><b>Verification:</b> [Verified]</div>
             </div>
         </div>
@@ -792,7 +830,7 @@ if selected_module == "👷 Worker Attendance":
                             with th1: st.markdown("**ID**")
                             with th2: st.markdown("**Employee Name**")
                             with th3: st.markdown("**Division**")
-                            with th4: st.markdown("**Trade**")
+                            with th4: st.markdown("**Designation / Role**")
                             with th5: st.markdown("**Wage Model**")
                             with th6: st.markdown("**Actions**")
                             st.markdown("<hr style='margin: 4px 0 10px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
@@ -801,14 +839,14 @@ if selected_module == "👷 Worker Attendance":
                                 wid = str(w_row.get("Worker_ID", ""))
                                 wname = str(w_row.get("Full_Name", ""))
                                 wdiv = str(w_row.get("Division", ""))
-                                wtrade = str(w_row.get("Designation", ""))
+                                wrole = str(w_row.get("Designation", ""))
                                 wwage = str(w_row.get("Wage_Type", ""))
 
                                 r1, r2, r3, r4, r5, r6 = st.columns([1.1, 2.2, 1.4, 1.4, 1.2, 1.4])
                                 with r1: st.markdown(f"`{wid}`")
                                 with r2: st.markdown(f"**{wname}**")
                                 with r3: st.caption(wdiv)
-                                with r4: st.caption(wtrade)
+                                with r4: st.caption(wrole)
                                 with r5: st.caption(wwage)
                                 with r6:
                                     card_content = generate_atm_id_card_html(w_row)
@@ -924,7 +962,7 @@ if selected_module == "👷 Worker Attendance":
                         wid = str(w_row["Worker_ID"])
                         wname = str(w_row["Full_Name"])
                         wdiv = str(w_row["Division"])
-                        wtrade = str(w_row["Designation"])
+                        wrole = str(w_row["Designation"])
                         w_type = str(w_row.get("Wage_Type", "DAILY_WAGE"))
 
                         cur_state = st.session_state[cache_key].get(wid, {
@@ -946,7 +984,7 @@ if selected_module == "👷 Worker Attendance":
                                             </div>
                                             <span style="font-size: 0.72rem; color: #2563eb; font-weight: 600;">{wdiv}</span>
                                         </div>
-                                        <div style="font-size: 0.76rem; color: #64748b; margin-top: 1px;">{wtrade} • {w_type}</div>
+                                        <div style="font-size: 0.76rem; color: #64748b; margin-top: 1px;">{wrole} • {w_type}</div>
                                         """,
                                         unsafe_allow_html=True
                                     )
