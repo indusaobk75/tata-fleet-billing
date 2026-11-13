@@ -6,4 +6,5 @@ num2words
 gspread
 google-auth
 reportlab
+fpdf2
 pypdf
