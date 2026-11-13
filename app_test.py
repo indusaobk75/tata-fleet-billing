@@ -10,7 +10,7 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Safe PDF library import so app never crashes if pypdf is missing from requirements.txt
+# Safe PDF library import
 try:
     import pypdf
     PYPDF_AVAILABLE = True
@@ -112,12 +112,9 @@ def load_sheet_df(worksheet_name):
             ws = sh.worksheet(worksheet_name)
             data = ws.get_all_records()
             df = pd.DataFrame(data)
-            
-            # Auto-healing schema: ensure all expected columns exist even if sheet is empty
             for col in expected_cols:
                 if col not in df.columns:
                     df[col] = ""
-                        
             return df
         except Exception as e:
             if "429" in str(e):
@@ -178,16 +175,11 @@ def generate_next_worker_id(division, existing_df):
     return f"{prefix}-{max(matched_nums) + 1}"
 
 def parse_tata_form_xvii_pdf(uploaded_pdf_file):
-    """
-    Directly extracts Worker Name, Days Worked (Col 4), and Net Amount Paid (Col 14)
-    from multi-page Tata Steel Form XVII [Rule 78(2)(a)] statutory PDF.
-    """
     if not PYPDF_AVAILABLE:
         return pd.DataFrame()
 
     reader = pypdf.PdfReader(uploaded_pdf_file)
     records = []
-    
     header_keywords = [
         "FORM XVII", "REGISTER OF WAGES", "Name and address", "WAGES PERIOD", 
         "Certified that the amount", "Signatory of the Certifying", "Total:-",
@@ -208,8 +200,6 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     buffer = ""
     for line in all_lines:
         buffer = (buffer + " " + line).strip()
-        
-        # Look for wage calculation formula token (e.g. 350+215=565, 494+300=794, 579-354=933)
         if re.search(r"\d+\+\d+[\=\-]\d+", buffer):
             parts = buffer.split()
             if len(parts) >= 8 and parts[-1].isdigit():
@@ -255,14 +245,12 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
 
 # ----------------- 2. HIERARCHICAL WORKSPACES & RBAC -----------------
 TAB_REGISTRY = {
-    # MODULE 1: WORKER ATTENDANCE (GRANULAR ACCESS)
     "➕ Employee Enrolment": "Attendance",
     "📋 Employee Master Register": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
     "Advance & Expense Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance",
 
-    # MODULE 2: CLIENT BILLING HUB
     "Daily Logsheet Entry": "Billing",
     "Monthly Statement & Abstract": "Billing",
     "Locked RA Bills Repository": "Billing",
@@ -270,7 +258,6 @@ TAB_REGISTRY = {
     "Vehicle Fleet Master Mapping": "Billing",
     "Commercial Rate Master": "Billing",
 
-    # MODULE 3: FUEL CONTROL
     "Daily Diesel Issue Slip": "Fuel",
     "Fleet Fuel Benchmark Master": "Fuel",
     "Theft & Pilferage Audit": "Fuel"
@@ -287,96 +274,174 @@ TAB_ALIASES = {
 WORKSPACES_TREE = [
     {
         "id": "Attendance",
-        "title": "👷 Worker Attendance",
+        "icon": "👷",
+        "title": "Worker Attendance",
         "submenus": [
-            ("➕ Employee Enrolment", "➕ Employee Enrolment"),
-            ("📋 Master Register", "📋 Employee Master Register"),
-            ("📅 Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
-            ("💵 Advance & Expense Register", "Advance & Expense Register"),
-            ("📊 Wages, Form XVII & Bank Letters", "Monthly Wages & Payout Summary")
+            ("Employee Enrolment", "➕ Employee Enrolment"),
+            ("Master Register", "📋 Employee Master Register"),
+            ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
+            ("Advance & Expenses", "Advance & Expense Register"),
+            ("Wages & Bank Letters", "Monthly Wages & Payout Summary")
         ]
     },
     {
         "id": "Billing",
-        "title": "📑 Tata Steel Billing Hub",
+        "icon": "📑",
+        "title": "Tata Steel Billing",
         "submenus": [
-            ("📝 Daily Logsheet Entry", "Daily Logsheet Entry"),
-            ("📈 Monthly Abstract", "Monthly Statement & Abstract"),
-            ("🔒 Locked RA Bills", "Locked RA Bills Repository"),
-            ("📑 DO Contracts", "Delivery Order (DO) Contract Management"),
-            ("🚜 Fleet Vehicle Mapping", "Vehicle Fleet Master Mapping"),
-            ("🏷️ Commercial Rate Master", "Commercial Rate Master")
+            ("Daily Logsheet Entry", "Daily Logsheet Entry"),
+            ("Monthly Abstract", "Monthly Statement & Abstract"),
+            ("Locked RA Bills", "Locked RA Bills Repository"),
+            ("DO Contracts", "Delivery Order (DO) Contract Management"),
+            ("Fleet Vehicle Mapping", "Vehicle Fleet Master Mapping"),
+            ("Commercial Rate Master", "Commercial Rate Master")
         ]
     },
     {
         "id": "Fuel",
-        "title": "⛽ Site Fuel Record",
+        "icon": "⛽",
+        "title": "Site Fuel Record",
         "submenus": [
-            ("⛽ Daily Diesel Slip", "Daily Diesel Issue Slip"),
-            ("🎯 Fuel Benchmark Master", "Fleet Fuel Benchmark Master"),
-            ("🔍 Anti-Pilferage Audit", "Theft & Pilferage Audit")
+            ("Daily Diesel Slip", "Daily Diesel Issue Slip"),
+            ("Fuel Benchmark Master", "Fleet Fuel Benchmark Master"),
+            ("Anti-Pilferage Audit", "Theft & Pilferage Audit")
         ]
     }
 ]
 
-INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 44px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="4.5"/><polygon points="54,90 54,42 70,30 70,90" fill="#0b2a75"/><polygon points="76,90 76,22 92,12 92,90" fill="#0b2a75"/><rect x="98" y="24" width="4" height="66" fill="#334155"/><rect x="105" y="32" width="4" height="58" fill="#334155"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#0b2a75"/><circle cx="80" r="5" fill="#0b2a75"/></svg>"""
+INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 38px; height: 28px;"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="5"/><polygon points="54,90 54,42 70,30 70,90" fill="#1e293b"/><polygon points="76,90 76,22 92,12 92,90" fill="#3730a3"/><rect x="98" y="24" width="4" height="66" fill="#64748b"/><rect x="105" y="32" width="4" height="58" fill="#64748b"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#1e293b"/><circle cx="80" cy="74" r="5" fill="#3730a3"/></svg>"""
 
+# ----------------- AESTHETIC MODERN SAAS STYLING (GEMINI / CLAUDE INSPIRED) -----------------
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    }
+
+    /* Main Workspace Canvas */
+    .stApp {
+        background-color: #ffffff;
+    }
     .block-container { 
-        padding-top: 2.8rem !important; 
-        padding-bottom: 2rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        padding-top: 2.2rem !important; 
+        padding-bottom: 2.5rem !important;
+        padding-left: 2.4rem !important;
+        padding-right: 2.4rem !important;
         max-width: 100% !important;
-        width: 100% !important;
     }
-    section[data-testid="stSidebar"][aria-expanded="true"] {
-        width: 295px !important;
-        min-width: 295px !important;
+
+    /* Minimalist Soft Alabaster Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #f8fafc !important;
+        border-right: 1px solid #e2e8f0 !important;
+        width: 270px !important;
+        min-width: 270px !important;
     }
+    section[data-testid="stSidebar"] > div:first-child {
+        padding-top: 1.2rem !important;
+        padding-left: 0.85rem !important;
+        padding-right: 0.85rem !important;
+    }
+
+    /* Ghost Buttons in Sidebar (Zero Boxy Borders) */
+    section[data-testid="stSidebar"] div.stButton > button {
+        width: 100%;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 10px !important;
+        padding: 8px 12px !important;
+        margin-bottom: 2px !important;
+        font-size: 0.86rem !important;
+        font-weight: 500 !important;
+        color: #475569 !important;
+        transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    }
+
+    section[data-testid="stSidebar"] div.stButton > button:hover {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+    }
+
+    /* Active Pill Selection (Soft Indigo Tint + Deep Indigo Text) */
+    section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+        background-color: #eef2ff !important;
+        color: #3730a3 !important;
+        font-weight: 600 !important;
+        border-left: 3px solid #4f46e5 !important;
+        border-radius: 4px 10px 10px 4px !important;
+    }
+
+    /* Main Content Primary Buttons (Executive Slate/Indigo instead of harsh red) */
+    div.stMain div.stButton > button[kind="primary"],
+    div.stFormSubmitButton > button[kind="primary"],
+    div.stDownloadButton > button[kind="primary"] {
+        background-color: #1e293b !important;
+        color: #ffffff !important;
+        border: 1px solid #1e293b !important;
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+        padding: 0.45rem 1rem !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+        transition: all 0.15s ease !important;
+    }
+    div.stMain div.stButton > button[kind="primary"]:hover,
+    div.stFormSubmitButton > button[kind="primary"]:hover,
+    div.stDownloadButton > button[kind="primary"]:hover {
+        background-color: #334155 !important;
+        border-color: #334155 !important;
+    }
+
+    /* Secondary Buttons in Main Content */
+    div.stMain div.stButton > button[kind="secondary"],
+    div.stDownloadButton > button[kind="secondary"] {
+        background-color: #ffffff !important;
+        color: #334155 !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+    }
+    div.stMain div.stButton > button[kind="secondary"]:hover {
+        background-color: #f8fafc !important;
+        border-color: #94a3b8 !important;
+    }
+
+    /* Clean Card Containers */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 12px !important;
+        border: 1px solid #e2e8f0 !important;
+        background-color: #ffffff !important;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+    }
+
+    /* User Avatar Pill */
     .top-user-avatar {
-        width: 36px;
-        height: 36px;
+        width: 34px;
+        height: 34px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
         display: flex;
         align-items: center;
         justify-content: center;
-        font-weight: 700;
-        font-size: 0.88rem;
+        font-weight: 600;
+        font-size: 0.82rem;
         color: white;
-        object-fit: cover;
     }
     .status-badge {
         display: inline-block;
         padding: 1px 7px;
         border-radius: 9999px;
-        font-size: 0.65rem;
+        font-size: 0.62rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.05em;
     }
-    .status-admin { background-color: #064e3b; color: #34d399; border: 1px solid #059669; }
-    .status-user { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #2563eb; }
-
-    div[data-testid="stSidebar"] div.stButton > button {
-        text-align: left;
-        justify-content: flex-start;
-        border-radius: 8px;
-        font-size: 0.88rem;
-        font-weight: 600;
-        padding: 8px 12px;
-        margin-bottom: 3px;
-        border: 1px solid #e2e8f0;
-        background-color: #ffffff;
-        color: #1e293b;
-        transition: all 0.15s ease;
-    }
-    div[data-testid="stSidebar"] div.stButton > button:hover {
-        background-color: #f8fafc;
-        border-color: #cbd5e1;
-    }
+    .status-admin { background-color: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+    .status-user { background-color: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -401,15 +466,15 @@ def init_session():
 init_session()
 
 def login_screen():
-    c1, c2, c3 = st.columns([1, 1.3, 1])
+    c1, c2, c3 = st.columns([1, 1.2, 1])
     with c2:
-        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
         st.markdown(
             f"""
-            <div style="text-align: center; margin-bottom: 20px;">
-                <div style="display: flex; justify-content: center; margin-bottom: 8px;">{INDU_SAO_SVG_LOGO}</div>
-                <h2 style="margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.6rem;">{COMPANY_HEADER['NAME']}</h2>
-                <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 4px;">{COMPANY_HEADER['GST']}</div>
+            <div style="text-align: center; margin-bottom: 24px;">
+                <div style="display: flex; justify-content: center; margin-bottom: 10px;">{INDU_SAO_SVG_LOGO}</div>
+                <h2 style="margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.55rem; letter-spacing: -0.02em;">{COMPANY_HEADER['NAME']}</h2>
+                <div style="font-size: 0.82rem; color: #64748b; font-weight: 500; margin-top: 4px;">{COMPANY_HEADER['GST']}</div>
                 <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">{COMPANY_HEADER['ISO']}</div>
             </div>
             """, 
@@ -417,16 +482,17 @@ def login_screen():
         )
 
         with st.container(border=True):
-            st.markdown("##### Portal Authentication")
-            st.caption("Enter authorized enterprise credentials to access the workspace")
+            st.markdown("##### Sign in to Workspace")
+            st.caption("Enter your authorized credentials to continue")
             
-            username = st.text_input("Username").strip()
-            password = st.text_input("Password", type="password").strip()
-            submitted = st.button("Sign In", use_container_width=True, type="primary")
+            username = st.text_input("Username", placeholder="e.g. admin").strip()
+            password = st.text_input("Password", type="password", placeholder="••••••••").strip()
+            st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+            submitted = st.button("Continue →", use_container_width=True, type="primary")
 
             if submitted:
                 if not username or not password:
-                    st.warning("Please provide both Username and Password.")
+                    st.warning("Please enter both Username and Password.")
                     return
 
                 u_lower = username.lower()
@@ -499,26 +565,27 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. COLLAPSIBLE TREE NAVIGATION (SIDEBAR) -----------------
+# ----------------- 4. AESTHETIC SIDEBAR TREE NAVIGATION -----------------
 with st.sidebar:
+    # Minimalist Brand Header
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 4px 6px 14px 6px; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
             <div>{INDU_SAO_SVG_LOGO}</div>
             <div>
-                <div style="font-size: 0.98rem; font-weight: 700; color: #0f172a; line-height: 1.1;">{COMPANY_HEADER['NAME']}</div>
-                <div style="font-size: 0.68rem; color: #475569; font-weight: 600;">Vendor Code: ID47</div>
-                <div style="font-size: 0.62rem; color: #059669; font-weight: 600;">{COMPANY_HEADER['ISO']}</div>
+                <div style="font-size: 0.94rem; font-weight: 700; color: #0f172a; letter-spacing: -0.01em;">{COMPANY_HEADER['NAME']}</div>
+                <div style="font-size: 0.68rem; color: #64748b; font-weight: 500;">West Bokaro • ID47</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    st.markdown("<div style='margin-bottom: 6px; font-size: 0.72rem; font-weight: 700; color: #64748b; letter-spacing: 0.06em; text-transform: uppercase;'>OPERATIONAL WORKSPACES</div>", unsafe_allow_html=True)
+    st.markdown("<div style='padding: 0 10px; margin-bottom: 6px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>Workspaces</div>", unsafe_allow_html=True)
 
     for ws in WORKSPACES_TREE:
         ws_id = ws["id"]
+        ws_icon = ws["icon"]
         ws_title = ws["title"]
         
         permitted_submenus = []
@@ -530,43 +597,46 @@ with st.sidebar:
             continue
 
         is_open = (st.session_state.active_workspace == ws_id)
-        arrow = "▼" if is_open else "▶"
+        chevron = "▾" if is_open else "▸"
 
-        parent_style = "primary" if is_open else "secondary"
-        if st.button(f"{ws_title}  {arrow}", key=f"ws_btn_{ws_id}", use_container_width=True, type=parent_style):
+        # Clean Workspace Group Header
+        if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"ws_btn_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
-            if permitted_submenus:
+            if permitted_submenus and st.session_state.active_subtab not in [s[1] for s in permitted_submenus]:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
+        # Render Indented Pill Sub-items when Expanded
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
-                sub_label = f"  └─ {disp_name}"
                 btn_kind = "primary" if is_sub_active else "secondary"
                 
+                # Clean indented sub-label without ASCII lines
+                sub_label = f"      {disp_name}"
                 if st.button(sub_label, key=f"sub_btn_{reg_key}", use_container_width=True, type=btn_kind):
                     st.session_state.active_subtab = reg_key
                     st.rerun()
 
+    # Admin Section
     if st.session_state.current_role == "ADMIN":
+        st.markdown("<div style='margin-top: 12px; padding: 0 10px; margin-bottom: 6px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
         is_admin_open = (st.session_state.active_workspace == "Admin")
-        adm_arrow = "▼" if is_admin_open else "▶"
-        adm_style = "primary" if is_admin_open else "secondary"
+        adm_chevron = "▾" if is_admin_open else "▸"
         
-        if st.button(f"⚙️ Admin & Permissions  {adm_arrow}", key="ws_btn_admin", use_container_width=True, type=adm_style):
+        if st.button(f"{adm_chevron}  ⚙️  Access & Settings", key="ws_btn_admin", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = "Admin"
             st.session_state.active_subtab = "User Accounts & RBAC"
             st.rerun()
 
         if is_admin_open:
             is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
-            if st.button("  └─ 👥 User Accounts & RBAC", key="sub_btn_admin_rbac", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
+            if st.button("      User Permissions (RBAC)", key="sub_btn_admin_rbac", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
                 st.rerun()
 
 
-# ----------------- 5. TOP EXECUTIVE HEADER -----------------
+# ----------------- 5. CLEAN TOP BAR -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -574,17 +644,17 @@ badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "s
 
 avatar_html = f'<div class="top-user-avatar">{initials}</div>'
 
-h_col1, h_col2, h_col3 = st.columns([3.0, 1.4, 0.8], gap="small")
+h_col1, h_col2, h_col3 = st.columns([3.2, 1.3, 0.7], gap="small")
 with h_col1:
+    # Breadcrumb-style clean header
+    ws_map = {"Attendance": "Worker Attendance", "Billing": "Tata Steel Billing", "Fuel": "Site Fuel Record", "Admin": "System Administration"}
+    cur_ws_label = ws_map.get(st.session_state.active_workspace, "Workspace")
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; gap: 10px; padding-top: 4px;">
-            <div style="display: flex; align-items: center;">{INDU_SAO_SVG_LOGO}</div>
-            <div>
-                <span style="font-weight: 700; font-size: 1.05rem; color: #0f172a;">Site Operations ERP</span>
-                <span style="color: #cbd5e1; margin: 0 6px;">|</span>
-                <span style="font-size: 0.82rem; color: #475569; font-weight: 500;">Tata Steel West Bokaro (ID47)</span>
-            </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding-top: 6px;">
+            <span style="font-size: 0.85rem; color: #64748b; font-weight: 500;">{cur_ws_label}</span>
+            <span style="color: #cbd5e1;">/</span>
+            <span style="font-size: 0.88rem; color: #0f172a; font-weight: 600;">{st.session_state.active_subtab}</span>
         </div>
         """, 
         unsafe_allow_html=True
@@ -593,11 +663,11 @@ with h_col1:
 with h_col2:
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 3px;">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 2px;">
             {avatar_html}
             <div style="text-align: left; line-height: 1.2;">
-                <div style="font-weight: 600; font-size: 0.85rem; color: #0f172a;">{user_display_name}</div>
-                <div style="margin-top: 1px;"><span class="status-badge {badge_class}">{st.session_state.current_role}</span></div>
+                <div style="font-weight: 600; font-size: 0.82rem; color: #0f172a;">{user_display_name}</div>
+                <div><span class="status-badge {badge_class}">{st.session_state.current_role}</span></div>
             </div>
         </div>
         """,
@@ -605,11 +675,11 @@ with h_col2:
     )
 
 with h_col3:
-    if st.button("⏻ Sign Out", help="Sign Out", use_container_width=True, key="hdr_pwr"):
+    if st.button("Sign Out", help="End Session", use_container_width=True, key="hdr_pwr"):
         st.session_state.user_authenticated = False
         st.rerun()
 
-st.markdown("<hr style='margin-top: 4px; margin-bottom: 12px; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
+st.markdown("<hr style='margin-top: 8px; margin-bottom: 18px; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
 
 
 # ----------------- 6. COVERING AUTHORITY LETTER GENERATOR -----------------
@@ -782,21 +852,20 @@ current_view = st.session_state.active_subtab
 
 # ----------------- VIEW 1: EMPLOYEE ENROLMENT -----------------
 if current_view == "➕ Employee Enrolment":
-    st.markdown("### ➕ Dedicated Employee Enrolment Portal")
-    st.caption("Onboard workforce members with full identity and bank account mapping")
+    st.markdown("#### Employee Enrolment")
+    st.caption("Onboard workforce members with identity and bank account particulars")
 
     entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload"], horizontal=True)
 
     if entry_mode == "Single Employee Form":
-        c_form, c_info = st.columns([1.3, 0.7], gap="large")
+        c_form, c_info = st.columns([1.35, 0.65], gap="large")
         with c_form:
             with st.container(border=True):
-                st.markdown("###### New Employee Onboarding")
                 w_df_current = load_sheet_df("worker_master")
                 
                 w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"], key="enrol_div")
                 next_wid = generate_next_worker_id(w_div, w_df_current)
-                st.info(f"System Assigned ID: **{next_wid}** (Auto-Generated)")
+                st.caption(f"Assigned System ID: **{next_wid}**")
 
                 w_name = st.text_input("Full Official Name", key="enrol_name").strip()
                 w_ref = st.text_input("Identity Verification Reference", key="enrol_ref", help="Distinguishes duplicate names").strip()
@@ -808,23 +877,28 @@ if current_view == "➕ Employee Enrolment":
                 if sel_role == "Other (Custom Entry)":
                     custom_role = st.text_input("Specify Custom Role", key="enrol_custom_role").strip()
 
-                w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"], key="enrol_wage_type")
-                
-                if w_wage_type == "DAILY_WAGE":
-                    w_rate = st.number_input("Daily Wage Rate (₹ / Shift)", min_value=100.0, value=650.0, step=50.0, key="enrol_rate_daily")
-                else:
-                    w_rate = st.number_input("Monthly Fixed Base Salary (₹ / Month)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
+                c_w1, c_w2 = st.columns(2)
+                with c_w1:
+                    w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"], key="enrol_wage_type")
+                with c_w2:
+                    if w_wage_type == "DAILY_WAGE":
+                        w_rate = st.number_input("Daily Wage Rate (₹)", min_value=100.0, value=650.0, step=50.0, key="enrol_rate_daily")
+                    else:
+                        w_rate = st.number_input("Monthly Salary (₹)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
 
                 w_contact = st.text_input("Contact Mobile Number", key="enrol_contact").strip()
 
-                st.markdown("###### 🏦 Bank Transfer Particulars")
+                st.markdown("###### Bank Transfer Details")
                 b_acc = st.text_input("Bank Account Number", key="enrol_b_acc").strip()
-                b_ifsc = st.text_input("Bank IFSC Code (e.g. BKID0004869, SBIN0007842)", key="enrol_b_ifsc").strip().upper()
-                b_branch = st.text_input("Bank & Branch Details (e.g. BOI SARUBERA, SBI RAMGARH)", key="enrol_b_branch").strip().upper()
+                c_b1, c_b2 = st.columns(2)
+                with c_b1:
+                    b_ifsc = st.text_input("IFSC Code", placeholder="e.g. BKID0004869", key="enrol_b_ifsc").strip().upper()
+                with c_b2:
+                    b_branch = st.text_input("Bank & Branch", placeholder="e.g. BOI SARUBERA", key="enrol_b_branch").strip().upper()
 
-                w_status = st.selectbox("Initial Employment Status", ["ACTIVE", "INACTIVE"], key="enrol_status")
+                w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"], key="enrol_status")
 
-                if st.button("Save & Commit Employee Record", type="primary", use_container_width=True):
+                if st.button("Save Employee Record", type="primary", use_container_width=True):
                     final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
                     if not w_name:
                         st.error("Employee Name is mandatory.")
@@ -849,28 +923,28 @@ if current_view == "➕ Employee Enrolment":
                         }
                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                            st.success(f"Employee {w_name} ({next_wid}) successfully enrolled.")
+                            st.success(f"Employee {w_name} ({next_wid}) enrolled.")
                             st.rerun()
 
         with c_info:
             with st.container(border=True):
-                st.markdown("###### ℹ️ Bank Transfer Routing Rules")
-                st.caption("• **Bank of India (BOI):** IFSC starting with `BKID` auto-routes to BOI Covering Sheet.")
-                st.caption("• **Other Banks:** Non-BOI IFSC codes auto-route to NEFT Covering Sheet.")
-                st.caption("• **Cash Wage Handling:** Leave Bank Account blank if employee receives cash payouts.")
+                st.markdown("###### Routing Guidelines")
+                st.caption("• **Bank of India (BOI):** IFSC codes starting with `BKID` automatically route to the BOI internal transfer batch.")
+                st.caption("• **Other Banks (NEFT):** All non-BOI IFSC codes route to the NEFT covering sheet.")
+                st.caption("• **Cash Settlement:** Leave Bank Account blank if the worker receives cash disbursements.")
 
     else:
         with st.container(border=True):
-            st.markdown("###### 📁 Bulk Upload Employee Roster (CSV / Excel)")
-            st.caption("Synchronize bulk workforce records including bank particulars.")
+            st.markdown("###### Bulk Employee Roster Import")
+            st.caption("Upload CSV or Excel file containing workforce details and bank accounts.")
 
             up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
             if up_file:
                 b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
                 b_df.columns = [str(c).strip() for c in b_df.columns]
-                st.dataframe(b_df.head(4), use_container_width=True)
+                st.dataframe(b_df.head(5), use_container_width=True, hide_index=True)
 
-                if st.button("Commit Bulk File", type="primary", use_container_width=True):
+                if st.button("Commit Bulk Roster", type="primary", use_container_width=True):
                     w_df = load_sheet_df("worker_master")
                     appended_rows = []
                     for _, b_row in b_df.iterrows():
@@ -899,26 +973,26 @@ if current_view == "➕ Employee Enrolment":
 
                     fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
                     if save_sheet_df("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                        st.success(f"{len(appended_rows)} workers synchronized successfully.")
+                        st.success(f"{len(appended_rows)} records imported successfully.")
                         st.rerun()
 
 
 # ----------------- VIEW 2: EMPLOYEE MASTER REGISTER -----------------
 elif current_view == "📋 Employee Master Register":
-    st.markdown("### 📋 Employee Master Register & Bank Mapping")
-    st.caption("Active workforce directory with live bank verification status and ledger drilldowns")
+    st.markdown("#### Employee Master Register")
+    st.caption("Active workforce directory with verified bank routing details")
 
     w_table = load_sheet_df("worker_master")
     if w_table.empty or "Worker_ID" not in w_table.columns:
         st.info("No employee records found.")
     else:
-        flt_c1, flt_c2, flt_c3 = st.columns([1.2, 1.2, 2.0])
+        flt_c1, flt_c2, flt_c3 = st.columns([1.1, 1.2, 2.0])
         with flt_c1:
-            f_div = st.selectbox("Division Filter", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
+            f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
         with flt_c2:
-            f_bank = st.selectbox("Bank Routing Filter", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
+            f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
         with flt_c3:
-            f_search = st.text_input("Search Name, ID, or Account", placeholder="Filter by keyword...").strip().lower()
+            f_search = st.text_input("Search", placeholder="Filter by name, ID, or account number...").strip().lower()
 
         disp_table = w_table.copy()
         if f_div != "All":
@@ -949,8 +1023,8 @@ elif current_view == "📋 Employee Master Register":
 
 # ----------------- VIEW 3: DAILY FIELD MUSTER ROLL -----------------
 elif current_view == "Daily Muster Roll (Field Attendance)":
-    st.markdown("### 📅 Daily Muster Roll & Shift Attendance")
-    st.caption("Record field shift duty with location tagging (Tata Plant vs Private Works)")
+    st.markdown("#### Daily Field Muster Roll")
+    st.caption("Log daily shift attendance and deployment location (Tata Plant vs Private Works)")
 
     w_master = load_sheet_df("worker_master")
     if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -960,12 +1034,12 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
         top_m1, top_m2, top_m3 = st.columns([1.1, 1.2, 1.2])
         with top_m1:
-            muster_date = st.date_input("Attendance Date", value=datetime.date.today(), key="muster_dt_pick")
+            muster_date = st.date_input("Date", value=datetime.date.today(), key="muster_dt_pick")
             muster_date_str = muster_date.strftime("%Y-%m-%d")
         with top_m2:
-            sel_division = st.selectbox("Operational Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
+            sel_division = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
         with top_m3:
-            st.metric("Total Active Crew", len(active_workers))
+            st.metric("Active Crew", len(active_workers))
 
         if sel_division != "All Divisions":
             active_workers = active_workers[active_workers["Division"] == sel_division]
@@ -994,29 +1068,27 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     "att": def_att, "ot": def_ot, "loc": def_loc
                 }
 
-        with st.container(border=True):
-            st.markdown("###### ⚡ Bulk Actions")
-            b_c1, b_c2, b_c3 = st.columns(3)
-            with b_c1:
-                if st.button("Mark All Present (Tata Site)", use_container_width=True):
-                    for wid in active_workers["Worker_ID"].astype(str):
-                        if wid in st.session_state[cache_key]:
-                            st.session_state[cache_key][wid]["att"] = "P"
-                            st.session_state[cache_key][wid]["loc"] = "Tata Site (In-Plant)"
-                    st.rerun()
-            with b_c2:
-                if st.button("Mark All Present (Private Work)", use_container_width=True):
-                    for wid in active_workers["Worker_ID"].astype(str):
-                        if wid in st.session_state[cache_key]:
-                            st.session_state[cache_key][wid]["att"] = "P"
-                            st.session_state[cache_key][wid]["loc"] = "Private / Internal"
-                    st.rerun()
-            with b_c3:
-                if st.button("Mark All Absent", use_container_width=True):
-                    for wid in active_workers["Worker_ID"].astype(str):
-                        if wid in st.session_state[cache_key]:
-                            st.session_state[cache_key][wid]["att"] = "A"
-                    st.rerun()
+        b_c1, b_c2, b_c3 = st.columns(3)
+        with b_c1:
+            if st.button("Mark All Present (Tata Site)", use_container_width=True):
+                for wid in active_workers["Worker_ID"].astype(str):
+                    if wid in st.session_state[cache_key]:
+                        st.session_state[cache_key][wid]["att"] = "P"
+                        st.session_state[cache_key][wid]["loc"] = "Tata Site (In-Plant)"
+                st.rerun()
+        with b_c2:
+            if st.button("Mark All Present (Private Work)", use_container_width=True):
+                for wid in active_workers["Worker_ID"].astype(str):
+                    if wid in st.session_state[cache_key]:
+                        st.session_state[cache_key][wid]["att"] = "P"
+                        st.session_state[cache_key][wid]["loc"] = "Private / Internal"
+                st.rerun()
+        with b_c3:
+            if st.button("Mark All Absent", use_container_width=True):
+                for wid in active_workers["Worker_ID"].astype(str):
+                    if wid in st.session_state[cache_key]:
+                        st.session_state[cache_key][wid]["att"] = "A"
+                st.rerun()
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         grid_cols = st.columns(2, gap="medium")
@@ -1031,10 +1103,10 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
             with col_target:
                 with st.container(border=True):
-                    st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.8rem; color: #2563eb;'>{wdiv}</span>", unsafe_allow_html=True)
-                    st.caption(f"Role: {wrole}")
+                    st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>", unsafe_allow_html=True)
+                    st.caption(f"{wrole}")
 
-                    r_c1, r_c2, r_c3 = st.columns([1.2, 1.2, 1.0])
+                    r_c1, r_c2, r_c3 = st.columns([1.1, 1.3, 1.0])
                     with r_c1:
                         cur_state["att"] = st.selectbox("Status", ["P", "HD", "A", "WO"], index=["P", "HD", "A", "WO"].index(cur_state.get("att", "P")), key=f"att_s_{wid}")
                     with r_c2:
@@ -1044,8 +1116,8 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
             st.session_state[cache_key][wid] = cur_state
 
-        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-        if st.button("💾 Save Daily Muster Roll", type="primary", use_container_width=True):
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        if st.button("Save Daily Muster Roll", type="primary", use_container_width=True):
             marked_rows = []
             for _, w_row in active_workers.iterrows():
                 wid = str(w_row["Worker_ID"])
@@ -1072,14 +1144,14 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
             updated_m = pd.concat([all_m, pd.DataFrame(marked_rows)], ignore_index=True)
             if save_sheet_df("muster_roll", updated_m[MUSTER_ROLL_COLS]):
-                st.success("Daily Muster Roll synchronized.")
+                st.success("Daily Muster Roll saved.")
                 st.rerun()
 
 
 # ----------------- VIEW 4: ADVANCE REGISTER -----------------
 elif current_view == "Advance & Expense Register":
-    st.markdown("### 💵 Advance & Field Expense Register")
-    st.caption("Record site allowances and lump-sum advances")
+    st.markdown("#### Advance & Expense Register")
+    st.caption("Disburse and track site advances and allowances")
 
     w_master = load_sheet_df("worker_master")
     worker_options = {}
@@ -1099,7 +1171,7 @@ elif current_view == "Advance & Expense Register":
                     a_mode = st.selectbox("Mode", ["Cash", "Online UPI", "Bank Transfer"])
                     a_rem = st.text_input("Remarks").strip()
 
-                    if st.form_submit_button("Record Advance", type="primary", use_container_width=True):
+                    if st.form_submit_button("Record Transaction", type="primary", use_container_width=True):
                         w_id, w_name, w_div = worker_options[sel_w]
                         adv_df = load_sheet_df("worker_advances")
                         new_adv = {
@@ -1115,12 +1187,12 @@ elif current_view == "Advance & Expense Register":
                         }
                         updated_adv = pd.concat([adv_df, pd.DataFrame([new_adv])], ignore_index=True)
                         if save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS]):
-                            st.success("Advance recorded successfully.")
+                            st.success("Transaction recorded.")
                             st.rerun()
 
     with c_adv2:
         with st.container(border=True):
-            st.markdown("###### 📜 Advance Ledger")
+            st.markdown("###### Recent Advance Transactions")
             adv_history = load_sheet_df("worker_advances")
             if not adv_history.empty and "Txn_ID" in adv_history.columns:
                 st.dataframe(adv_history[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
@@ -1130,8 +1202,8 @@ elif current_view == "Advance & Expense Register":
 
 # ----------------- VIEW 5: WAGES, FORM XVII & BANK LETTERS -----------------
 elif current_view == "Monthly Wages & Payout Summary":
-    st.markdown("### 📊 Monthly Wages, Form XVII Audit & Automated Bank Sheets")
-    st.caption("Reconcile field attendance with Tata Steel Form XVII and generate BOI / NEFT covering letters")
+    st.markdown("#### Monthly Wages, Form XVII Audit & Bank Batches")
+    st.caption("Reconcile field duty with Tata Steel Form XVII and generate BOI / NEFT covering letters")
 
     w_master = load_sheet_df("worker_master")
     muster_df = load_sheet_df("muster_roll")
@@ -1145,18 +1217,17 @@ elif current_view == "Monthly Wages & Payout Summary":
 
     wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
 
-    # Multi-Format Form XVII Importer (PDF / CSV / XLSX)
-    with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages PDF / CSV)", expanded=tata_df.empty):
-        st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** received from Tata Steel for **{wage_period_str}**")
-        xvii_file = st.file_uploader("Upload Form XVII File", type=["pdf", "csv", "xlsx"])
+    with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages)", expanded=tata_df.empty):
+        st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** for **{wage_period_str}**")
+        xvii_file = st.file_uploader("Upload Form XVII (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"])
 
         if xvii_file:
             x_df = pd.DataFrame()
             if xvii_file.name.lower().endswith(".pdf"):
                 if not PYPDF_AVAILABLE:
-                    st.error("⚠️ PDF reader library ('pypdf') is not installed on server. Please add 'pypdf' to requirements.txt or upload CSV/Excel file.")
+                    st.error("⚠️ PDF reader ('pypdf') not installed. Add 'pypdf' to requirements.txt or upload CSV/Excel.")
                 else:
-                    with st.spinner("Extracting data directly from Form XVII PDF pages..."):
+                    with st.spinner("Extracting records from Form XVII PDF..."):
                         x_df = parse_tata_form_xvii_pdf(xvii_file)
             elif xvii_file.name.lower().endswith(".csv"):
                 x_df = pd.read_csv(xvii_file)
@@ -1166,8 +1237,8 @@ elif current_view == "Monthly Wages & Payout Summary":
                 x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
 
             if not x_df.empty:
-                st.success(f"Successfully extracted {len(x_df)} workers from file! Total Net Wages: ₹{x_df['Net_Amount_Paid'].sum():,.0f}")
-                st.dataframe(x_df.head(5), use_container_width=True)
+                st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{x_df['Net_Amount_Paid'].sum():,.0f}")
+                st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
 
                 if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
                     new_records = []
@@ -1196,17 +1267,14 @@ elif current_view == "Monthly Wages & Payout Summary":
 
                     final_tata = pd.concat([tata_df, pd.DataFrame(new_records)], ignore_index=True)
                     if save_sheet_df("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
-                        st.success(f"Form XVII for {wage_period_str} synchronized.")
+                        st.success(f"Form XVII for {wage_period_str} committed.")
                         st.rerun()
             else:
                 if not xvii_file.name.lower().endswith(".pdf") or PYPDF_AVAILABLE:
-                    st.error("Could not parse records from uploaded file. Please verify layout.")
+                    st.error("Could not parse records from uploaded file.")
 
-    # Mismatch Cockpit & Bank Batch Engine
-    st.markdown("<hr style='margin: 12px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
-    st.markdown("###### 🔍 Attendance Reconciliation Cockpit (Field Duty vs Form XVII)")
+    st.markdown("###### Reconciliation Cockpit (Field Duty vs Form XVII)")
 
-    # Safe filter on tata_df
     if not tata_df.empty and "Wages_Period" in tata_df.columns:
         tata_cur = tata_df[tata_df["Wages_Period"] == wage_period_str]
     else:
@@ -1228,7 +1296,6 @@ elif current_view == "Monthly Wages & Payout Summary":
             b_ifsc = str(w.get("Bank_IFSC_Code", "")).strip().upper()
             b_branch = str(w.get("Bank_Branch_Details", "")).strip().upper()
 
-            # Supervisor field days
             sup_days = 0.0
             if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
                 w_m = muster_df[(muster_df["Worker_ID"].astype(str) == wid) & 
@@ -1237,7 +1304,6 @@ elif current_view == "Monthly Wages & Payout Summary":
                                (muster_df["Duty_Location"] == "Tata Site (In-Plant)")]
                 sup_days = len(w_m[w_m["Attendance"] == "P"]) + (len(w_m[w_m["Attendance"] == "HD"]) * 0.5)
 
-            # Safe Tata Form XVII Net & Days lookup
             tata_approved_days = 0.0
             tata_net_paid = 0.0
 
@@ -1259,10 +1325,10 @@ elif current_view == "Monthly Wages & Payout Summary":
                 "Worker ID": wid,
                 "Name": wname,
                 "Field Days": sup_days,
-                "Tata Approved Days": tata_approved_days,
-                "Variance Status": status_badge,
-                "Compliance Locked Net (₹)": final_bank_transfer,
-                "IFSC Code": b_ifsc,
+                "Tata Days": tata_approved_days,
+                "Status": status_badge,
+                "Locked Net (₹)": final_bank_transfer,
+                "IFSC": b_ifsc,
                 "Bank Details": b_branch
             })
 
@@ -1283,8 +1349,8 @@ elif current_view == "Monthly Wages & Payout Summary":
     if not recon_df.empty:
         st.dataframe(recon_df, use_container_width=True, hide_index=True)
 
-    st.markdown("<hr style='margin: 16px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
-    st.markdown("###### 🏦 Automated Bank Covering Letters & Payment Batches")
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    st.markdown("###### Automated Bank Covering Letters")
 
     p_c1, p_c2 = st.columns([1.2, 1.2])
     with p_c1:
@@ -1296,16 +1362,16 @@ elif current_view == "Monthly Wages & Payout Summary":
     tot_neft = sum([r["AMOUNT"] for r in neft_batch])
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Bank of India Payout", f"₹{tot_boi:,.0f}", f"{len(boi_batch)} Beneficiaries")
-    m2.metric("Other Banks (NEFT) Payout", f"₹{tot_neft:,.0f}", f"{len(neft_batch)} Beneficiaries")
-    m3.metric("Total Compliance Transfer", f"₹{(tot_boi + tot_neft):,.0f}", "Zero Breach Verified")
+    m1.metric("Bank of India (BOI)", f"₹{tot_boi:,.0f}", f"{len(boi_batch)} Beneficiaries")
+    m2.metric("Other Banks (NEFT)", f"₹{tot_neft:,.0f}", f"{len(neft_batch)} Beneficiaries")
+    m3.metric("Total Transfer", f"₹{(tot_boi + tot_neft):,.0f}", "Compliance Locked")
 
     dl_c1, dl_c2 = st.columns(2)
     with dl_c1:
         if boi_batch:
             boi_html = generate_bank_authority_letter_html("BOI", boi_batch, chq_no, chq_date)
             st.download_button(
-                label=f"📄 Download Bank of India Covering Letter ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
+                label=f"Download BOI Covering Letter ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
                 data=boi_html,
                 file_name=f"BOI_Transfer_Letter_{wage_period_str}.html",
                 mime="text/html",
@@ -1319,7 +1385,7 @@ elif current_view == "Monthly Wages & Payout Summary":
         if neft_batch:
             neft_html = generate_bank_authority_letter_html("NEFT", neft_batch, chq_no, chq_date)
             st.download_button(
-                label=f"📄 Download Other Banks (NEFT) Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
+                label=f"Download NEFT Covering Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
                 data=neft_html,
                 file_name=f"NEFT_Transfer_Letter_{wage_period_str}.html",
                 mime="text/html",
@@ -1333,28 +1399,28 @@ elif current_view == "Monthly Wages & Payout Summary":
 # ----------------- VIEW 6: BILLING MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Logsheet Entry", "Monthly Statement & Abstract", "Locked RA Bills Repository", 
                       "Delivery Order (DO) Contract Management", "Vehicle Fleet Master Mapping", "Commercial Rate Master"]:
-    st.markdown(f"### 📑 Tata Steel Billing Hub: {current_view}")
+    st.markdown(f"#### {current_view}")
     st.caption("Commercial Fleet Logs, Contract Abstracts and Billing Repository")
-    st.info(f"Workspace module '{current_view}' loaded and ready.")
+    st.info(f"Module '{current_view}' is ready.")
 
 
 # ----------------- VIEW 7: FUEL MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Diesel Issue Slip", "Fleet Fuel Benchmark Master", "Theft & Pilferage Audit"]:
-    st.markdown(f"### ⛽ Site Fuel Record: {current_view}")
+    st.markdown(f"#### {current_view}")
     st.caption("Fleet Fuel Control, Bowser Dispatches and Anti-Theft Analytics")
-    st.info(f"Workspace module '{current_view}' loaded and ready.")
+    st.info(f"Module '{current_view}' is ready.")
 
 
 # ----------------- VIEW 8: ADMIN & USER PERMISSIONS (ADMIN ONLY) -----------------
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
-    st.markdown("### ⚙️ Identity & Granular Access Management (RBAC)")
-    st.caption("Provision credentials and configure exact module/sub-tab access permissions per user")
+    st.markdown("#### User Accounts & Access Control (RBAC)")
+    st.caption("Provision credentials and configure sub-menu permissions per user")
 
     col_u1, col_u2 = st.columns([1.1, 1.9], gap="large")
 
     with col_u1:
         with st.container(border=True):
-            st.markdown("##### ➕ Provision / Update User")
+            st.markdown("###### Provision / Update User")
             
             with st.form("create_user_form", clear_on_submit=False):
                 new_username = st.text_input("Username").strip()
@@ -1368,24 +1434,24 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                 with f_c2:
                     new_status = st.selectbox("Status", ["ACTIVE", "INACTIVE"])
 
-                st.markdown("**Granular Sub-Menu Permissions:**")
+                st.markdown("**Sub-Menu Permissions:**")
                 selected_permissions = []
                 
-                with st.expander("Worker Attendance Modules (Granular Control)", expanded=True):
+                with st.expander("Worker Attendance", expanded=True):
                     for t_name, m_type in TAB_REGISTRY.items():
                         if m_type == "Attendance":
                             is_checked = (new_role == "ADMIN")
                             if st.checkbox(t_name, key=f"perm_{t_name}_{new_username}", value=is_checked):
                                 selected_permissions.append(t_name)
 
-                with st.expander("Billing Modules", expanded=(new_role == "ADMIN")):
+                with st.expander("Tata Steel Billing", expanded=(new_role == "ADMIN")):
                     for t_name, m_type in TAB_REGISTRY.items():
                         if m_type == "Billing":
                             is_checked = (new_role == "ADMIN")
                             if st.checkbox(t_name, key=f"perm_{t_name}_{new_username}", value=is_checked):
                                 selected_permissions.append(t_name)
 
-                with st.expander("Fuel Control Modules", expanded=(new_role == "ADMIN")):
+                with st.expander("Site Fuel Record", expanded=(new_role == "ADMIN")):
                     for t_name, m_type in TAB_REGISTRY.items():
                         if m_type == "Fuel":
                             is_checked = (new_role == "ADMIN")
@@ -1431,12 +1497,12 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
 
                         updated_users = pd.concat([users_df, pd.DataFrame(rows_to_append)], ignore_index=True)
                         if save_sheet_df("app_users", updated_users[USER_COLUMNS]):
-                            st.success(f"User account '{new_username}' saved.")
+                            st.success(f"User '{new_username}' saved.")
                             st.rerun()
 
     with col_u2:
         with st.container(border=True):
-            st.markdown("##### 👥 Active System Users Ledger")
+            st.markdown("###### Active System Users")
             users_table = load_sheet_df("app_users")
             if not users_table.empty and "Username" in users_table.columns:
                 disp_cols = [c for c in ["Username", "Password", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in users_table.columns]
