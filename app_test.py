@@ -311,7 +311,7 @@ WORKSPACES_TREE = [
 
 INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 36px; height: 26px;"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="5"/><polygon points="54,90 54,42 70,30 70,90" fill="#1e293b"/><polygon points="76,90 76,22 92,12 92,90" fill="#3730a3"/><rect x="98" y="24" width="4" height="66" fill="#64748b"/><rect x="105" y="32" width="4" height="58" fill="#64748b"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#1e293b"/><circle cx="80" cy="74" r="5" fill="#3730a3"/></svg>"""
 
-# ----------------- SLEEK MODERN PILL SIDEBAR STYLING -----------------
+# ----------------- SLEEK MODERN PILL SIDEBAR & HEADER STYLING -----------------
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -323,8 +323,10 @@ st.markdown("""
     .stApp {
         background-color: #ffffff;
     }
+    
+    /* Generous top padding so Streamlit toolbar never clips header or Sign Out button */
     .block-container { 
-        padding-top: 2.6rem !important; 
+        padding-top: 3.6rem !important; 
         padding-bottom: 2.5rem !important;
         padding-left: 2.2rem !important;
         padding-right: 2.2rem !important;
@@ -339,7 +341,7 @@ st.markdown("""
         min-width: 275px !important;
     }
     section[data-testid="stSidebar"] > div:first-child {
-        padding-top: 1rem !important;
+        padding-top: 1.1rem !important;
         padding-left: 0.75rem !important;
         padding-right: 0.75rem !important;
     }
@@ -371,7 +373,6 @@ st.markdown("""
 
     /* SUB-MENU INACTIVE BUTTONS (Indented, Lighter, Tree-Line) */
     section[data-testid="stSidebar"] div.stButton > button[kind="tertiary"] {
-        width: 100% !important;
         min-height: 33px !important;
         height: 33px !important;
         text-align: left !important;
@@ -427,6 +428,24 @@ st.markdown("""
         background-color: #334155 !important;
     }
 
+    /* Main Content Secondary Buttons (including Sign Out) */
+    div.stMain div.stButton > button[kind="secondary"],
+    div.stDownloadButton > button[kind="secondary"] {
+        background-color: #ffffff !important;
+        color: #334155 !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+        font-size: 0.8rem !important;
+        font-weight: 500 !important;
+        padding: 4px 10px !important;
+        min-height: 34px !important;
+        height: 34px !important;
+    }
+    div.stMain div.stButton > button[kind="secondary"]:hover {
+        background-color: #f8fafc !important;
+        border-color: #94a3b8 !important;
+    }
+
     div[data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 12px !important;
         border: 1px solid #e2e8f0 !important;
@@ -444,6 +463,7 @@ st.markdown("""
         font-weight: 600;
         font-size: 0.78rem;
         color: white;
+        flex-shrink: 0;
     }
     .status-badge {
         display: inline-block;
@@ -457,6 +477,7 @@ st.markdown("""
     .status-user { background-color: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
@@ -480,7 +501,7 @@ init_session()
 def login_screen():
     c1, c2, c3 = st.columns([1, 1.2, 1])
     with c2:
-        st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
         st.markdown(
             f"""
             <div style="text-align: center; margin-bottom: 24px;">
@@ -577,7 +598,7 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. SLEEK SIDEBAR TREE NAVIGATION (SINGLE INSTANCE) -----------------
+# ----------------- 4. SLEEK SIDEBAR TREE NAVIGATION -----------------
 with st.sidebar:
     st.markdown(
         f"""
@@ -641,7 +662,9 @@ with st.sidebar:
             if st.button("User Permissions (RBAC)", key="nav_sub_admin_rbac_item", use_container_width=True, type="primary" if is_adm_sub else "tertiary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
                 st.rerun()
-# ----------------- 5. CLEAN TOP BAR -----------------
+
+
+# ----------------- 5. CLEAN TOP BAR (FIXED PADDING & ALIGNMENT) -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -649,13 +672,13 @@ badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "s
 
 avatar_html = f'<div class="top-user-avatar">{initials}</div>'
 
-h_col1, h_col2, h_col3 = st.columns([3.0, 1.5, 0.7], gap="small")
+h_col1, h_col2, h_col3 = st.columns([2.8, 1.5, 0.8], gap="small")
 with h_col1:
     ws_map = {"Attendance": "Worker Attendance", "Billing": "Tata Steel Billing", "Fuel": "Site Fuel Record", "Admin": "System Administration"}
     cur_ws_label = ws_map.get(st.session_state.active_workspace, "Workspace")
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; gap: 8px; padding-top: 6px;">
+        <div style="display: flex; align-items: center; gap: 8px; height: 34px;">
             <span style="font-size: 0.84rem; color: #64748b; font-weight: 500;">{cur_ws_label}</span>
             <span style="color: #cbd5e1;">/</span>
             <span style="font-size: 0.86rem; color: #0f172a; font-weight: 600;">{st.session_state.active_subtab}</span>
@@ -667,10 +690,10 @@ with h_col1:
 with h_col2:
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 3px;">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 34px;">
             {avatar_html}
-            <div style="text-align: left; line-height: 1.2;">
-                <div style="font-weight: 600; font-size: 0.8rem; color: #0f172a;">{user_display_name}</div>
+            <div style="text-align: left; line-height: 1.15;">
+                <div style="font-weight: 600; font-size: 0.8rem; color: #0f172a; white-space: nowrap;">{user_display_name}</div>
                 <div><span class="status-badge {badge_class}">{st.session_state.current_role}</span></div>
             </div>
         </div>
@@ -679,11 +702,11 @@ with h_col2:
     )
 
 with h_col3:
-    if st.button("Sign Out", help="End Session", use_container_width=True, key="hdr_pwr_out"):
+    if st.button("Sign Out", help="End Session", use_container_width=True, key="hdr_pwr_out", type="secondary"):
         st.session_state.user_authenticated = False
         st.rerun()
 
-st.markdown("<hr style='margin-top: 8px; margin-bottom: 18px; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
+st.markdown("<hr style='margin-top: 10px; margin-bottom: 18px; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
 
 
 # ----------------- 6. COVERING AUTHORITY LETTER GENERATOR -----------------
@@ -944,7 +967,11 @@ if current_view == "➕ Employee Enrolment":
 
             up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
             if up_file:
-                b_df = pd.read_csv(up_file) if up_file.name.endswith(".csv") else pd.read_excel(up_file)
+                if up_file.name.lower().endswith(".csv"):
+                    b_df = pd.read_csv(up_file)
+                else:
+                    xl_b = pd.ExcelFile(up_file)
+                    b_df = xl_b.parse(xl_b.sheet_names[0])
                 b_df.columns = [str(c).strip() for c in b_df.columns]
                 st.dataframe(b_df.head(5), use_container_width=True, hide_index=True)
 
@@ -1217,7 +1244,13 @@ elif current_view == "Monthly Wages & Payout Summary":
     with f_c1:
         sel_year = st.selectbox("Year", [2025, 2026, 2027], index=1)
     with f_c2:
-        sel_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
+        # Default to October if OCT-2026 exists in tata_df and current month doesn't
+        default_m_idx = datetime.date.today().month - 1
+        if not tata_df.empty and "Wages_Period" in tata_df.columns:
+            periods = tata_df["Wages_Period"].astype(str).tolist()
+            if f"{calendar.month_name[default_m_idx+1][:3].upper()}-{sel_year}" not in periods and f"OCT-{sel_year}" in periods:
+                default_m_idx = 9  # October
+        sel_month = st.selectbox("Month", list(calendar.month_name)[1:], index=default_m_idx)
 
     wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
 
@@ -1237,30 +1270,52 @@ elif current_view == "Monthly Wages & Payout Summary":
                 x_df = pd.read_csv(xvii_file)
                 x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
             else:
-                x_df = pd.read_excel(xvii_file)
+                # Smart Multi-Sheet Excel Reader
+                xl = pd.ExcelFile(xvii_file)
+                target_sheet = xl.sheet_names[0]
+                for s_name in xl.sheet_names:
+                    temp_df = xl.parse(s_name, nrows=2)
+                    clean_cols = [str(c).strip().replace(" ", "_") for c in temp_df.columns]
+                    if "Net_Amount_Paid" in clean_cols or "Net_Amount" in clean_cols:
+                        target_sheet = s_name
+                        break
+                x_df = xl.parse(target_sheet)
                 x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
 
-            if not x_df.empty:
-                st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{x_df['Net_Amount_Paid'].sum():,.0f}")
+            if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
+                net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
+                net_sum = pd.to_numeric(x_df[net_col], errors="coerce").fillna(0).sum()
+                st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{net_sum:,.0f}")
                 st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
 
                 if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
                     new_records = []
                     for _, xr in x_df.iterrows():
-                        w_name_raw = str(xr.get("Worker_Name", xr.get("Name_of_Workman", xr.get("Name", "")))).strip()
-                        appr_days = float(xr.get("Approved_Days", xr.get("No._of_days_worked", xr.get("No_of_days_worked", 0.0))) or 0.0)
-                        net_paid = float(xr.get("Net_Amount_Paid", xr.get("Net_Amount", 0.0)) or 0.0)
+                        w_name_raw = str(
+                            xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or ""
+                        ).strip()
+                        
+                        appr_days = float(
+                            pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or xr.get("No._of_days_worked") or 0.0, errors="coerce") or 0.0
+                        )
+                        
+                        net_paid = float(
+                            pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0
+                        )
+
+                        if not w_name_raw or w_name_raw.lower() == "nan":
+                            continue
 
                         matched_wid = ""
                         if not w_master.empty and "Full_Name" in w_master.columns:
-                            match_w = w_master[w_master["Full_Name"].astype(str).str.upper() == w_name_raw.upper()]
+                            match_w = w_master[w_master["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
                             if not match_w.empty:
                                 matched_wid = str(match_w.iloc[0]["Worker_ID"])
 
                         new_records.append({
                             "Wages_Period": wage_period_str,
                             "Worker_ID": matched_wid,
-                            "Worker_Name": w_name_raw,
+                            "Worker_Name": w_name_raw.upper(),
                             "Approved_Days": appr_days,
                             "Net_Amount_Paid": net_paid,
                             "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1271,13 +1326,13 @@ elif current_view == "Monthly Wages & Payout Summary":
 
                     final_tata = pd.concat([tata_df, pd.DataFrame(new_records)], ignore_index=True)
                     if save_sheet_df("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
-                        st.success(f"Form XVII for {wage_period_str} committed.")
+                        st.success(f"Committed {len(new_records)} workers for {wage_period_str}!")
                         st.rerun()
             else:
                 if not xvii_file.name.lower().endswith(".pdf") or PYPDF_AVAILABLE:
-                    st.error("Could not parse records from uploaded file.")
+                    st.error("Could not find 'Net_Amount_Paid' column in uploaded file.")
 
-    st.markdown("###### Reconciliation Cockpit (Field Duty vs Form XVII)")
+    st.markdown(f"###### Reconciliation Cockpit ({wage_period_str} Field Duty vs Form XVII)")
 
     if not tata_df.empty and "Wages_Period" in tata_df.columns:
         tata_cur = tata_df[tata_df["Wages_Period"] == wage_period_str]
@@ -1312,7 +1367,7 @@ elif current_view == "Monthly Wages & Payout Summary":
             tata_net_paid = 0.0
 
             if not tata_cur.empty and "Worker_Name" in tata_cur.columns:
-                tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.upper() == wname.upper()]
+                tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.strip().str.upper() == wname.strip().upper()]
                 if not tata_match.empty:
                     tata_approved_days = float(tata_match.iloc[0].get("Approved_Days", 0.0) or 0.0)
                     tata_net_paid = float(tata_match.iloc[0].get("Net_Amount_Paid", 0.0) or 0.0)
@@ -1354,7 +1409,7 @@ elif current_view == "Monthly Wages & Payout Summary":
         st.dataframe(recon_df, use_container_width=True, hide_index=True)
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    st.markdown("###### Automated Bank Covering Letters")
+    st.markdown("###### Automated Bank Covering Letters (Print / Save as PDF)")
 
     p_c1, p_c2 = st.columns([1.2, 1.2])
     with p_c1:
@@ -1375,7 +1430,7 @@ elif current_view == "Monthly Wages & Payout Summary":
         if boi_batch:
             boi_html = generate_bank_authority_letter_html("BOI", boi_batch, chq_no, chq_date)
             st.download_button(
-                label=f"Download BOI Covering Letter ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
+                label=f"📄 Print / PDF: BOI Covering Letter ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
                 data=boi_html,
                 file_name=f"BOI_Transfer_Letter_{wage_period_str}.html",
                 mime="text/html",
@@ -1389,7 +1444,7 @@ elif current_view == "Monthly Wages & Payout Summary":
         if neft_batch:
             neft_html = generate_bank_authority_letter_html("NEFT", neft_batch, chq_no, chq_date)
             st.download_button(
-                label=f"Download NEFT Covering Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
+                label=f"📄 Print / PDF: NEFT Covering Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
                 data=neft_html,
                 file_name=f"NEFT_Transfer_Letter_{wage_period_str}.html",
                 mime="text/html",
