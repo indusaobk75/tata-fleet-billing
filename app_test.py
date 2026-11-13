@@ -579,13 +579,40 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        # Clean Workspace Group Header
-        if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"ws_btn_{ws_id}", use_container_width=True, type="secondary"):
+        # Workspace Accordion Header
+        if st.button(f"{chevron} {ws_icon} {ws_title}", key=f"ws_btn_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
             if permitted_submenus and st.session_state.active_subtab not in [s[1] for s in permitted_submenus]:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
+        # Sub-items without leading spaces (No code block!)
+        if is_open:
+            for disp_name, reg_key in permitted_submenus:
+                is_sub_active = (st.session_state.active_subtab == reg_key)
+                btn_kind = "primary" if is_sub_active else "secondary"
+                
+                if st.button(f"•  {disp_name}", key=f"sub_btn_{reg_key}", use_container_width=True, type=btn_kind):
+                    st.session_state.active_subtab = reg_key
+                    st.rerun()
+
+    # Admin Section
+    if st.session_state.current_role == "ADMIN":
+        st.markdown("<div style='margin-top: 10px; padding: 0 10px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
+        is_admin_open = (st.session_state.active_workspace == "Admin")
+        adm_chevron = "▾" if is_admin_open else "▸"
+        
+        if st.button(f"{adm_chevron} ⚙️ Access & Settings", key="ws_btn_admin", use_container_width=True, type="secondary"):
+            st.session_state.active_workspace = "Admin"
+            st.session_state.active_subtab = "User Accounts & RBAC"
+            st.rerun()
+
+        if is_admin_open:
+            is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
+            if st.button("•  User Permissions (RBAC)", key="sub_btn_admin_rbac", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
+                st.session_state.active_subtab = "User Accounts & RBAC"
+                st.rerun()
+                
         # Render Indented Pill Sub-items when Expanded
         if is_open:
             for disp_name, reg_key in permitted_submenus:
