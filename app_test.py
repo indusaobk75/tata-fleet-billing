@@ -860,16 +860,22 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
         font-size: 8.8pt;
     }}
     .footer-sign-row {{
-        margin-top: 26px;
+        margin-top: 28px;
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
         page-break-inside: avoid;
     }}
+    .sign-left {{
+        text-align: center;
+        font-size: 9.5pt;
+        font-weight: 800;
+    }}
     .sign-right {{
         text-align: center;
-        font-size: 9.2pt;
-        font-weight: 800;
+        font-size: 8.8pt;
+        font-weight: 700;
+        color: #334155;
     }}
 
     /* EXACT BOTTOM YELLOW + BLUE BORDER STRIP */
@@ -894,32 +900,23 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
     <!-- TOP EXACT LETTERHEAD -->
     <div class="lh-banner">
         <svg class="lh-svg-bg" viewBox="0 0 1000 260" preserveAspectRatio="none">
-            <!-- Green Bottom Angled Ribbon -->
             <polygon points="0,242 1000,192 1000,206 0,256" fill="#2e7d32"/>
-            <!-- Yellow Middle Angled Ribbon -->
             <polygon points="0,228 1000,178 1000,192 0,242" fill="#f4b400"/>
-            <!-- Sky Blue Main Header Polygon -->
             <polygon points="0,0 1000,0 1000,178 0,228" fill="#38a3f1"/>
         </svg>
 
         <div class="lh-content">
             <div class="lh-logo-col">
-                <!-- Exact Oval Emblem -->
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 155" style="width: 48mm; height: 33mm;">
                     <ellipse cx="110" cy="77" rx="103" ry="71" fill="#ffffff" stroke="#000000" stroke-width="5.5"/>
-                    <!-- Building Towers -->
                     <polygon points="62,102 62,64 81,52 81,102" fill="#0d1b6e"/>
                     <polygon points="85,102 85,48 106,34 106,102" fill="#0d1b6e"/>
                     <polygon points="110,102 110,31 131,18 131,102" fill="#0d1b6e"/>
-                    <!-- White Cutout Arch inside Middle Tower -->
                     <polygon points="94,102 94,64 106,57 106,102" fill="#ffffff"/>
-                    <!-- Right Vertical Lines -->
                     <rect x="137" y="22" width="3.5" height="80" fill="#1e293b"/>
                     <rect x="145" y="29" width="3.5" height="73" fill="#1e293b"/>
                     <rect x="153" y="36" width="3.5" height="66" fill="#1e293b"/>
-                    <!-- Diagonal Cut Accent -->
                     <polygon points="103,92 125,104 103,104" fill="#0d1b6e"/>
-                    <!-- Bottom Navy & Black Swoosh -->
                     <path d="M 110,102 C 70,102 52,110 52,119 C 52,130 85,137 118,140 L 118,125 C 92,122 72,118 72,113 C 72,108 90,105 110,105 Z" fill="#0d1b6e"/>
                     <ellipse cx="110" cy="112" rx="8" ry="3.5" fill="#0d1b6e"/>
                     <path d="M 123,115 C 148,119 166,126 166,134 C 166,144 134,149 95,148 C 128,146 146,141 146,134 C 146,129 136,125 123,123 Z" fill="#000000"/>
@@ -982,13 +979,18 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
             </tbody>
         </table>
 
+        <div style="font-size: 9pt; font-weight: 700; margin-top: 12px;">
+            THANKING YOU
+        </div>
+
         <div class="footer-sign-row">
-            <div style="font-size: 9pt; font-weight: 700;">
-                THANKING YOU
+            <div class="sign-left">
+                M/s INDU SAO<br><br><br>
+                <span style="font-size: 9pt; font-weight: 700;">Proprietor</span>
             </div>
             <div class="sign-right">
-                M/s INDU SAO<br><br><br>
-                <span style="font-size: 8.5pt; font-weight: 700;">Proprietor / Authorized Signatory</span>
+                <br><br><br>
+                <span style="border-top: 1px dashed #64748b; padding-top: 3px;">Bank Sign & Stamp</span>
             </div>
         </div>
     </div>
@@ -1001,7 +1003,6 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
 
 </body>
 </html>"""
-
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
