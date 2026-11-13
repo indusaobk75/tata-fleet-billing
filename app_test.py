@@ -763,7 +763,7 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
         justify-content: space-between;
     }}
 
-    /* EXACT M/s INDU SAO DIAGONAL LETTERHEAD BANNER */
+    /* TOP LETTERHEAD (EDGE-TO-EDGE FULL WIDTH) */
     .lh-banner {{
         position: relative;
         width: 100%;
@@ -820,47 +820,48 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
         color: #000000;
     }}
 
-    /* LETTER BODY AREA */
+    /* LETTER CONTENT AREA WITH PROPER LEFT & RIGHT MARGINS (22mm) */
     .letter-body-wrap {{
-        padding: 4mm 15mm 10mm 15mm;
+        padding: 8mm 22mm 14mm 22mm;
         flex-grow: 1;
     }}
     .subject-box {{
         text-align: center;
-        font-size: 9.8pt;
+        font-size: 10pt;
         font-weight: 700;
         text-decoration: underline;
-        margin: 6px 0 12px 0;
-        line-height: 1.4;
+        margin: 10px 0 14px 0;
+        line-height: 1.45;
     }}
     .salutation {{
-        font-size: 9pt;
-        line-height: 1.5;
-        margin-bottom: 12px;
+        font-size: 9.5pt;
+        line-height: 1.55;
+        margin-bottom: 14px;
     }}
     table {{
         width: 100%;
         border-collapse: collapse;
-        font-size: 8.3pt;
-        margin-bottom: 14px;
+        font-size: 8.5pt;
+        margin-bottom: 16px;
     }}
     th, td {{
         border: 1.2px solid #000000;
-        padding: 4.5px 6px;
+        padding: 5px 7px;
     }}
     th {{
         background-color: #f1f5f9;
         font-weight: 700;
         text-align: center;
-        font-size: 8pt;
+        font-size: 8.2pt;
     }}
     .total-row td {{
         font-weight: 800;
         background-color: #f8fafc;
-        font-size: 8.8pt;
+        font-size: 9pt;
     }}
     .footer-sign-row {{
-        margin-top: 28px;
+        margin-top: 32px;
+        padding: 0 4mm;
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
@@ -878,7 +879,7 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
         color: #334155;
     }}
 
-    /* EXACT BOTTOM YELLOW + BLUE BORDER STRIP */
+    /* BOTTOM FOOTER STRIP (EDGE-TO-EDGE FULL WIDTH) */
     .lh-footer-strip {{
         width: 100%;
         margin-top: auto;
@@ -935,9 +936,9 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
         </div>
     </div>
 
-    <!-- LETTER CONTENT -->
+    <!-- LETTER CONTENT WITH COMFORTABLE PAGE MARGINS -->
     <div class="letter-body-wrap">
-        <div style="display: flex; justify-content: space-between; font-size: 9pt; font-weight: 700; margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 9.5pt; font-weight: 700; margin-bottom: 10px;">
             <div>
                 To,<br>
                 The Branch Manager,<br>
@@ -979,7 +980,7 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
             </tbody>
         </table>
 
-        <div style="font-size: 9pt; font-weight: 700; margin-top: 12px;">
+        <div style="font-size: 9.2pt; font-weight: 700; margin-top: 14px;">
             THANKING YOU
         </div>
 
@@ -1003,6 +1004,7 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
 
 </body>
 </html>"""
+    
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
