@@ -309,9 +309,9 @@ WORKSPACES_TREE = [
     }
 ]
 
-INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 38px; height: 28px;"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="5"/><polygon points="54,90 54,42 70,30 70,90" fill="#1e293b"/><polygon points="76,90 76,22 92,12 92,90" fill="#3730a3"/><rect x="98" y="24" width="4" height="66" fill="#64748b"/><rect x="105" y="32" width="4" height="58" fill="#64748b"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#1e293b"/><circle cx="80" cy="74" r="5" fill="#3730a3"/></svg>"""
+INDU_SAO_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" style="width: 36px; height: 26px;"><ellipse cx="80" cy="60" rx="76" ry="56" fill="#ffffff" stroke="#1e293b" stroke-width="5"/><polygon points="54,90 54,42 70,30 70,90" fill="#1e293b"/><polygon points="76,90 76,22 92,12 92,90" fill="#3730a3"/><rect x="98" y="24" width="4" height="66" fill="#64748b"/><rect x="105" y="32" width="4" height="58" fill="#64748b"/><path d="M 32,76 C 50,98 112,98 128,78 C 114,90 58,90 32,76 Z" fill="#1e293b"/><circle cx="80" cy="74" r="5" fill="#3730a3"/></svg>"""
 
-# ----------------- AESTHETIC MODERN SAAS STYLING (GEMINI / CLAUDE INSPIRED) -----------------
+# ----------------- SLEEK MODERN PILL SIDEBAR STYLING -----------------
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -344,7 +344,7 @@ st.markdown("""
         padding-right: 0.75rem !important;
     }
 
-    /* Remove bulky spacing between sidebar elements */
+    /* Compact spacing between sidebar elements */
     section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
         gap: 0.25rem !important;
     }
@@ -373,7 +373,7 @@ st.markdown("""
         color: #0f172a !important;
     }
 
-    /* Active Pill Item (Gemini Soft Blue-Indigo Pill) */
+    /* Active Pill Item */
     section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
         background-color: #e0e7ff !important;
         color: #1e3a8a !important;
@@ -425,6 +425,7 @@ st.markdown("""
     .status-user { background-color: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
@@ -545,15 +546,14 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. AESTHETIC SIDEBAR TREE NAVIGATION -----------------
+# ----------------- 4. SLEEK SIDEBAR TREE NAVIGATION (SINGLE INSTANCE) -----------------
 with st.sidebar:
-    # Minimalist Brand Header
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; gap: 10px; padding: 4px 6px 14px 6px; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 2px 4px 12px 4px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0;">
             <div>{INDU_SAO_SVG_LOGO}</div>
             <div>
-                <div style="font-size: 0.94rem; font-weight: 700; color: #0f172a; letter-spacing: -0.01em;">{COMPANY_HEADER['NAME']}</div>
+                <div style="font-size: 0.92rem; font-weight: 700; color: #0f172a;">{COMPANY_HEADER['NAME']}</div>
                 <div style="font-size: 0.68rem; color: #64748b; font-weight: 500;">West Bokaro • ID47</div>
             </div>
         </div>
@@ -561,7 +561,7 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    st.markdown("<div style='padding: 0 10px; margin-bottom: 6px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>Workspaces</div>", unsafe_allow_html=True)
+    st.markdown("<div style='padding: 0 10px; margin-bottom: 4px; font-size: 0.66rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>Workspaces</div>", unsafe_allow_html=True)
 
     for ws in WORKSPACES_TREE:
         ws_id = ws["id"]
@@ -579,65 +579,34 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        # Workspace Accordion Header
-        if st.button(f"{chevron} {ws_icon} {ws_title}", key=f"ws_btn_{ws_id}", use_container_width=True, type="secondary"):
+        if st.button(f"{chevron} {ws_icon} {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
             if permitted_submenus and st.session_state.active_subtab not in [s[1] for s in permitted_submenus]:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
-        # Sub-items without leading spaces (No code block!)
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
                 btn_kind = "primary" if is_sub_active else "secondary"
                 
-                if st.button(f"•  {disp_name}", key=f"sub_btn_{reg_key}", use_container_width=True, type=btn_kind):
+                if st.button(f"•  {disp_name}", key=f"nav_sub_{reg_key}", use_container_width=True, type=btn_kind):
                     st.session_state.active_subtab = reg_key
                     st.rerun()
 
-    # Admin Section
     if st.session_state.current_role == "ADMIN":
-        st.markdown("<div style='margin-top: 10px; padding: 0 10px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
+        st.markdown("<div style='margin-top: 8px; padding: 0 10px; font-size: 0.66rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
         is_admin_open = (st.session_state.active_workspace == "Admin")
         adm_chevron = "▾" if is_admin_open else "▸"
         
-        if st.button(f"{adm_chevron} ⚙️ Access & Settings", key="ws_btn_admin", use_container_width=True, type="secondary"):
+        if st.button(f"{adm_chevron} ⚙️ Access & Settings", key="nav_ws_admin_settings", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = "Admin"
             st.session_state.active_subtab = "User Accounts & RBAC"
             st.rerun()
 
         if is_admin_open:
             is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
-            if st.button("•  User Permissions (RBAC)", key="sub_btn_admin_rbac", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
-                st.session_state.active_subtab = "User Accounts & RBAC"
-                st.rerun()
-                
-        # Render Indented Pill Sub-items when Expanded
-        if is_open:
-            for disp_name, reg_key in permitted_submenus:
-                is_sub_active = (st.session_state.active_subtab == reg_key)
-                btn_kind = "primary" if is_sub_active else "secondary"
-                
-                # Clean indented sub-label without ASCII lines
-                sub_label = f"      {disp_name}"
-                if st.button(sub_label, key=f"sub_btn_{reg_key}", use_container_width=True, type=btn_kind):
-                    st.session_state.active_subtab = reg_key
-                    st.rerun()
-    # Admin Section
-    if st.session_state.current_role == "ADMIN":
-        st.markdown("<div style='margin-top: 12px; padding: 0 10px; margin-bottom: 6px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
-        is_admin_open = (st.session_state.active_workspace == "Admin")
-        adm_chevron = "▾" if is_admin_open else "▸"
-        
-        if st.button(f"{adm_chevron}  ⚙️  Access & Settings", key="ws_btn_admin", use_container_width=True, type="secondary"):
-            st.session_state.active_workspace = "Admin"
-            st.session_state.active_subtab = "User Accounts & RBAC"
-            st.rerun()
-
-        if is_admin_open:
-            is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
-            if st.button("      User Permissions (RBAC)", key="sub_btn_admin_rbac", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
+            if st.button("•  User Permissions (RBAC)", key="nav_sub_admin_rbac_item", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
                 st.rerun()
 
@@ -650,17 +619,16 @@ badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "s
 
 avatar_html = f'<div class="top-user-avatar">{initials}</div>'
 
-h_col1, h_col2, h_col3 = st.columns([3.2, 1.3, 0.7], gap="small")
+h_col1, h_col2, h_col3 = st.columns([3.0, 1.5, 0.7], gap="small")
 with h_col1:
-    # Breadcrumb-style clean header
     ws_map = {"Attendance": "Worker Attendance", "Billing": "Tata Steel Billing", "Fuel": "Site Fuel Record", "Admin": "System Administration"}
     cur_ws_label = ws_map.get(st.session_state.active_workspace, "Workspace")
     st.markdown(
         f"""
         <div style="display: flex; align-items: center; gap: 8px; padding-top: 6px;">
-            <span style="font-size: 0.85rem; color: #64748b; font-weight: 500;">{cur_ws_label}</span>
+            <span style="font-size: 0.84rem; color: #64748b; font-weight: 500;">{cur_ws_label}</span>
             <span style="color: #cbd5e1;">/</span>
-            <span style="font-size: 0.88rem; color: #0f172a; font-weight: 600;">{st.session_state.active_subtab}</span>
+            <span style="font-size: 0.86rem; color: #0f172a; font-weight: 600;">{st.session_state.active_subtab}</span>
         </div>
         """, 
         unsafe_allow_html=True
@@ -669,10 +637,10 @@ with h_col1:
 with h_col2:
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 2px;">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 3px;">
             {avatar_html}
             <div style="text-align: left; line-height: 1.2;">
-                <div style="font-weight: 600; font-size: 0.82rem; color: #0f172a;">{user_display_name}</div>
+                <div style="font-weight: 600; font-size: 0.8rem; color: #0f172a;">{user_display_name}</div>
                 <div><span class="status-badge {badge_class}">{st.session_state.current_role}</span></div>
             </div>
         </div>
@@ -681,7 +649,7 @@ with h_col2:
     )
 
 with h_col3:
-    if st.button("Sign Out", help="End Session", use_container_width=True, key="hdr_pwr"):
+    if st.button("Sign Out", help="End Session", use_container_width=True, key="hdr_pwr_out"):
         st.session_state.user_authenticated = False
         st.rerun()
 
