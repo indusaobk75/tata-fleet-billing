@@ -5,11 +5,17 @@ import time
 import re
 import datetime
 import calendar
-import pypdf
 import pandas as pd
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+
+# Safe PDF library import so app never crashes if pypdf is missing from requirements.txt
+try:
+    import pypdf
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
 
 st.set_page_config(
     page_title="M/s INDU SAO | Enterprise Site ERP",
@@ -28,7 +34,7 @@ COMPANY_HEADER = {
     "ADDRESS": "Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)",
     "PIN_CALL": "Pin No. 829134 | Call: 9234779896, 9661152652",
     "EMAIL": "Email: indusao_bk@yahoo.com",
-    "GST": "GST No. 20AUQPK2982K1ZC | Vendor Code - ID47",
+    "GST": "GST No. 20AUQPK2982K1ZC | Vendor Code - 47",
     "ISO": "ISO Certified Company 45001:2018",
     "CURRENT_AC": "482025110000105"
 }
@@ -90,6 +96,15 @@ def get_gspread_client():
 
 @st.cache_data(ttl=5, show_spinner=False)
 def load_sheet_df(worksheet_name):
+    schema_map = {
+        "worker_master": WORKER_MASTER_COLS,
+        "muster_roll": MUSTER_ROLL_COLS,
+        "worker_advances": ADVANCE_LOG_COLS,
+        "tata_form_xvii": TATA_COMPLIANCE_COLS,
+        "app_users": USER_COLUMNS
+    }
+    expected_cols = schema_map.get(worksheet_name, [])
+
     for attempt in range(3):
         try:
             gc = get_gspread_client()
@@ -98,27 +113,18 @@ def load_sheet_df(worksheet_name):
             data = ws.get_all_records()
             df = pd.DataFrame(data)
             
-            # Auto-healing schema: auto-populate any missing master columns
-            if worksheet_name == "worker_master":
-                for col in WORKER_MASTER_COLS:
-                    if col not in df.columns:
-                        df[col] = ""
-            elif worksheet_name == "muster_roll":
-                for col in MUSTER_ROLL_COLS:
-                    if col not in df.columns:
-                        df[col] = ""
-            elif worksheet_name == "tata_form_xvii":
-                for col in TATA_COMPLIANCE_COLS:
-                    if col not in df.columns:
-                        df[col] = ""
+            # Auto-healing schema: ensure all expected columns exist even if sheet is empty
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = ""
                         
             return df
         except Exception as e:
             if "429" in str(e):
                 time.sleep(1.5 * (attempt + 1))
                 continue
-            return pd.DataFrame()
-    return pd.DataFrame()
+            return pd.DataFrame(columns=expected_cols)
+    return pd.DataFrame(columns=expected_cols)
 
 def save_sheet_df(worksheet_name, df):
     if df is None:
@@ -176,6 +182,9 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     Directly extracts Worker Name, Days Worked (Col 4), and Net Amount Paid (Col 14)
     from multi-page Tata Steel Form XVII [Rule 78(2)(a)] statutory PDF.
     """
+    if not PYPDF_AVAILABLE:
+        return pd.DataFrame()
+
     reader = pypdf.PdfReader(uploaded_pdf_file)
     records = []
     
@@ -1136,15 +1145,19 @@ elif current_view == "Monthly Wages & Payout Summary":
 
     wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
 
-    # Native PDF / CSV / XLSX Importer for Tata Form XVII
+    # Multi-Format Form XVII Importer (PDF / CSV / XLSX)
     with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages PDF / CSV)", expanded=tata_df.empty):
         st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** received from Tata Steel for **{wage_period_str}**")
         xvii_file = st.file_uploader("Upload Form XVII File", type=["pdf", "csv", "xlsx"])
 
         if xvii_file:
+            x_df = pd.DataFrame()
             if xvii_file.name.lower().endswith(".pdf"):
-                with st.spinner("Extracting data directly from Form XVII PDF pages..."):
-                    x_df = parse_tata_form_xvii_pdf(xvii_file)
+                if not PYPDF_AVAILABLE:
+                    st.error("⚠️ PDF reader library ('pypdf') is not installed on server. Please add 'pypdf' to requirements.txt or upload CSV/Excel file.")
+                else:
+                    with st.spinner("Extracting data directly from Form XVII PDF pages..."):
+                        x_df = parse_tata_form_xvii_pdf(xvii_file)
             elif xvii_file.name.lower().endswith(".csv"):
                 x_df = pd.read_csv(xvii_file)
                 x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
@@ -1186,13 +1199,18 @@ elif current_view == "Monthly Wages & Payout Summary":
                         st.success(f"Form XVII for {wage_period_str} synchronized.")
                         st.rerun()
             else:
-                st.error("Could not parse records from uploaded file. Please verify layout.")
+                if not xvii_file.name.lower().endswith(".pdf") or PYPDF_AVAILABLE:
+                    st.error("Could not parse records from uploaded file. Please verify layout.")
 
     # Mismatch Cockpit & Bank Batch Engine
     st.markdown("<hr style='margin: 12px 0; border: none; border-top: 1px solid #cbd5e1;' />", unsafe_allow_html=True)
     st.markdown("###### 🔍 Attendance Reconciliation Cockpit (Field Duty vs Form XVII)")
 
-    tata_cur = tata_df[tata_df["Wages_Period"] == wage_period_str] if not tata_df.empty and "Wages_Period" in tata_df.columns else pd.DataFrame()
+    # Safe filter on tata_df
+    if not tata_df.empty and "Wages_Period" in tata_df.columns:
+        tata_cur = tata_df[tata_df["Wages_Period"] == wage_period_str]
+    else:
+        tata_cur = pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
 
     month_num = list(calendar.month_name).index(sel_month)
     d_start = f"{sel_year}-{month_num:02d}-01"
@@ -1202,7 +1220,7 @@ elif current_view == "Monthly Wages & Payout Summary":
     boi_batch = []
     neft_batch = []
 
-    if not w_master.empty:
+    if not w_master.empty and "Worker_ID" in w_master.columns:
         for _, w in w_master[w_master["Status"] == "ACTIVE"].iterrows():
             wid = str(w["Worker_ID"])
             wname = str(w["Full_Name"])
@@ -1219,10 +1237,15 @@ elif current_view == "Monthly Wages & Payout Summary":
                                (muster_df["Duty_Location"] == "Tata Site (In-Plant)")]
                 sup_days = len(w_m[w_m["Attendance"] == "P"]) + (len(w_m[w_m["Attendance"] == "HD"]) * 0.5)
 
-            # Tata Form XVII Net & Days
-            tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.upper() == wname.upper()]
-            tata_approved_days = float(tata_match.iloc[0]["Approved_Days"]) if not tata_match.empty else 0.0
-            tata_net_paid = float(tata_match.iloc[0]["Net_Amount_Paid"]) if not tata_match.empty else 0.0
+            # Safe Tata Form XVII Net & Days lookup
+            tata_approved_days = 0.0
+            tata_net_paid = 0.0
+
+            if not tata_cur.empty and "Worker_Name" in tata_cur.columns:
+                tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.upper() == wname.upper()]
+                if not tata_match.empty:
+                    tata_approved_days = float(tata_match.iloc[0].get("Approved_Days", 0.0) or 0.0)
+                    tata_net_paid = float(tata_match.iloc[0].get("Net_Amount_Paid", 0.0) or 0.0)
 
             status_badge = "🟢 Matched"
             if tata_approved_days == 0 and sup_days > 0:
@@ -1299,7 +1322,8 @@ elif current_view == "Monthly Wages & Payout Summary":
                 label=f"📄 Download Other Banks (NEFT) Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
                 data=neft_html,
                 file_name=f"NEFT_Transfer_Letter_{wage_period_str}.html",
-                mime="primary" if not boi_batch else "secondary",
+                mime="text/html",
+                type="primary" if not boi_batch else "secondary",
                 use_container_width=True
             )
         else:
