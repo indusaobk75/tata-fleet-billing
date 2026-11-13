@@ -728,158 +728,279 @@ def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no
             <td style="text-align: center;">{idx}</td>
             <td style="text-align: left; font-weight: 600;">{r.get('NAME', '')}</td>
             <td style="text-align: right; font-weight: 700;">{amt_fmt}</td>
-            <td style="text-align: center; font-family: monospace;">{r.get('BENEFICIARY ACCOUNT NO', '')}</td>
-            <td style="text-align: center; font-family: monospace;">{r.get('IFSC CODE', '')}</td>
+            <td style="text-align: center; font-family: 'Courier New', monospace; font-weight: 600;">{r.get('BENEFICIARY ACCOUNT NO', '')}</td>
+            <td style="text-align: center; font-family: 'Courier New', monospace; font-weight: 600;">{r.get('IFSC CODE', '')}</td>
             <td style="text-align: left;">{r.get('BANK & BRANCH DETAILS', '')}</td>
         </tr>
         """
-
-    letter_title = "BANK OF INDIA INTERNAL TRANSFER" if bank_batch_type == "BOI" else "NEFT / OTHER BANKS TRANSFER"
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>{letter_title} - {COMPANY_HEADER['NAME']}</title>
+<title>M/s INDU SAO - Bank Covering Letter</title>
 <style>
     @page {{
         size: A4 portrait;
-        margin: 12mm 15mm;
+        margin: 0;
+    }}
+    * {{
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
     }}
     body {{
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-        color: #000;
+        font-family: Arial, Helvetica, sans-serif;
+        color: #000000;
         margin: 0;
         padding: 0;
-        background: #fff;
-    }}
-    .letterhead {{
-        border-bottom: 2px solid #0b2a75;
-        padding-bottom: 8px;
-        margin-bottom: 12px;
+        background: #ffffff;
+        width: 210mm;
+        min-height: 297mm;
+        position: relative;
         display: flex;
+        flex-direction: column;
         justify-content: space-between;
+    }}
+
+    /* EXACT M/s INDU SAO DIAGONAL LETTERHEAD BANNER */
+    .lh-banner {{
+        position: relative;
+        width: 100%;
+        height: 54mm;
+        overflow: hidden;
+    }}
+    .lh-svg-bg {{
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+    }}
+    .lh-content {{
+        position: relative;
+        z-index: 2;
+        display: flex;
+        align-items: flex-start;
+        padding: 4.5mm 10mm 0 6mm;
+        gap: 7mm;
+    }}
+    .lh-logo-col {{
+        display: flex;
+        flex-direction: column;
         align-items: center;
+        width: 56mm;
+        flex-shrink: 0;
     }}
-    .company-title {{
-        font-size: 22pt;
+    .lh-iso-text {{
+        font-size: 9.2pt;
+        font-weight: 600;
+        color: #000000;
+        margin-top: 2.2mm;
+        white-space: nowrap;
+        letter-spacing: -0.2px;
+    }}
+    .lh-details-col {{
+        padding-top: 1.5mm;
+        color: #000000;
+    }}
+    .lh-company-name {{
+        font-size: 23pt;
         font-weight: 800;
-        color: #0b2a75;
-        margin: 0;
-        line-height: 1.1;
+        color: #000000;
+        line-height: 1.05;
+        margin-bottom: 1.5mm;
+        letter-spacing: 0.2px;
     }}
-    .company-details {{
-        font-size: 7.8pt;
-        line-height: 1.35;
-        color: #334155;
-    }}
-    .iso-badge {{
-        font-size: 8pt;
+    .lh-info-line {{
+        font-size: 8.8pt;
         font-weight: 700;
-        color: #064e3b;
-        margin-top: 4px;
+        line-height: 1.38;
+        color: #000000;
     }}
-    .req-header {{
+
+    /* LETTER BODY AREA */
+    .letter-body-wrap {{
+        padding: 4mm 15mm 10mm 15mm;
+        flex-grow: 1;
+    }}
+    .subject-box {{
         text-align: center;
-        font-size: 9.5pt;
+        font-size: 9.8pt;
         font-weight: 700;
         text-decoration: underline;
-        margin-bottom: 10px;
+        margin: 6px 0 12px 0;
+        line-height: 1.4;
     }}
-    .req-body {{
-        font-size: 8.8pt;
-        line-height: 1.45;
+    .salutation {{
+        font-size: 9pt;
+        line-height: 1.5;
         margin-bottom: 12px;
     }}
     table {{
         width: 100%;
         border-collapse: collapse;
-        font-size: 8pt;
+        font-size: 8.3pt;
         margin-bottom: 14px;
     }}
     th, td {{
-        border: 1px solid #000;
-        padding: 4px 6px;
+        border: 1.2px solid #000000;
+        padding: 4.5px 6px;
     }}
     th {{
         background-color: #f1f5f9;
         font-weight: 700;
         text-align: center;
-        font-size: 7.8pt;
+        font-size: 8pt;
     }}
-    .footer-sign {{
-        margin-top: 25px;
+    .total-row td {{
+        font-weight: 800;
+        background-color: #f8fafc;
+        font-size: 8.8pt;
+    }}
+    .footer-sign-row {{
+        margin-top: 26px;
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
         page-break-inside: avoid;
     }}
-    .sign-box {{
-        text-align: left;
-        font-size: 9pt;
-        font-weight: 700;
+    .sign-right {{
+        text-align: center;
+        font-size: 9.2pt;
+        font-weight: 800;
+    }}
+
+    /* EXACT BOTTOM YELLOW + BLUE BORDER STRIP */
+    .lh-footer-strip {{
+        width: 100%;
+        margin-top: auto;
+    }}
+    .strip-yellow {{
+        height: 2.5mm;
+        background-color: #f4b400;
+        width: 100%;
+    }}
+    .strip-blue {{
+        height: 6.5mm;
+        background-color: #38a3f1;
+        width: 100%;
     }}
 </style>
 </head>
 <body onload="window.print()">
-    <div class="letterhead">
-        <div>
-            <div class="company-title">{COMPANY_HEADER['NAME']}</div>
-            <div class="company-details">
-                {COMPANY_HEADER['ADDRESS']}<br>
-                {COMPANY_HEADER['PIN_CALL']}<br>
-                {COMPANY_HEADER['EMAIL']}<br>
-                {COMPANY_HEADER['GST']}
+
+    <!-- TOP EXACT LETTERHEAD -->
+    <div class="lh-banner">
+        <svg class="lh-svg-bg" viewBox="0 0 1000 260" preserveAspectRatio="none">
+            <!-- Green Bottom Angled Ribbon -->
+            <polygon points="0,242 1000,192 1000,206 0,256" fill="#2e7d32"/>
+            <!-- Yellow Middle Angled Ribbon -->
+            <polygon points="0,228 1000,178 1000,192 0,242" fill="#f4b400"/>
+            <!-- Sky Blue Main Header Polygon -->
+            <polygon points="0,0 1000,0 1000,178 0,228" fill="#38a3f1"/>
+        </svg>
+
+        <div class="lh-content">
+            <div class="lh-logo-col">
+                <!-- Exact Oval Emblem -->
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 155" style="width: 48mm; height: 33mm;">
+                    <ellipse cx="110" cy="77" rx="103" ry="71" fill="#ffffff" stroke="#000000" stroke-width="5.5"/>
+                    <!-- Building Towers -->
+                    <polygon points="62,102 62,64 81,52 81,102" fill="#0d1b6e"/>
+                    <polygon points="85,102 85,48 106,34 106,102" fill="#0d1b6e"/>
+                    <polygon points="110,102 110,31 131,18 131,102" fill="#0d1b6e"/>
+                    <!-- White Cutout Arch inside Middle Tower -->
+                    <polygon points="94,102 94,64 106,57 106,102" fill="#ffffff"/>
+                    <!-- Right Vertical Lines -->
+                    <rect x="137" y="22" width="3.5" height="80" fill="#1e293b"/>
+                    <rect x="145" y="29" width="3.5" height="73" fill="#1e293b"/>
+                    <rect x="153" y="36" width="3.5" height="66" fill="#1e293b"/>
+                    <!-- Diagonal Cut Accent -->
+                    <polygon points="103,92 125,104 103,104" fill="#0d1b6e"/>
+                    <!-- Bottom Navy & Black Swoosh -->
+                    <path d="M 110,102 C 70,102 52,110 52,119 C 52,130 85,137 118,140 L 118,125 C 92,122 72,118 72,113 C 72,108 90,105 110,105 Z" fill="#0d1b6e"/>
+                    <ellipse cx="110" cy="112" rx="8" ry="3.5" fill="#0d1b6e"/>
+                    <path d="M 123,115 C 148,119 166,126 166,134 C 166,144 134,149 95,148 C 128,146 146,141 146,134 C 146,129 136,125 123,123 Z" fill="#000000"/>
+                </svg>
+                <div class="lh-iso-text">ISO Certified Company 45001:2018</div>
             </div>
-            <div class="iso-badge">{COMPANY_HEADER['ISO']}</div>
+
+            <div class="lh-details-col">
+                <div class="lh-company-name">M/s INDU SAO</div>
+                <div class="lh-info-line">Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)</div>
+                <div class="lh-info-line">Pin No. 829134  Call 9234779896, 9661152652</div>
+                <div class="lh-info-line">Email: indusao_bk@yahoo.com</div>
+                <div class="lh-info-line">GST No. 20AUOPK2982K1ZC</div>
+                <div class="lh-info-line">Vendor Code - 47</div>
+            </div>
         </div>
-        <div style="text-align: right;">
-            <div style="font-weight: 700; font-size: 9pt;">BATCH: {letter_title}</div>
-            <div style="font-size: 8.5pt; color: #475569;">Generated: {datetime.date.today().strftime('%d.%m.%Y')}</div>
+    </div>
+
+    <!-- LETTER CONTENT -->
+    <div class="letter-body-wrap">
+        <div style="display: flex; justify-content: space-between; font-size: 9pt; font-weight: 700; margin-bottom: 8px;">
+            <div>
+                To,<br>
+                The Branch Manager,<br>
+                Bank of India
+            </div>
+            <div>
+                Date: {cheque_date}
+            </div>
+        </div>
+
+        <div class="subject-box">
+            BANK DETAILS<br>
+            SUB: Transfer of payment from our account to below A/C
+        </div>
+
+        <div class="salutation">
+            <b>Dear Sir,</b><br>
+            We request you to transfer <b>Rs. {total_amount:.0f}/-</b> from our Current A/C No. <b>{COMPANY_HEADER['CURRENT_AC']}</b> to following account as per the payment details given ch.no. <b>{cheque_no}</b> Dated: <b>{cheque_date}</b>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 6%;">SL.NO</th>
+                    <th style="width: 26%;">NAME</th>
+                    <th style="width: 12%;">AMOUNT</th>
+                    <th style="width: 20%;">BENEFICIARY ACCOUNT NO</th>
+                    <th style="width: 14%;">IFSC CODE</th>
+                    <th style="width: 22%;">BANK & BRANCH DETAILS</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+                <tr class="total-row">
+                    <td colspan="2" style="text-align: right;">TOTAL:</td>
+                    <td style="text-align: right;">{total_amount:.0f}</td>
+                    <td colspan="3"></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="footer-sign-row">
+            <div style="font-size: 9pt; font-weight: 700;">
+                THANKING YOU
+            </div>
+            <div class="sign-right">
+                M/s INDU SAO<br><br><br>
+                <span style="font-size: 8.5pt; font-weight: 700;">Proprietor / Authorized Signatory</span>
+            </div>
         </div>
     </div>
 
-    <div class="req-header">BANK DETAILS<br>SUB: Transfer of payment from our account to below A/C</div>
-
-    <div class="req-body">
-        <b>Dear Sir,</b><br>
-        We request you to transfer <b>{total_amount:.0f}/-</b> from our current A/C NO- <b>{COMPANY_HEADER['CURRENT_AC']}</b> to following account as per the payment details given ch.no. <b>{cheque_no}</b> Dated: <b>{cheque_date}</b>
+    <!-- BOTTOM EXACT YELLOW + BLUE STRIP -->
+    <div class="lh-footer-strip">
+        <div class="strip-yellow"></div>
+        <div class="strip-blue"></div>
     </div>
 
-    <table>
-        <thead>
-            <tr>
-                <th style="width: 5%;">SL.NO</th>
-                <th style="width: 26%;">NAME</th>
-                <th style="width: 12%;">AMOUNT</th>
-                <th style="width: 20%;">BENEFICIARY ACCOUNT NO</th>
-                <th style="width: 14%;">IFSC CODE</th>
-                <th style="width: 23%;">BANK & BRANCH DETAILS</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows_html}
-            <tr style="font-weight: 800; background-color: #f8fafc;">
-                <td colspan="2" style="text-align: right;">TOTAL:</td>
-                <td style="text-align: right;">{total_amount:.0f}</td>
-                <td colspan="3"></td>
-            </tr>
-        </tbody>
-    </table>
-
-    <div class="footer-sign">
-        <div>
-            <div style="font-size: 8pt; font-weight: 600;">THANKING YOU</div>
-        </div>
-        <div class="sign-box">
-            <div>{COMPANY_HEADER['NAME']}</div>
-            <div style="height: 45px;"></div>
-            <div>Proprietor / Authorized Signatory</div>
-        </div>
-    </div>
 </body>
 </html>"""
-
 
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
