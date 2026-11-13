@@ -144,7 +144,8 @@ def save_sheet_df(worksheet_name, df):
             except gspread.exceptions.WorksheetNotFound:
                 ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
             ws.clear()
-            ws.update(prepared_values, value_input_option="USER_ENTERED")
+            # RAW prevents Google Sheets from converting text strings like "OCT-2026" or leading-zero account numbers into dates/numbers
+            ws.update(prepared_values, value_input_option="RAW")
             st.cache_data.clear()
             return True
         except Exception as e:
@@ -278,7 +279,7 @@ WORKSPACES_TREE = [
         "title": "Worker Attendance",
         "submenus": [
             ("Employee Enrolment", "➕ Employee Enrolment"),
-            ("Master Register", "📋 Employee Master Register"),
+            ("Master Register & Cards", "📋 Employee Master Register"),
             ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
             ("Advance & Expenses", "Advance & Expense Register"),
             ("Wages & Bank Letters", "Monthly Wages & Payout Summary")
@@ -428,7 +429,7 @@ st.markdown("""
         background-color: #334155 !important;
     }
 
-    /* Main Content Secondary Buttons (including Sign Out) */
+    /* Main Content Secondary Buttons */
     div.stMain div.stButton > button[kind="secondary"],
     div.stDownloadButton > button[kind="secondary"] {
         background-color: #ffffff !important;
@@ -495,6 +496,8 @@ def init_session():
         st.session_state.active_workspace = "Attendance"
     if "active_subtab" not in st.session_state:
         st.session_state.active_subtab = "Daily Muster Roll (Field Attendance)"
+    if "selected_worker_card_id" not in st.session_state:
+        st.session_state.selected_worker_card_id = None
 
 init_session()
 
@@ -629,9 +632,10 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        # MAIN MENU HEADER (Bold, Dark Slate, Full Width)
+        # MAIN MENU HEADER (Bold, Dark Slate)
         if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
+            st.session_state.selected_worker_card_id = None
             if permitted_submenus and st.session_state.active_subtab not in [s[1] for s in permitted_submenus]:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
@@ -644,6 +648,7 @@ with st.sidebar:
                 
                 if st.button(disp_name, key=f"nav_sub_{reg_key}", use_container_width=True, type=btn_kind):
                     st.session_state.active_subtab = reg_key
+                    st.session_state.selected_worker_card_id = None
                     st.rerun()
 
     # ADMIN SECTION
@@ -655,16 +660,18 @@ with st.sidebar:
         if st.button(f"{adm_chevron}  ⚙️  Access & Settings", key="nav_ws_admin_settings", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = "Admin"
             st.session_state.active_subtab = "User Accounts & RBAC"
+            st.session_state.selected_worker_card_id = None
             st.rerun()
 
         if is_admin_open:
             is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
             if st.button("User Permissions (RBAC)", key="nav_sub_admin_rbac_item", use_container_width=True, type="primary" if is_adm_sub else "tertiary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
+                st.session_state.selected_worker_card_id = None
                 st.rerun()
 
 
-# ----------------- 5. CLEAN TOP BAR (FIXED PADDING & ALIGNMENT) -----------------
+# ----------------- 5. CLEAN TOP BAR -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -1008,48 +1015,174 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
-# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER -----------------
+# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER & OPEN-ABLE EMPLOYEE PROFILE CARDS -----------------
 elif current_view == "📋 Employee Master Register":
-    st.markdown("#### Employee Master Register")
-    st.caption("Active workforce directory with verified bank routing details")
-
     w_table = load_sheet_df("worker_master")
-    if w_table.empty or "Worker_ID" not in w_table.columns:
-        st.info("No employee records found.")
+    muster_all = load_sheet_df("muster_roll")
+    adv_all = load_sheet_df("worker_advances")
+    tata_all = load_sheet_df("tata_form_xvii")
+
+    # CHECK IF A SPECIFIC EMPLOYEE PROFILE CARD IS OPENED
+    if st.session_state.selected_worker_card_id:
+        target_wid = st.session_state.selected_worker_card_id
+        
+        if st.button("← Back to Employee Master Directory", type="secondary"):
+            st.session_state.selected_worker_card_id = None
+            st.rerun()
+
+        w_match = w_table[w_table["Worker_ID"].astype(str) == target_wid]
+        if w_match.empty:
+            st.error("Employee record not found.")
+        else:
+            emp = w_match.iloc[0]
+            emp_name = str(emp.get("Full_Name", ""))
+            emp_div = str(emp.get("Division", ""))
+            emp_role = str(emp.get("Designation", ""))
+            emp_wage_type = str(emp.get("Wage_Type", ""))
+            emp_rate = float(pd.to_numeric(emp.get("Base_Rate", 0.0), errors="coerce") or 0.0)
+            emp_acc = str(emp.get("Bank_Account_No", "")) or "Not Linked"
+            emp_ifsc = str(emp.get("Bank_IFSC_Code", "")) or "N/A"
+            emp_branch = str(emp.get("Bank_Branch_Details", "")) or "Cash Disbursement"
+            emp_contact = str(emp.get("Contact_No", "")) or "N/A"
+
+            # Executive Profile Banner Card
+            with st.container(border=True):
+                p_c1, p_c2 = st.columns([2.2, 1.3])
+                with p_c1:
+                    st.markdown(f"### 🪪 {emp_name} (`{target_wid}`)")
+                    st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Contact:** {emp_contact}")
+                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}**  |  **Status:** `{emp.get('Status', 'ACTIVE')}`")
+                with p_c2:
+                    st.markdown("###### 🏦 Bank Account Mapping")
+                    st.markdown(f"**A/C No:** `{emp_acc}`")
+                    st.markdown(f"**IFSC:** `{emp_ifsc}` ({emp_branch})")
+
+            # Filter Employee's Attendance, Advances & Form XVII History
+            emp_muster = pd.DataFrame()
+            if not muster_all.empty and "Worker_ID" in muster_all.columns:
+                emp_muster = muster_all[muster_all["Worker_ID"].astype(str) == target_wid].copy()
+
+            emp_adv = pd.DataFrame()
+            if not adv_all.empty and "Worker_ID" in adv_all.columns:
+                emp_adv = adv_all[adv_all["Worker_ID"].astype(str) == target_wid].copy()
+
+            emp_tata = pd.DataFrame()
+            if not tata_all.empty and "Worker_Name" in tata_all.columns:
+                emp_tata = tata_all[tata_all["Worker_Name"].astype(str).str.strip().str.upper() == emp_name.strip().upper()].copy()
+
+            # Month Filter for Employee Card
+            c_f1, c_f2 = st.columns([1, 2.5])
+            with c_f1:
+                card_month_filter = st.selectbox("Filter Attendance Month", ["All Months"] + list(calendar.month_name)[1:], key="card_m_flt")
+
+            if not emp_muster.empty and card_month_filter != "All Months":
+                m_idx = list(calendar.month_name).index(card_month_filter)
+                m_prefix = f"-{m_idx:02d}-"
+                emp_muster = emp_muster[emp_muster["Date"].astype(str).str.contains(m_prefix)]
+
+            # KPI Metrics for this Worker
+            tot_p = len(emp_muster[emp_muster["Attendance"] == "P"]) if not emp_muster.empty else 0
+            tot_hd = len(emp_muster[emp_muster["Attendance"] == "HD"]) if not emp_muster.empty else 0
+            tot_a = len(emp_muster[emp_muster["Attendance"] == "A"]) if not emp_muster.empty else 0
+            tot_ot = pd.to_numeric(emp_muster["OT_Hours"], errors="coerce").fillna(0).sum() if not emp_muster.empty else 0.0
+            tot_adv_amt = pd.to_numeric(emp_adv["Amount"], errors="coerce").fillna(0).sum() if not emp_adv.empty else 0.0
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Present Days (P)", f"{tot_p} d")
+            k2.metric("Half Days (HD)", f"{tot_hd} d")
+            k3.metric("Absent Days (A)", f"{tot_a} d")
+            k4.metric("Overtime (OT)", f"{tot_ot:.1f} hrs")
+            k5.metric("Total Advances", f"₹{tot_adv_amt:,.0f}")
+
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+            # Detailed Attendance & Compliance Ledgers
+            det_c1, det_c2 = st.columns([1.4, 1.0], gap="large")
+            with det_c1:
+                with st.container(border=True):
+                    st.markdown("###### 📅 Daily Field Attendance Log")
+                    if not emp_muster.empty:
+                        disp_m_cols = [c for c in ["Date", "Attendance", "Duty_Location", "OT_Hours", "Supervisor", "Remarks"] if c in emp_muster.columns]
+                        st.dataframe(emp_muster.sort_values(by="Date", ascending=False)[disp_m_cols], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No field attendance logs recorded for this period.")
+
+            with det_c2:
+                with st.container(border=True):
+                    st.markdown("###### 🏛️ Tata Form XVII Compliance Payouts")
+                    if not emp_tata.empty:
+                        disp_t_cols = [c for c in ["Wages_Period", "Approved_Days", "Net_Amount_Paid"] if c in emp_tata.columns]
+                        st.dataframe(emp_tata[disp_t_cols], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No Form XVII statutory records linked yet.")
+
+                with st.container(border=True):
+                    st.markdown("###### 💵 Advance & Expense History")
+                    if not emp_adv.empty:
+                        disp_a_cols = [c for c in ["Date", "Amount", "Payment_Mode", "Remarks"] if c in emp_adv.columns]
+                        st.dataframe(emp_adv[disp_a_cols], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No advances disbursed.")
+
+    # MASTER DIRECTORY VIEW (CLICKABLE EMPLOYEE CARDS + TABLE VIEW)
     else:
-        flt_c1, flt_c2, flt_c3 = st.columns([1.1, 1.2, 2.0])
-        with flt_c1:
-            f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
-        with flt_c2:
-            f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
-        with flt_c3:
-            f_search = st.text_input("Search", placeholder="Filter by name, ID, or account number...").strip().lower()
+        st.markdown("#### Employee Master Register & Profile Cards")
+        st.caption("Click 'Open Profile Card' on any employee to view full attendance history, overtime, advances, and Form XVII payouts")
 
-        disp_table = w_table.copy()
-        if f_div != "All":
-            disp_table = disp_table[disp_table["Division"] == f_div]
-        if f_bank == "BOI Accounts":
-            disp_table = disp_table[disp_table["Bank_IFSC_Code"].astype(str).str.startswith("BKID")]
-        elif f_bank == "Other Banks (NEFT)":
-            disp_table = disp_table[(~disp_table["Bank_IFSC_Code"].astype(str).str.startswith("BKID")) & (disp_table["Bank_Account_No"].astype(str) != "")]
-        elif f_bank == "Cash (No Bank)":
-            disp_table = disp_table[disp_table["Bank_Account_No"].astype(str) == ""]
+        if w_table.empty or "Worker_ID" not in w_table.columns:
+            st.info("No employee records found.")
+        else:
+            flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.1, 1.2, 1.8, 1.1])
+            with flt_c1:
+                f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
+            with flt_c2:
+                f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
+            with flt_c3:
+                f_search = st.text_input("Search Employee", placeholder="Name, ID, or Account...").strip().lower()
+            with flt_c4:
+                view_style = st.selectbox("Layout", ["Interactive Cards", "Compact Table"], key="reg_layout_style")
 
-        if f_search:
-            disp_table = disp_table[
-                disp_table["Full_Name"].astype(str).str.lower().str.contains(f_search) |
-                disp_table["Worker_ID"].astype(str).str.lower().str.contains(f_search) |
-                disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
-            ]
+            disp_table = w_table.copy()
+            if f_div != "All":
+                disp_table = disp_table[disp_table["Division"] == f_div]
+            if f_bank == "BOI Accounts":
+                disp_table = disp_table[disp_table["Bank_IFSC_Code"].astype(str).str.startswith("BKID")]
+            elif f_bank == "Other Banks (NEFT)":
+                disp_table = disp_table[(~disp_table["Bank_IFSC_Code"].astype(str).str.startswith("BKID")) & (disp_table["Bank_Account_No"].astype(str) != "")]
+            elif f_bank == "Cash (No Bank)":
+                disp_table = disp_table[disp_table["Bank_Account_No"].astype(str) == ""]
 
-        req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
-        safe_cols = [c for c in req_cols if c in disp_table.columns]
+            if f_search:
+                disp_table = disp_table[
+                    disp_table["Full_Name"].astype(str).str.lower().str.contains(f_search) |
+                    disp_table["Worker_ID"].astype(str).str.lower().str.contains(f_search) |
+                    disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
+                ]
 
-        st.dataframe(
-            disp_table[safe_cols],
-            use_container_width=True,
-            hide_index=True
-        )
+            if view_style == "Interactive Cards":
+                card_cols = st.columns(3, gap="medium")
+                for idx, (_, r) in enumerate(disp_table.iterrows()):
+                    c_box = card_cols[idx % 3]
+                    wid = str(r.get("Worker_ID", ""))
+                    wname = str(r.get("Full_Name", ""))
+                    wdiv = str(r.get("Division", ""))
+                    wrole = str(r.get("Designation", ""))
+                    wbank = str(r.get("Bank_Branch_Details", "")) or "Cash"
+                    wifsc = str(r.get("Bank_IFSC_Code", ""))
+                    route_tag = "BOI" if wifsc.startswith("BKID") else ("NEFT" if str(r.get("Bank_Account_No", "")).strip() else "CASH")
+
+                    with c_box:
+                        with st.container(border=True):
+                            st.markdown(f"**{wname}**")
+                            st.caption(f"ID: `{wid}` • {wrole}")
+                            st.markdown(f"<div style='font-size: 0.78rem; color: #475569; margin-bottom: 8px;'>Div: {wdiv}<br>Bank: <b>{route_tag}</b> ({wbank})</div>", unsafe_allow_html=True)
+                            if st.button(f"Open Profile & Attendance →", key=f"open_card_{wid}", use_container_width=True, type="secondary"):
+                                st.session_state.selected_worker_card_id = wid
+                                st.rerun()
+            else:
+                req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
+                safe_cols = [c for c in req_cols if c in disp_table.columns]
+                st.dataframe(disp_table[safe_cols], use_container_width=True, hide_index=True)
 
 
 # ----------------- VIEW 3: DAILY FIELD MUSTER ROLL -----------------
@@ -1244,15 +1377,17 @@ elif current_view == "Monthly Wages & Payout Summary":
     with f_c1:
         sel_year = st.selectbox("Year", [2025, 2026, 2027], index=1)
     with f_c2:
-        # Default to October if OCT-2026 exists in tata_df and current month doesn't
-        default_m_idx = datetime.date.today().month - 1
-        if not tata_df.empty and "Wages_Period" in tata_df.columns:
-            periods = tata_df["Wages_Period"].astype(str).tolist()
-            if f"{calendar.month_name[default_m_idx+1][:3].upper()}-{sel_year}" not in periods and f"OCT-{sel_year}" in periods:
-                default_m_idx = 9  # October
-        sel_month = st.selectbox("Month", list(calendar.month_name)[1:], index=default_m_idx)
+        sel_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
 
-    wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
+    month_num = list(calendar.month_name).index(sel_month)
+    target_ym = f"{sel_year}-{month_num:02d}"               # e.g. "2026-10"
+    wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"  # e.g. "OCT-2026"
+    target_short = f"{sel_month[:3].lower()}-{str(sel_year)[-2:]}"  # e.g. "oct-26"
+
+    # Smart Period Matcher (Handles Google Sheets auto-date conversions like '2026-10-01', 'Oct-26', 'OCT-2026', '2026-10')
+    def period_matches(val):
+        s = str(val).strip().lower()
+        return (target_ym in s) or (wage_period_str.lower() in s) or (target_short in s)
 
     with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages)", expanded=tata_df.empty):
         st.markdown(f"Upload official **Form XVII [Rule 78(2)(a)]** for **{wage_period_str}**")
@@ -1270,7 +1405,6 @@ elif current_view == "Monthly Wages & Payout Summary":
                 x_df = pd.read_csv(xvii_file)
                 x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
             else:
-                # Smart Multi-Sheet Excel Reader
                 xl = pd.ExcelFile(xvii_file)
                 target_sheet = xl.sheet_names[0]
                 for s_name in xl.sheet_names:
@@ -1284,6 +1418,11 @@ elif current_view == "Monthly Wages & Payout Summary":
 
             if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
                 net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
+                # Filter out any summary TOTAL rows before previewing
+                name_col_guess = "Worker_Name" if "Worker_Name" in x_df.columns else ("Name_of_Workman" if "Name_of_Workman" in x_df.columns else ("Name" if "Name" in x_df.columns else None))
+                if name_col_guess:
+                    x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)]
+
                 net_sum = pd.to_numeric(x_df[net_col], errors="coerce").fillna(0).sum()
                 st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{net_sum:,.0f}")
                 st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
@@ -1295,6 +1434,9 @@ elif current_view == "Monthly Wages & Payout Summary":
                             xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or ""
                         ).strip()
                         
+                        if not w_name_raw or w_name_raw.lower() == "nan" or "TOTAL" in w_name_raw.upper():
+                            continue
+
                         appr_days = float(
                             pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or xr.get("No._of_days_worked") or 0.0, errors="coerce") or 0.0
                         )
@@ -1303,7 +1445,7 @@ elif current_view == "Monthly Wages & Payout Summary":
                             pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0
                         )
 
-                        if not w_name_raw or w_name_raw.lower() == "nan":
+                        if net_paid <= 0:
                             continue
 
                         matched_wid = ""
@@ -1313,7 +1455,7 @@ elif current_view == "Monthly Wages & Payout Summary":
                                 matched_wid = str(match_w.iloc[0]["Worker_ID"])
 
                         new_records.append({
-                            "Wages_Period": wage_period_str,
+                            "Wages_Period": target_ym,  # Store clean ISO YYYY-MM string (e.g. "2026-10")
                             "Worker_ID": matched_wid,
                             "Worker_Name": w_name_raw.upper(),
                             "Approved_Days": appr_days,
@@ -1322,7 +1464,7 @@ elif current_view == "Monthly Wages & Payout Summary":
                         })
 
                     if not tata_df.empty and "Wages_Period" in tata_df.columns:
-                        tata_df = tata_df[tata_df["Wages_Period"] != wage_period_str]
+                        tata_df = tata_df[~tata_df["Wages_Period"].apply(period_matches)]
 
                     final_tata = pd.concat([tata_df, pd.DataFrame(new_records)], ignore_index=True)
                     if save_sheet_df("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
@@ -1335,11 +1477,10 @@ elif current_view == "Monthly Wages & Payout Summary":
     st.markdown(f"###### Reconciliation Cockpit ({wage_period_str} Field Duty vs Form XVII)")
 
     if not tata_df.empty and "Wages_Period" in tata_df.columns:
-        tata_cur = tata_df[tata_df["Wages_Period"] == wage_period_str]
+        tata_cur = tata_df[tata_df["Wages_Period"].apply(period_matches)]
     else:
         tata_cur = pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
 
-    month_num = list(calendar.month_name).index(sel_month)
     d_start = f"{sel_year}-{month_num:02d}-01"
     d_end = f"{sel_year}-{month_num:02d}-{calendar.monthrange(sel_year, month_num)[1]:02d}"
 
@@ -1369,8 +1510,8 @@ elif current_view == "Monthly Wages & Payout Summary":
             if not tata_cur.empty and "Worker_Name" in tata_cur.columns:
                 tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.strip().str.upper() == wname.strip().upper()]
                 if not tata_match.empty:
-                    tata_approved_days = float(tata_match.iloc[0].get("Approved_Days", 0.0) or 0.0)
-                    tata_net_paid = float(tata_match.iloc[0].get("Net_Amount_Paid", 0.0) or 0.0)
+                    tata_approved_days = float(pd.to_numeric(tata_match.iloc[0].get("Approved_Days", 0.0), errors="coerce") or 0.0)
+                    tata_net_paid = float(pd.to_numeric(tata_match.iloc[0].get("Net_Amount_Paid", 0.0), errors="coerce") or 0.0)
 
             status_badge = "🟢 Matched"
             if tata_approved_days == 0 and sup_days > 0:
