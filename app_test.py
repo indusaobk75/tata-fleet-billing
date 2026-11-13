@@ -10,12 +10,18 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Safe PDF library import
+# Safe optional library imports
 try:
     import pypdf
     PYPDF_AVAILABLE = True
 except ImportError:
     PYPDF_AVAILABLE = False
+
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF_AVAILABLE = False
 
 st.set_page_config(
     page_title="M/s INDU SAO | Enterprise Site ERP",
@@ -32,9 +38,10 @@ DEFAULT_ADMIN_NAME = "Indu Sao (Proprietor)"
 COMPANY_HEADER = {
     "NAME": "M/s INDU SAO",
     "ADDRESS": "Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)",
-    "PIN_CALL": "Pin No. 829134 | Call: 9234779896, 9661152652",
+    "PIN_CALL": "Pin No. 829134   Call 9234779896, 9661152652",
     "EMAIL": "Email: indusao_bk@yahoo.com",
-    "GST": "GST No. 20AUQPK2982K1ZC | Vendor Code - 47",
+    "GST": "GST No. 20AUOPK2982K1ZC",
+    "VENDOR": "Vendor Code - 47",
     "ISO": "ISO Certified Company 45001:2018",
     "CURRENT_AC": "482025110000105"
 }
@@ -144,7 +151,6 @@ def save_sheet_df(worksheet_name, df):
             except gspread.exceptions.WorksheetNotFound:
                 ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
             ws.clear()
-            # RAW prevents Google Sheets from converting text strings like "OCT-2026" or leading-zero account numbers into dates/numbers
             ws.update(prepared_values, value_input_option="RAW")
             st.cache_data.clear()
             return True
@@ -244,7 +250,258 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     return pd.DataFrame(records)
 
 
-# ----------------- 2. HIERARCHICAL WORKSPACES & RBAC -----------------
+# ----------------- 2. DIRECT PDF GENERATORS (LETTERHEAD + 8-UP ATM ID CARDS) -----------------
+def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date):
+    """Generates a direct print-ready A4 PDF with the exact M/s INDU SAO letterhead."""
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+
+    # Exact Diagonal Header Banner
+    pdf.set_fill_color(46, 125, 50)
+    pdf.polygon([(0, 46), (210, 36), (210, 39), (0, 49)], style="F")
+    pdf.set_fill_color(244, 180, 0)
+    pdf.polygon([(0, 43), (210, 33), (210, 36), (0, 46)], style="F")
+    pdf.set_fill_color(56, 163, 241)
+    pdf.polygon([(0, 0), (210, 0), (210, 33), (0, 43)], style="F")
+
+    # Left White Oval Emblem
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.8)
+    pdf.ellipse(x=8, y=4, w=48, h=30, style="DF")
+
+    pdf.set_fill_color(13, 27, 110)
+    pdf.polygon([(21, 25), (21, 17), (25, 14), (25, 25)], style="F")
+    pdf.polygon([(26, 25), (26, 13), (31, 10), (31, 25)], style="F")
+    pdf.polygon([(32, 25), (32, 9), (37, 6), (37, 25)], style="F")
+    pdf.set_line_width(0.4)
+    pdf.line(39, 7, 39, 25)
+    pdf.line(41, 9, 41, 25)
+    pdf.line(43, 11, 43, 25)
+    pdf.set_fill_color(13, 27, 110)
+    pdf.ellipse(x=20, y=26.5, w=16, h=4, style="F")
+    pdf.set_fill_color(0, 0, 0)
+    pdf.ellipse(x=29, y=28.5, w=16, h=3.5, style="F")
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_xy(7, 35.5)
+    pdf.cell(52, 4, "ISO Certified Company 45001:2018", align="L")
+
+    pdf.set_xy(64, 4.5)
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.cell(138, 8, "M/s INDU SAO", ln=True)
+
+    pdf.set_font("Helvetica", "B", 8.5)
+    info_lines = [
+        "Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)",
+        "Pin No. 829134   Call 9234779896, 9661152652",
+        "Email: indusao_bk@yahoo.com",
+        "GST No. 20AUOPK2982K1ZC",
+        "Vendor Code - 47"
+    ]
+    for line in info_lines:
+        pdf.set_x(64)
+        pdf.cell(138, 4.2, line, ln=True)
+
+    # Comfortable 20mm Left & Right Margins
+    pdf.set_y(55)
+    pdf.set_left_margin(20)
+    pdf.set_right_margin(20)
+
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.cell(110, 5, "To,", ln=False)
+    pdf.cell(60, 5, f"Date: {cheque_date}", align="R", ln=True)
+    pdf.cell(170, 5, "The Branch Manager,", ln=True)
+    pdf.cell(170, 5, "Bank of India", ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "BU", 10)
+    pdf.cell(170, 5.5, "BANK DETAILS", align="C", ln=True)
+    pdf.cell(170, 5.5, "SUB: Transfer of payment from our account to below A/C", align="C", ln=True)
+
+    pdf.ln(4)
+    total_amount = sum([float(r.get("AMOUNT", 0.0) or 0.0) for r in records_list])
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.cell(170, 5, "Dear Sir,", ln=True)
+    pdf.set_font("Helvetica", "", 9.5)
+    body_txt = (
+        f"We request you to transfer Rs. {total_amount:.0f}/- from our Current A/C No. "
+        f"{COMPANY_HEADER['CURRENT_AC']} to following account as per the payment details given "
+        f"ch.no. {cheque_no} Dated: {cheque_date}"
+    )
+    pdf.multi_cell(170, 5, body_txt)
+    pdf.ln(4)
+
+    col_widths = [12, 46, 22, 36, 24, 30]
+    headers = ["SL.NO", "NAME", "AMOUNT", "ACCOUNT NO", "IFSC CODE", "BANK & BRANCH"]
+
+    pdf.set_fill_color(241, 245, 249)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.3)
+    pdf.set_font("Helvetica", "B", 8)
+
+    for w, h in zip(col_widths, headers):
+        pdf.cell(w, 7, h, border=1, align="C", fill=True)
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 8)
+    for idx, r in enumerate(records_list, start=1):
+        amt_fmt = f"{float(r.get('AMOUNT', 0.0) or 0.0):.0f}"
+        pdf.cell(col_widths[0], 6.5, str(idx), border=1, align="C")
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(col_widths[1], 6.5, str(r.get("NAME", ""))[:26], border=1, align="L")
+        pdf.cell(col_widths[2], 6.5, amt_fmt, border=1, align="R")
+        pdf.set_font("Courier", "B", 8)
+        pdf.cell(col_widths[3], 6.5, str(r.get("BENEFICIARY ACCOUNT NO", "")), border=1, align="C")
+        pdf.cell(col_widths[4], 6.5, str(r.get("IFSC CODE", "")), border=1, align="C")
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.cell(col_widths[5], 6.5, str(r.get("BANK & BRANCH DETAILS", ""))[:18], border=1, align="L")
+        pdf.ln()
+
+    pdf.set_fill_color(248, 250, 252)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(col_widths[0] + col_widths[1], 7, "TOTAL:", border=1, align="R", fill=True)
+    pdf.cell(col_widths[2], 7, f"{total_amount:.0f}", border=1, align="R", fill=True)
+    pdf.cell(col_widths[3] + col_widths[4] + col_widths[5], 7, "", border=1, fill=True)
+    pdf.ln(8)
+
+    # Left: M/s INDU SAO Proprietor | Right: Bank Sign & Stamp
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.cell(170, 5, "THANKING YOU", ln=True)
+    pdf.ln(12)
+
+    y_sign = pdf.get_y()
+    pdf.set_xy(20, y_sign)
+    pdf.cell(65, 5, "M/s INDU SAO", align="C", ln=True)
+    pdf.set_x(20)
+    pdf.cell(65, 5, "Proprietor", align="C")
+
+    pdf.set_xy(125, y_sign + 5)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(65, 5, "Bank Sign & Stamp", align="C")
+
+    # Bottom Yellow + Sky Blue Strip
+    pdf.set_fill_color(244, 180, 0)
+    pdf.rect(0, 288, 210, 2.5, style="F")
+    pdf.set_fill_color(56, 163, 241)
+    pdf.rect(0, 290.5, 210, 6.5, style="F")
+
+    return bytes(pdf.output())
+
+def generate_atm_id_cards_pdf(workers_df):
+    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet (2 cols x 4 rows)."""
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+
+    card_w = 85.6
+    card_h = 54.0
+    margin_x = 14.0
+    margin_y = 14.0
+    gap_x = 10.8
+    gap_y = 16.0
+
+    records = workers_df.to_dict(orient="records")
+    for idx, emp in enumerate(records):
+        slot = idx % 8
+        if slot == 0:
+            pdf.add_page()
+
+        col = slot % 2
+        row = slot // 2
+        x0 = margin_x + col * (card_w + gap_x)
+        y0 = margin_y + row * (card_h + gap_y)
+
+        # Outer ATM Card Border
+        pdf.set_draw_color(100, 116, 139)
+        pdf.set_line_width(0.35)
+        pdf.rect(x0, y0, card_w, card_h, style="D")
+
+        # Card Header Banner (Sky Blue + Yellow Accent)
+        pdf.set_fill_color(56, 163, 241)
+        pdf.rect(x0, y0, card_w, 12.5, style="F")
+        pdf.set_fill_color(244, 180, 0)
+        pdf.rect(x0, y0 + 12.5, card_w, 1.3, style="F")
+
+        # Mini Oval Logo
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_line_width(0.3)
+        pdf.ellipse(x0 + 2.5, y0 + 2.0, 12.0, 8.5, style="DF")
+        pdf.set_fill_color(13, 27, 110)
+        pdf.rect(x0 + 6.5, y0 + 4.2, 1.5, 4.2, style="F")
+        pdf.rect(x0 + 8.5, y0 + 3.2, 1.5, 5.2, style="F")
+
+        # Company Header Text
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "B", 10.5)
+        pdf.set_xy(x0 + 16.5, y0 + 1.8)
+        pdf.cell(66, 4.5, "M/s INDU SAO", ln=True)
+        pdf.set_font("Helvetica", "B", 6.2)
+        pdf.set_x(x0 + 16.5)
+        pdf.cell(66, 3.5, "TATA STEEL WEST BOKARO | VENDOR CODE: ID47")
+
+        # Worker ID Badge Pill
+        wid = str(emp.get("Worker_ID", ""))
+        pdf.set_fill_color(15, 23, 42)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Courier", "B", 8.5)
+        pdf.set_xy(x0 + 57.5, y0 + 16.0)
+        pdf.cell(25.0, 5.5, wid, align="C", fill=True)
+
+        # Photo Placeholder Box on Left
+        pdf.set_draw_color(148, 163, 184)
+        pdf.set_fill_color(248, 250, 252)
+        pdf.rect(x0 + 3.5, y0 + 16.0, 19.0, 23.0, style="DF")
+        pdf.set_text_color(100, 116, 139)
+        pdf.set_font("Helvetica", "", 6)
+        pdf.set_xy(x0 + 3.5, y0 + 25.5)
+        pdf.cell(19.0, 3.5, "PHOTO", align="C")
+
+        # Employee Details
+        wname = str(emp.get("Full_Name", "")).upper()[:24]
+        wrole = str(emp.get("Designation", ""))[:26]
+        wdiv = str(emp.get("Division", ""))
+        wphone = str(emp.get("Contact_No", "")) or "N/A"
+        wref = str(emp.get("Govt_ID_Ref", "")) or wid
+
+        pdf.set_text_color(15, 23, 42)
+        pdf.set_font("Helvetica", "B", 9.5)
+        pdf.set_xy(x0 + 24.5, y0 + 22.2)
+        pdf.cell(59, 4.5, wname)
+
+        pdf.set_font("Helvetica", "B", 7.2)
+        pdf.set_text_color(55, 48, 163)
+        pdf.set_xy(x0 + 24.5, y0 + 27.0)
+        pdf.cell(59, 3.8, wrole)
+
+        pdf.set_text_color(51, 65, 85)
+        pdf.set_font("Helvetica", "", 6.8)
+        pdf.set_xy(x0 + 24.5, y0 + 31.2)
+        pdf.cell(59, 3.5, f"Div: {wdiv}")
+        pdf.set_xy(x0 + 24.5, y0 + 34.8)
+        pdf.cell(59, 3.5, f"Ref: {wref}  |  Mob: {wphone}")
+
+        # Card Bottom Strip + Proprietor Sign
+        pdf.set_fill_color(241, 245, 249)
+        pdf.rect(x0, y0 + 44.5, card_w, 9.5, style="F")
+        pdf.set_text_color(30, 41, 59)
+        pdf.set_font("Helvetica", "B", 6.2)
+        pdf.set_xy(x0 + 3.5, y0 + 46.2)
+        pdf.cell(48, 3.5, "ISO 45001:2018 Certified")
+        pdf.set_xy(x0 + 3.5, y0 + 49.5)
+        pdf.set_font("Helvetica", "", 5.8)
+        pdf.cell(48, 3.2, "Sondiha, Chainpur, Ramgarh (JH)")
+
+        pdf.set_font("Helvetica", "B", 6.5)
+        pdf.set_xy(x0 + 53.0, y0 + 49.0)
+        pdf.cell(30, 3.5, "Proprietor Sign", align="C")
+
+    return bytes(pdf.output())
+
+
+# ----------------- 3. HIERARCHICAL WORKSPACES & RBAC -----------------
 TAB_REGISTRY = {
     "➕ Employee Enrolment": "Attendance",
     "📋 Employee Master Register": "Attendance",
@@ -279,7 +536,7 @@ WORKSPACES_TREE = [
         "title": "Worker Attendance",
         "submenus": [
             ("Employee Enrolment", "➕ Employee Enrolment"),
-            ("Master Register & Cards", "📋 Employee Master Register"),
+            ("Master Register & ID Cards", "📋 Employee Master Register"),
             ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
             ("Advance & Expenses", "Advance & Expense Register"),
             ("Wages & Bank Letters", "Monthly Wages & Payout Summary")
@@ -325,7 +582,6 @@ st.markdown("""
         background-color: #ffffff;
     }
     
-    /* Generous top padding so Streamlit toolbar never clips header or Sign Out button */
     .block-container { 
         padding-top: 3.6rem !important; 
         padding-bottom: 2.5rem !important;
@@ -480,7 +736,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
+# ----------------- 4. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
     if "user_authenticated" not in st.session_state:
         st.session_state.user_authenticated = False
@@ -510,7 +766,7 @@ def login_screen():
             <div style="text-align: center; margin-bottom: 24px;">
                 <div style="display: flex; justify-content: center; margin-bottom: 10px;">{INDU_SAO_SVG_LOGO}</div>
                 <h2 style="margin: 0; padding: 0; color: #0f172a; font-weight: 700; font-size: 1.55rem; letter-spacing: -0.02em;">{COMPANY_HEADER['NAME']}</h2>
-                <div style="font-size: 0.82rem; color: #64748b; font-weight: 500; margin-top: 4px;">{COMPANY_HEADER['GST']}</div>
+                <div style="font-size: 0.82rem; color: #64748b; font-weight: 500; margin-top: 4px;">{COMPANY_HEADER['GST']} | {COMPANY_HEADER['VENDOR']}</div>
                 <div style="font-size: 0.72rem; color: #059669; font-weight: 600; margin-top: 2px;">{COMPANY_HEADER['ISO']}</div>
             </div>
             """, 
@@ -601,7 +857,7 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 4. SLEEK SIDEBAR TREE NAVIGATION -----------------
+# ----------------- 5. SLEEK SIDEBAR TREE NAVIGATION -----------------
 with st.sidebar:
     st.markdown(
         f"""
@@ -671,7 +927,7 @@ with st.sidebar:
                 st.rerun()
 
 
-# ----------------- 5. CLEAN TOP BAR -----------------
+# ----------------- 6. CLEAN TOP BAR -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -716,295 +972,6 @@ with h_col3:
 st.markdown("<hr style='margin-top: 10px; margin-bottom: 18px; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
 
 
-# ----------------- 6. COVERING AUTHORITY LETTER GENERATOR -----------------
-def generate_bank_authority_letter_html(bank_batch_type, records_list, cheque_no, cheque_date):
-    total_amount = sum([float(r.get("AMOUNT", 0.0) or 0.0) for r in records_list])
-    
-    rows_html = ""
-    for idx, r in enumerate(records_list, start=1):
-        amt_fmt = f"{float(r.get('AMOUNT', 0.0) or 0.0):.0f}"
-        rows_html += f"""
-        <tr>
-            <td style="text-align: center;">{idx}</td>
-            <td style="text-align: left; font-weight: 600;">{r.get('NAME', '')}</td>
-            <td style="text-align: right; font-weight: 700;">{amt_fmt}</td>
-            <td style="text-align: center; font-family: 'Courier New', monospace; font-weight: 600;">{r.get('BENEFICIARY ACCOUNT NO', '')}</td>
-            <td style="text-align: center; font-family: 'Courier New', monospace; font-weight: 600;">{r.get('IFSC CODE', '')}</td>
-            <td style="text-align: left;">{r.get('BANK & BRANCH DETAILS', '')}</td>
-        </tr>
-        """
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>M/s INDU SAO - Bank Covering Letter</title>
-<style>
-    @page {{
-        size: A4 portrait;
-        margin: 0;
-    }}
-    * {{
-        box-sizing: border-box;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-    }}
-    body {{
-        font-family: Arial, Helvetica, sans-serif;
-        color: #000000;
-        margin: 0;
-        padding: 0;
-        background: #ffffff;
-        width: 210mm;
-        min-height: 297mm;
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }}
-
-    /* TOP LETTERHEAD (EDGE-TO-EDGE FULL WIDTH) */
-    .lh-banner {{
-        position: relative;
-        width: 100%;
-        height: 54mm;
-        overflow: hidden;
-    }}
-    .lh-svg-bg {{
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 1;
-    }}
-    .lh-content {{
-        position: relative;
-        z-index: 2;
-        display: flex;
-        align-items: flex-start;
-        padding: 4.5mm 10mm 0 6mm;
-        gap: 7mm;
-    }}
-    .lh-logo-col {{
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        width: 56mm;
-        flex-shrink: 0;
-    }}
-    .lh-iso-text {{
-        font-size: 9.2pt;
-        font-weight: 600;
-        color: #000000;
-        margin-top: 2.2mm;
-        white-space: nowrap;
-        letter-spacing: -0.2px;
-    }}
-    .lh-details-col {{
-        padding-top: 1.5mm;
-        color: #000000;
-    }}
-    .lh-company-name {{
-        font-size: 23pt;
-        font-weight: 800;
-        color: #000000;
-        line-height: 1.05;
-        margin-bottom: 1.5mm;
-        letter-spacing: 0.2px;
-    }}
-    .lh-info-line {{
-        font-size: 8.8pt;
-        font-weight: 700;
-        line-height: 1.38;
-        color: #000000;
-    }}
-
-    /* LETTER CONTENT AREA WITH PROPER LEFT & RIGHT MARGINS (22mm) */
-    .letter-body-wrap {{
-        padding: 8mm 22mm 14mm 22mm;
-        flex-grow: 1;
-    }}
-    .subject-box {{
-        text-align: center;
-        font-size: 10pt;
-        font-weight: 700;
-        text-decoration: underline;
-        margin: 10px 0 14px 0;
-        line-height: 1.45;
-    }}
-    .salutation {{
-        font-size: 9.5pt;
-        line-height: 1.55;
-        margin-bottom: 14px;
-    }}
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 8.5pt;
-        margin-bottom: 16px;
-    }}
-    th, td {{
-        border: 1.2px solid #000000;
-        padding: 5px 7px;
-    }}
-    th {{
-        background-color: #f1f5f9;
-        font-weight: 700;
-        text-align: center;
-        font-size: 8.2pt;
-    }}
-    .total-row td {{
-        font-weight: 800;
-        background-color: #f8fafc;
-        font-size: 9pt;
-    }}
-    .footer-sign-row {{
-        margin-top: 32px;
-        padding: 0 4mm;
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-end;
-        page-break-inside: avoid;
-    }}
-    .sign-left {{
-        text-align: center;
-        font-size: 9.5pt;
-        font-weight: 800;
-    }}
-    .sign-right {{
-        text-align: center;
-        font-size: 8.8pt;
-        font-weight: 700;
-        color: #334155;
-    }}
-
-    /* BOTTOM FOOTER STRIP (EDGE-TO-EDGE FULL WIDTH) */
-    .lh-footer-strip {{
-        width: 100%;
-        margin-top: auto;
-    }}
-    .strip-yellow {{
-        height: 2.5mm;
-        background-color: #f4b400;
-        width: 100%;
-    }}
-    .strip-blue {{
-        height: 6.5mm;
-        background-color: #38a3f1;
-        width: 100%;
-    }}
-</style>
-</head>
-<body onload="window.print()">
-
-    <!-- TOP EXACT LETTERHEAD -->
-    <div class="lh-banner">
-        <svg class="lh-svg-bg" viewBox="0 0 1000 260" preserveAspectRatio="none">
-            <polygon points="0,242 1000,192 1000,206 0,256" fill="#2e7d32"/>
-            <polygon points="0,228 1000,178 1000,192 0,242" fill="#f4b400"/>
-            <polygon points="0,0 1000,0 1000,178 0,228" fill="#38a3f1"/>
-        </svg>
-
-        <div class="lh-content">
-            <div class="lh-logo-col">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 155" style="width: 48mm; height: 33mm;">
-                    <ellipse cx="110" cy="77" rx="103" ry="71" fill="#ffffff" stroke="#000000" stroke-width="5.5"/>
-                    <polygon points="62,102 62,64 81,52 81,102" fill="#0d1b6e"/>
-                    <polygon points="85,102 85,48 106,34 106,102" fill="#0d1b6e"/>
-                    <polygon points="110,102 110,31 131,18 131,102" fill="#0d1b6e"/>
-                    <polygon points="94,102 94,64 106,57 106,102" fill="#ffffff"/>
-                    <rect x="137" y="22" width="3.5" height="80" fill="#1e293b"/>
-                    <rect x="145" y="29" width="3.5" height="73" fill="#1e293b"/>
-                    <rect x="153" y="36" width="3.5" height="66" fill="#1e293b"/>
-                    <polygon points="103,92 125,104 103,104" fill="#0d1b6e"/>
-                    <path d="M 110,102 C 70,102 52,110 52,119 C 52,130 85,137 118,140 L 118,125 C 92,122 72,118 72,113 C 72,108 90,105 110,105 Z" fill="#0d1b6e"/>
-                    <ellipse cx="110" cy="112" rx="8" ry="3.5" fill="#0d1b6e"/>
-                    <path d="M 123,115 C 148,119 166,126 166,134 C 166,144 134,149 95,148 C 128,146 146,141 146,134 C 146,129 136,125 123,123 Z" fill="#000000"/>
-                </svg>
-                <div class="lh-iso-text">ISO Certified Company 45001:2018</div>
-            </div>
-
-            <div class="lh-details-col">
-                <div class="lh-company-name">M/s INDU SAO</div>
-                <div class="lh-info-line">Office Address: Sondiha, Chainpur, Dist Ramgarh, (Jharkhand)</div>
-                <div class="lh-info-line">Pin No. 829134  Call 9234779896, 9661152652</div>
-                <div class="lh-info-line">Email: indusao_bk@yahoo.com</div>
-                <div class="lh-info-line">GST No. 20AUOPK2982K1ZC</div>
-                <div class="lh-info-line">Vendor Code - 47</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- LETTER CONTENT WITH COMFORTABLE PAGE MARGINS -->
-    <div class="letter-body-wrap">
-        <div style="display: flex; justify-content: space-between; font-size: 9.5pt; font-weight: 700; margin-bottom: 10px;">
-            <div>
-                To,<br>
-                The Branch Manager,<br>
-                Bank of India
-            </div>
-            <div>
-                Date: {cheque_date}
-            </div>
-        </div>
-
-        <div class="subject-box">
-            BANK DETAILS<br>
-            SUB: Transfer of payment from our account to below A/C
-        </div>
-
-        <div class="salutation">
-            <b>Dear Sir,</b><br>
-            We request you to transfer <b>Rs. {total_amount:.0f}/-</b> from our Current A/C No. <b>{COMPANY_HEADER['CURRENT_AC']}</b> to following account as per the payment details given ch.no. <b>{cheque_no}</b> Dated: <b>{cheque_date}</b>
-        </div>
-
-        <table>
-            <thead>
-                <tr>
-                    <th style="width: 6%;">SL.NO</th>
-                    <th style="width: 26%;">NAME</th>
-                    <th style="width: 12%;">AMOUNT</th>
-                    <th style="width: 20%;">BENEFICIARY ACCOUNT NO</th>
-                    <th style="width: 14%;">IFSC CODE</th>
-                    <th style="width: 22%;">BANK & BRANCH DETAILS</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows_html}
-                <tr class="total-row">
-                    <td colspan="2" style="text-align: right;">TOTAL:</td>
-                    <td style="text-align: right;">{total_amount:.0f}</td>
-                    <td colspan="3"></td>
-                </tr>
-            </tbody>
-        </table>
-
-        <div style="font-size: 9.2pt; font-weight: 700; margin-top: 14px;">
-            THANKING YOU
-        </div>
-
-        <div class="footer-sign-row">
-            <div class="sign-left">
-                M/s INDU SAO<br><br><br>
-                <span style="font-size: 9pt; font-weight: 700;">Proprietor</span>
-            </div>
-            <div class="sign-right">
-                <br><br><br>
-                <span style="border-top: 1px dashed #64748b; padding-top: 3px;">Bank Sign & Stamp</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- BOTTOM EXACT YELLOW + BLUE STRIP -->
-    <div class="lh-footer-strip">
-        <div class="strip-yellow"></div>
-        <div class="strip-blue"></div>
-    </div>
-
-</body>
-</html>"""
-    
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
@@ -1139,20 +1106,22 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
-# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER & OPEN-ABLE EMPLOYEE PROFILE CARDS -----------------
+# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, PROFILE LEDGER & 8-UP ATM ID CARDS PDF -----------------
 elif current_view == "📋 Employee Master Register":
     w_table = load_sheet_df("worker_master")
     muster_all = load_sheet_df("muster_roll")
     adv_all = load_sheet_df("worker_advances")
     tata_all = load_sheet_df("tata_form_xvii")
 
-    # CHECK IF A SPECIFIC EMPLOYEE PROFILE CARD IS OPENED
+    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE & FULL ATTENDANCE HISTORY
     if st.session_state.selected_worker_card_id:
         target_wid = st.session_state.selected_worker_card_id
         
-        if st.button("← Back to Employee Master Directory", type="secondary"):
-            st.session_state.selected_worker_card_id = None
-            st.rerun()
+        top_nav1, top_nav2 = st.columns([1.2, 2.5])
+        with top_nav1:
+            if st.button("← Back to Employee Master", type="secondary", use_container_width=True):
+                st.session_state.selected_worker_card_id = None
+                st.rerun()
 
         w_match = w_table[w_table["Worker_ID"].astype(str) == target_wid]
         if w_match.empty:
@@ -1169,7 +1138,17 @@ elif current_view == "📋 Employee Master Register":
             emp_branch = str(emp.get("Bank_Branch_Details", "")) or "Cash Disbursement"
             emp_contact = str(emp.get("Contact_No", "")) or "N/A"
 
-            # Executive Profile Banner Card
+            with top_nav2:
+                if FPDF_AVAILABLE:
+                    single_card_pdf = generate_atm_id_cards_pdf(w_match)
+                    st.download_button(
+                        label=f"🪪 Download ATM ID Card PDF ({target_wid})",
+                        data=single_card_pdf,
+                        file_name=f"ID_Card_{target_wid}.pdf",
+                        mime="application/pdf",
+                        type="primary"
+                    )
+
             with st.container(border=True):
                 p_c1, p_c2 = st.columns([2.2, 1.3])
                 with p_c1:
@@ -1181,7 +1160,6 @@ elif current_view == "📋 Employee Master Register":
                     st.markdown(f"**A/C No:** `{emp_acc}`")
                     st.markdown(f"**IFSC:** `{emp_ifsc}` ({emp_branch})")
 
-            # Filter Employee's Attendance, Advances & Form XVII History
             emp_muster = pd.DataFrame()
             if not muster_all.empty and "Worker_ID" in muster_all.columns:
                 emp_muster = muster_all[muster_all["Worker_ID"].astype(str) == target_wid].copy()
@@ -1194,8 +1172,7 @@ elif current_view == "📋 Employee Master Register":
             if not tata_all.empty and "Worker_Name" in tata_all.columns:
                 emp_tata = tata_all[tata_all["Worker_Name"].astype(str).str.strip().str.upper() == emp_name.strip().upper()].copy()
 
-            # Month Filter for Employee Card
-            c_f1, c_f2 = st.columns([1, 2.5])
+            c_f1, _ = st.columns([1, 2.5])
             with c_f1:
                 card_month_filter = st.selectbox("Filter Attendance Month", ["All Months"] + list(calendar.month_name)[1:], key="card_m_flt")
 
@@ -1204,7 +1181,6 @@ elif current_view == "📋 Employee Master Register":
                 m_prefix = f"-{m_idx:02d}-"
                 emp_muster = emp_muster[emp_muster["Date"].astype(str).str.contains(m_prefix)]
 
-            # KPI Metrics for this Worker
             tot_p = len(emp_muster[emp_muster["Attendance"] == "P"]) if not emp_muster.empty else 0
             tot_hd = len(emp_muster[emp_muster["Attendance"] == "HD"]) if not emp_muster.empty else 0
             tot_a = len(emp_muster[emp_muster["Attendance"] == "A"]) if not emp_muster.empty else 0
@@ -1220,7 +1196,6 @@ elif current_view == "📋 Employee Master Register":
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-            # Detailed Attendance & Compliance Ledgers
             det_c1, det_c2 = st.columns([1.4, 1.0], gap="large")
             with det_c1:
                 with st.container(border=True):
@@ -1248,23 +1223,21 @@ elif current_view == "📋 Employee Master Register":
                     else:
                         st.info("No advances disbursed.")
 
-    # MASTER DIRECTORY VIEW (CLICKABLE EMPLOYEE CARDS + TABLE VIEW)
+    # MASTER DIRECTORY + 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
     else:
-        st.markdown("#### Employee Master Register & Profile Cards")
-        st.caption("Click 'Open Profile Card' on any employee to view full attendance history, overtime, advances, and Form XVII payouts")
+        st.markdown("#### Employee Master Register & ATM ID Cards")
+        st.caption("Inspect complete employee attendance ledgers or download 8-up ATM-sized ID cards on A4 sheets")
 
         if w_table.empty or "Worker_ID" not in w_table.columns:
             st.info("No employee records found.")
         else:
-            flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.1, 1.2, 1.8, 1.1])
+            flt_c1, flt_c2, flt_c3 = st.columns([1.1, 1.2, 1.9])
             with flt_c1:
                 f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
             with flt_c2:
                 f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
             with flt_c3:
-                f_search = st.text_input("Search Employee", placeholder="Name, ID, or Account...").strip().lower()
-            with flt_c4:
-                view_style = st.selectbox("Layout", ["Interactive Cards", "Compact Table"], key="reg_layout_style")
+                f_search = st.text_input("Search Employee", placeholder="Filter by Name, ID, or Account...").strip().lower()
 
             disp_table = w_table.copy()
             if f_div != "All":
@@ -1283,30 +1256,44 @@ elif current_view == "📋 Employee Master Register":
                     disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
                 ]
 
-            if view_style == "Interactive Cards":
-                card_cols = st.columns(3, gap="medium")
-                for idx, (_, r) in enumerate(disp_table.iterrows()):
-                    c_box = card_cols[idx % 3]
-                    wid = str(r.get("Worker_ID", ""))
-                    wname = str(r.get("Full_Name", ""))
-                    wdiv = str(r.get("Division", ""))
-                    wrole = str(r.get("Designation", ""))
-                    wbank = str(r.get("Bank_Branch_Details", "")) or "Cash"
-                    wifsc = str(r.get("Bank_IFSC_Code", ""))
-                    route_tag = "BOI" if wifsc.startswith("BKID") else ("NEFT" if str(r.get("Bank_Account_No", "")).strip() else "CASH")
-
-                    with c_box:
-                        with st.container(border=True):
-                            st.markdown(f"**{wname}**")
-                            st.caption(f"ID: `{wid}` • {wrole}")
-                            st.markdown(f"<div style='font-size: 0.78rem; color: #475569; margin-bottom: 8px;'>Div: {wdiv}<br>Bank: <b>{route_tag}</b> ({wbank})</div>", unsafe_allow_html=True)
-                            if st.button(f"Open Profile & Attendance →", key=f"open_card_{wid}", use_container_width=True, type="secondary"):
-                                st.session_state.selected_worker_card_id = wid
+            # Action Bar: Open Employee Profile Card OR Download 8-Up ATM ID Cards PDF
+            act_c1, act_c2 = st.columns([1.4, 1.1], gap="medium")
+            with act_c1:
+                with st.container(border=True):
+                    st.markdown("###### 🔍 Open Employee Profile & Attendance Ledger")
+                    emp_choices = {
+                        f"{r['Worker_ID']} — {r['Full_Name']} ({r['Designation']})": str(r["Worker_ID"])
+                        for _, r in disp_table.iterrows()
+                    }
+                    if emp_choices:
+                        sc1, sc2 = st.columns([2.2, 1.0])
+                        with sc1:
+                            sel_emp_label = st.selectbox("Select Employee ID", list(emp_choices.keys()), label_visibility="collapsed")
+                        with sc2:
+                            if st.button("Open Profile →", type="primary", use_container_width=True):
+                                st.session_state.selected_worker_card_id = emp_choices[sel_emp_label]
                                 st.rerun()
-            else:
-                req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
-                safe_cols = [c for c in req_cols if c in disp_table.columns]
-                st.dataframe(disp_table[safe_cols], use_container_width=True, hide_index=True)
+
+            with act_c2:
+                with st.container(border=True):
+                    st.markdown("###### 🪪 Print 8-Up ATM ID Cards (A4 PDF)")
+                    if FPDF_AVAILABLE and not disp_table.empty:
+                        cards_pdf_bytes = generate_atm_id_cards_pdf(disp_table)
+                        pages_cnt = (len(disp_table) + 7) // 8
+                        st.download_button(
+                            label=f"📥 Download ATM ID Cards PDF ({len(disp_table)} Cards • {pages_cnt} A4 Pages)",
+                            data=cards_pdf_bytes,
+                            file_name=f"M_s_INDU_SAO_Employee_ID_Cards_{datetime.date.today().strftime('%Y%m%d')}.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
+                    elif not FPDF_AVAILABLE:
+                        st.warning("Add 'fpdf2' to requirements.txt to enable PDF ID cards.")
+
+            req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
+            safe_cols = [c for c in req_cols if c in disp_table.columns]
+            st.dataframe(disp_table[safe_cols], use_container_width=True, hide_index=True)
 
 
 # ----------------- VIEW 3: DAILY FIELD MUSTER ROLL -----------------
@@ -1488,10 +1475,10 @@ elif current_view == "Advance & Expense Register":
                 st.info("No recorded transactions.")
 
 
-# ----------------- VIEW 5: WAGES, FORM XVII & BANK LETTERS -----------------
+# ----------------- VIEW 5: WAGES, FORM XVII & DIRECT PDF BANK LETTERS -----------------
 elif current_view == "Monthly Wages & Payout Summary":
-    st.markdown("#### Monthly Wages, Form XVII Audit & Bank Batches")
-    st.caption("Reconcile field duty with Tata Steel Form XVII and generate BOI / NEFT covering letters")
+    st.markdown("#### Monthly Wages, Form XVII Audit & Direct PDF Bank Letters")
+    st.caption("Reconcile field duty with Tata Steel Form XVII and download direct print-ready PDF covering letters")
 
     w_master = load_sheet_df("worker_master")
     muster_df = load_sheet_df("muster_roll")
@@ -1504,11 +1491,10 @@ elif current_view == "Monthly Wages & Payout Summary":
         sel_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1)
 
     month_num = list(calendar.month_name).index(sel_month)
-    target_ym = f"{sel_year}-{month_num:02d}"               # e.g. "2026-10"
-    wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"  # e.g. "OCT-2026"
-    target_short = f"{sel_month[:3].lower()}-{str(sel_year)[-2:]}"  # e.g. "oct-26"
+    target_ym = f"{sel_year}-{month_num:02d}"
+    wage_period_str = f"{sel_month[:3].upper()}-{sel_year}"
+    target_short = f"{sel_month[:3].lower()}-{str(sel_year)[-2:]}"
 
-    # Smart Period Matcher (Handles Google Sheets auto-date conversions like '2026-10-01', 'Oct-26', 'OCT-2026', '2026-10')
     def period_matches(val):
         s = str(val).strip().lower()
         return (target_ym in s) or (wage_period_str.lower() in s) or (target_short in s)
@@ -1542,7 +1528,6 @@ elif current_view == "Monthly Wages & Payout Summary":
 
             if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
                 net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
-                # Filter out any summary TOTAL rows before previewing
                 name_col_guess = "Worker_Name" if "Worker_Name" in x_df.columns else ("Name_of_Workman" if "Name_of_Workman" in x_df.columns else ("Name" if "Name" in x_df.columns else None))
                 if name_col_guess:
                     x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)]
@@ -1579,7 +1564,7 @@ elif current_view == "Monthly Wages & Payout Summary":
                                 matched_wid = str(match_w.iloc[0]["Worker_ID"])
 
                         new_records.append({
-                            "Wages_Period": target_ym,  # Store clean ISO YYYY-MM string (e.g. "2026-10")
+                            "Wages_Period": target_ym,
                             "Worker_ID": matched_wid,
                             "Worker_Name": w_name_raw.upper(),
                             "Approved_Days": appr_days,
@@ -1674,7 +1659,7 @@ elif current_view == "Monthly Wages & Payout Summary":
         st.dataframe(recon_df, use_container_width=True, hide_index=True)
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    st.markdown("###### Automated Bank Covering Letters (Print / Save as PDF)")
+    st.markdown("###### Automated Bank Covering Letters (Direct PDF Download)")
 
     p_c1, p_c2 = st.columns([1.2, 1.2])
     with p_c1:
@@ -1693,29 +1678,35 @@ elif current_view == "Monthly Wages & Payout Summary":
     dl_c1, dl_c2 = st.columns(2)
     with dl_c1:
         if boi_batch:
-            boi_html = generate_bank_authority_letter_html("BOI", boi_batch, chq_no, chq_date)
-            st.download_button(
-                label=f"📄 Print / PDF: BOI Covering Letter ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
-                data=boi_html,
-                file_name=f"BOI_Transfer_Letter_{wage_period_str}.html",
-                mime="text/html",
-                type="primary",
-                use_container_width=True
-            )
+            if FPDF_AVAILABLE:
+                boi_pdf_bytes = generate_bank_authority_letter_pdf("BOI", boi_batch, chq_no, chq_date)
+                st.download_button(
+                    label=f"📥 Download BOI Covering Letter PDF ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
+                    data=boi_pdf_bytes,
+                    file_name=f"BOI_Transfer_Letter_{wage_period_str}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+            else:
+                st.warning("Add 'fpdf2' to requirements.txt for direct PDF download.")
         else:
             st.info("No Bank of India transfers in this batch.")
 
     with dl_c2:
         if neft_batch:
-            neft_html = generate_bank_authority_letter_html("NEFT", neft_batch, chq_no, chq_date)
-            st.download_button(
-                label=f"📄 Print / PDF: NEFT Covering Letter ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
-                data=neft_html,
-                file_name=f"NEFT_Transfer_Letter_{wage_period_str}.html",
-                mime="text/html",
-                type="primary" if not boi_batch else "secondary",
-                use_container_width=True
-            )
+            if FPDF_AVAILABLE:
+                neft_pdf_bytes = generate_bank_authority_letter_pdf("NEFT", neft_batch, chq_no, chq_date)
+                st.download_button(
+                    label=f"📥 Download NEFT Covering Letter PDF ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
+                    data=neft_pdf_bytes,
+                    file_name=f"NEFT_Transfer_Letter_{wage_period_str}.pdf",
+                    mime="application/pdf",
+                    type="primary" if not boi_batch else "secondary",
+                    use_container_width=True
+                )
+            else:
+                st.warning("Add 'fpdf2' to requirements.txt for direct PDF download.")
         else:
             st.info("No NEFT transfers in this batch.")
 
