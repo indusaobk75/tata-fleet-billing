@@ -320,63 +320,68 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
 
-    /* Main Workspace Canvas */
     .stApp {
         background-color: #ffffff;
     }
     .block-container { 
-        padding-top: 2.2rem !important; 
+        padding-top: 2.8rem !important; 
         padding-bottom: 2.5rem !important;
-        padding-left: 2.4rem !important;
-        padding-right: 2.4rem !important;
+        padding-left: 2.2rem !important;
+        padding-right: 2.2rem !important;
         max-width: 100% !important;
     }
 
-    /* Minimalist Soft Alabaster Sidebar */
+    /* Sleek Gemini-Style Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #f8fafc !important;
         border-right: 1px solid #e2e8f0 !important;
-        width: 270px !important;
-        min-width: 270px !important;
+        width: 265px !important;
+        min-width: 265px !important;
     }
     section[data-testid="stSidebar"] > div:first-child {
-        padding-top: 1.2rem !important;
-        padding-left: 0.85rem !important;
-        padding-right: 0.85rem !important;
+        padding-top: 1rem !important;
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
     }
 
-    /* Ghost Buttons in Sidebar (Zero Boxy Borders) */
+    /* Remove bulky spacing between sidebar elements */
+    section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+        gap: 0.25rem !important;
+    }
+
+    /* Clean Ghost Sidebar Buttons */
     section[data-testid="stSidebar"] div.stButton > button {
-        width: 100%;
+        width: 100% !important;
+        min-height: 36px !important;
+        height: 36px !important;
         text-align: left !important;
         justify-content: flex-start !important;
         background-color: transparent !important;
         border: none !important;
         box-shadow: none !important;
-        border-radius: 10px !important;
-        padding: 8px 12px !important;
-        margin-bottom: 2px !important;
-        font-size: 0.86rem !important;
+        border-radius: 8px !important;
+        padding: 4px 12px !important;
+        margin: 0px !important;
+        font-size: 0.84rem !important;
         font-weight: 500 !important;
-        color: #475569 !important;
-        transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        color: #334155 !important;
+        transition: background-color 0.15s ease, color 0.15s ease !important;
     }
 
     section[data-testid="stSidebar"] div.stButton > button:hover {
-        background-color: #f1f5f9 !important;
+        background-color: #eef2f6 !important;
         color: #0f172a !important;
     }
 
-    /* Active Pill Selection (Soft Indigo Tint + Deep Indigo Text) */
+    /* Active Pill Item (Gemini Soft Blue-Indigo Pill) */
     section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
-        background-color: #eef2ff !important;
-        color: #3730a3 !important;
+        background-color: #e0e7ff !important;
+        color: #1e3a8a !important;
         font-weight: 600 !important;
-        border-left: 3px solid #4f46e5 !important;
-        border-radius: 4px 10px 10px 4px !important;
+        border-radius: 20px !important;
     }
 
-    /* Main Content Primary Buttons (Executive Slate/Indigo instead of harsh red) */
+    /* Main Content Primary Buttons */
     div.stMain div.stButton > button[kind="primary"],
     div.stFormSubmitButton > button[kind="primary"],
     div.stDownloadButton > button[kind="primary"] {
@@ -385,66 +390,41 @@ st.markdown("""
         border: 1px solid #1e293b !important;
         border-radius: 8px !important;
         font-weight: 500 !important;
-        padding: 0.45rem 1rem !important;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
-        transition: all 0.15s ease !important;
     }
-    div.stMain div.stButton > button[kind="primary"]:hover,
-    div.stFormSubmitButton > button[kind="primary"]:hover,
-    div.stDownloadButton > button[kind="primary"]:hover {
+    div.stMain div.stButton > button[kind="primary"]:hover {
         background-color: #334155 !important;
-        border-color: #334155 !important;
     }
 
-    /* Secondary Buttons in Main Content */
-    div.stMain div.stButton > button[kind="secondary"],
-    div.stDownloadButton > button[kind="secondary"] {
-        background-color: #ffffff !important;
-        color: #334155 !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 8px !important;
-        font-weight: 500 !important;
-    }
-    div.stMain div.stButton > button[kind="secondary"]:hover {
-        background-color: #f8fafc !important;
-        border-color: #94a3b8 !important;
-    }
-
-    /* Clean Card Containers */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 12px !important;
         border: 1px solid #e2e8f0 !important;
         background-color: #ffffff !important;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
     }
 
-    /* User Avatar Pill */
     .top-user-avatar {
-        width: 34px;
-        height: 34px;
+        width: 32px;
+        height: 32px;
         border-radius: 50%;
-        background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
+        background: #3730a3;
         display: flex;
         align-items: center;
         justify-content: center;
         font-weight: 600;
-        font-size: 0.82rem;
+        font-size: 0.78rem;
         color: white;
     }
     .status-badge {
         display: inline-block;
-        padding: 1px 7px;
+        padding: 1px 6px;
         border-radius: 9999px;
-        font-size: 0.62rem;
+        font-size: 0.60rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
     }
     .status-admin { background-color: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
     .status-user { background-color: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
