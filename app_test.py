@@ -624,7 +624,6 @@ with st.sidebar:
                 if st.button(sub_label, key=f"sub_btn_{reg_key}", use_container_width=True, type=btn_kind):
                     st.session_state.active_subtab = reg_key
                     st.rerun()
-
     # Admin Section
     if st.session_state.current_role == "ADMIN":
         st.markdown("<div style='margin-top: 12px; padding: 0 10px; margin-bottom: 6px; font-size: 0.68rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
