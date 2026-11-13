@@ -324,61 +324,93 @@ st.markdown("""
         background-color: #ffffff;
     }
     .block-container { 
-        padding-top: 2.8rem !important; 
+        padding-top: 2.6rem !important; 
         padding-bottom: 2.5rem !important;
         padding-left: 2.2rem !important;
         padding-right: 2.2rem !important;
         max-width: 100% !important;
     }
 
-    /* Sleek Gemini-Style Sidebar */
+    /* Sleek Modern Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #f8fafc !important;
         border-right: 1px solid #e2e8f0 !important;
-        width: 265px !important;
-        min-width: 265px !important;
+        width: 275px !important;
+        min-width: 275px !important;
     }
     section[data-testid="stSidebar"] > div:first-child {
         padding-top: 1rem !important;
         padding-left: 0.75rem !important;
         padding-right: 0.75rem !important;
     }
-
-    /* Compact spacing between sidebar elements */
     section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-        gap: 0.25rem !important;
+        gap: 0.15rem !important;
     }
 
-    /* Clean Ghost Sidebar Buttons */
-    section[data-testid="stSidebar"] div.stButton > button {
+    /* PARENT MENU BUTTONS (Bold, Prominent Category Headers) */
+    section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {
         width: 100% !important;
-        min-height: 36px !important;
-        height: 36px !important;
+        min-height: 38px !important;
+        height: 38px !important;
         text-align: left !important;
         justify-content: flex-start !important;
         background-color: transparent !important;
         border: none !important;
         box-shadow: none !important;
         border-radius: 8px !important;
-        padding: 4px 12px !important;
-        margin: 0px !important;
-        font-size: 0.84rem !important;
-        font-weight: 500 !important;
-        color: #334155 !important;
-        transition: background-color 0.15s ease, color 0.15s ease !important;
-    }
-
-    section[data-testid="stSidebar"] div.stButton > button:hover {
-        background-color: #eef2f6 !important;
+        padding: 6px 10px !important;
+        margin-top: 4px !important;
+        font-size: 0.88rem !important;
+        font-weight: 700 !important;
         color: #0f172a !important;
+        letter-spacing: -0.01em !important;
+    }
+    section[data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {
+        background-color: #e2e8f0 !important;
     }
 
-    /* Active Pill Item */
+    /* SUB-MENU INACTIVE BUTTONS (Indented, Lighter, Tree-Line) */
+    section[data-testid="stSidebar"] div.stButton > button[kind="tertiary"] {
+        width: 100% !important;
+        min-height: 33px !important;
+        height: 33px !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        background-color: transparent !important;
+        border: none !important;
+        border-left: 2px solid #cbd5e1 !important;
+        box-shadow: none !important;
+        border-radius: 0px 8px 8px 0px !important;
+        padding: 4px 12px 4px 16px !important;
+        margin-left: 14px !important;
+        width: calc(100% - 14px) !important;
+        font-size: 0.82rem !important;
+        font-weight: 400 !important;
+        color: #475569 !important;
+    }
+    section[data-testid="stSidebar"] div.stButton > button[kind="tertiary"]:hover {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+        border-left: 2px solid #64748b !important;
+    }
+
+    /* SUB-MENU ACTIVE PILL (Bold Indigo Highlight) */
     section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+        width: calc(100% - 14px) !important;
+        min-height: 34px !important;
+        height: 34px !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
         background-color: #e0e7ff !important;
         color: #1e3a8a !important;
+        border: none !important;
+        border-left: 3px solid #4f46e5 !important;
+        border-radius: 0px 16px 16px 0px !important;
+        padding: 4px 12px 4px 15px !important;
+        margin-left: 14px !important;
+        font-size: 0.83rem !important;
         font-weight: 600 !important;
-        border-radius: 20px !important;
+        box-shadow: none !important;
     }
 
     /* Main Content Primary Buttons */
@@ -425,7 +457,6 @@ st.markdown("""
     .status-user { background-color: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ----------------- 3. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
@@ -550,18 +581,16 @@ if not st.session_state.user_authenticated:
 with st.sidebar:
     st.markdown(
         f"""
-        <div style="display: flex; align-items: center; gap: 10px; padding: 2px 4px 12px 4px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 2px 4px 12px 4px; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0;">
             <div>{INDU_SAO_SVG_LOGO}</div>
             <div>
-                <div style="font-size: 0.92rem; font-weight: 700; color: #0f172a;">{COMPANY_HEADER['NAME']}</div>
+                <div style="font-size: 0.94rem; font-weight: 700; color: #0f172a;">{COMPANY_HEADER['NAME']}</div>
                 <div style="font-size: 0.68rem; color: #64748b; font-weight: 500;">West Bokaro • ID47</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True
     )
-
-    st.markdown("<div style='padding: 0 10px; margin-bottom: 4px; font-size: 0.66rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>Workspaces</div>", unsafe_allow_html=True)
 
     for ws in WORKSPACES_TREE:
         ws_id = ws["id"]
@@ -579,38 +608,39 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        if st.button(f"{chevron} {ws_icon} {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
+        # MAIN MENU HEADER (Bold, Dark Slate, Full Width)
+        if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
             if permitted_submenus and st.session_state.active_subtab not in [s[1] for s in permitted_submenus]:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
+        # SUB-MENU ITEMS (Indented with Vertical Tree Line)
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
-                btn_kind = "primary" if is_sub_active else "secondary"
+                btn_kind = "primary" if is_sub_active else "tertiary"
                 
-                if st.button(f"•  {disp_name}", key=f"nav_sub_{reg_key}", use_container_width=True, type=btn_kind):
+                if st.button(disp_name, key=f"nav_sub_{reg_key}", use_container_width=True, type=btn_kind):
                     st.session_state.active_subtab = reg_key
                     st.rerun()
 
+    # ADMIN SECTION
     if st.session_state.current_role == "ADMIN":
-        st.markdown("<div style='margin-top: 8px; padding: 0 10px; font-size: 0.66rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase;'>System</div>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
         is_admin_open = (st.session_state.active_workspace == "Admin")
         adm_chevron = "▾" if is_admin_open else "▸"
         
-        if st.button(f"{adm_chevron} ⚙️ Access & Settings", key="nav_ws_admin_settings", use_container_width=True, type="secondary"):
+        if st.button(f"{adm_chevron}  ⚙️  Access & Settings", key="nav_ws_admin_settings", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = "Admin"
             st.session_state.active_subtab = "User Accounts & RBAC"
             st.rerun()
 
         if is_admin_open:
             is_adm_sub = (st.session_state.active_subtab == "User Accounts & RBAC")
-            if st.button("•  User Permissions (RBAC)", key="nav_sub_admin_rbac_item", use_container_width=True, type="primary" if is_adm_sub else "secondary"):
+            if st.button("User Permissions (RBAC)", key="nav_sub_admin_rbac_item", use_container_width=True, type="primary" if is_adm_sub else "tertiary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
                 st.rerun()
-
-
 # ----------------- 5. CLEAN TOP BAR -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
