@@ -25,7 +25,7 @@ except ImportError:
     FPDF_AVAILABLE = False
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -276,43 +276,82 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     return pd.DataFrame(records)
 
 
-# ----------------- 2. DIRECT PDF GENERATORS (LETTERHEAD + 8-UP ATM ID CARDS WITH PHOTO) -----------------
+# ----------------- 2. DIRECT PDF GENERATORS (EXACT OVAL LOGO + LETTERHEAD + 8-UP ATM ID CARDS) -----------------
+def build_exact_indu_sao_oval_logo_stream():
+    """Renders the exact M/s INDU SAO oval emblem as a crisp high-res PNG stream for FPDF."""
+    if not PIL_AVAILABLE:
+        return None
+    W, H = 660, 450
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # White Oval with Thick Black Border
+    draw.ellipse([12, 10, W - 12, H - 10], fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=14)
+    navy = (12, 24, 108, 255)
+    black = (10, 10, 10, 255)
+    white = (255, 255, 255, 255)
+
+    # Three Stepped Navy Building Towers
+    draw.polygon([(175, 285), (175, 185), (235, 148), (235, 285)], fill=navy)
+    draw.polygon([(248, 285), (248, 140), (315, 98), (315, 285)], fill=navy)
+    draw.polygon([(275, 285), (275, 182), (315, 158), (315, 285)], fill=white)
+    draw.polygon([(328, 285), (328, 90), (398, 46), (398, 285)], fill=navy)
+
+    # Three Vertical Accent Bars on Right
+    draw.rectangle([414, 56, 423, 285], fill=black)
+    draw.rectangle([438, 76, 447, 285], fill=black)
+    draw.rectangle([462, 96, 471, 285], fill=black)
+
+    # Diagonal Wedge Accent
+    draw.polygon([(308, 255), (378, 290), (308, 290)], fill=navy)
+
+    # Bottom Navy Swoosh + Dot ("i" motif)
+    draw.pieslice([145, 282, 515, 392], start=95, end=255, fill=navy)
+    draw.pieslice([198, 294, 485, 366], start=90, end=265, fill=white)
+    draw.rectangle([312, 326, 362, 388], fill=navy)
+    draw.ellipse([312, 302, 362, 320], fill=navy)
+
+    # Bottom Black Outer Swoosh
+    draw.pieslice([185, 305, 535, 422], start=335, end=105, fill=black)
+    draw.pieslice([175, 312, 475, 398], start=330, end=110, fill=white)
+    draw.rectangle([312, 326, 362, 388], fill=navy)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date):
-    """Generates a direct print-ready A4 PDF with the exact M/s INDU SAO letterhead."""
+    """Generates a direct print-ready A4 PDF with the exact M/s INDU SAO letterhead, high-res oval logo, and stamp gap."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
 
+    # Exact Diagonal Header Banner
     pdf.set_fill_color(46, 125, 50)
-    pdf.polygon([(0, 46), (210, 36), (210, 39), (0, 49)], style="F")
+    pdf.polygon([(0, 47), (210, 36), (210, 39.5), (0, 50.5)], style="F")
     pdf.set_fill_color(244, 180, 0)
-    pdf.polygon([(0, 43), (210, 33), (210, 36), (0, 46)], style="F")
+    pdf.polygon([(0, 43.5), (210, 32.5), (210, 36), (0, 47)], style="F")
     pdf.set_fill_color(56, 163, 241)
-    pdf.polygon([(0, 0), (210, 0), (210, 33), (0, 43)], style="F")
+    pdf.polygon([(0, 0), (210, 0), (210, 32.5), (0, 43.5)], style="F")
 
-    pdf.set_fill_color(255, 255, 255)
-    pdf.set_draw_color(0, 0, 0)
-    pdf.set_line_width(0.8)
-    pdf.ellipse(x=8, y=4, w=48, h=30, style="DF")
+    # Left High-Res Exact Oval Emblem
+    logo_stream = build_exact_indu_sao_oval_logo_stream()
+    if logo_stream:
+        pdf.image(logo_stream, x=7.5, y=3.0, w=48.0, h=32.5)
+    else:
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.ellipse(x=8, y=4, w=48, h=30, style="DF")
 
-    pdf.set_fill_color(13, 27, 110)
-    pdf.polygon([(21, 25), (21, 17), (25, 14), (25, 25)], style="F")
-    pdf.polygon([(26, 25), (26, 13), (31, 10), (31, 25)], style="F")
-    pdf.polygon([(32, 25), (32, 9), (37, 6), (37, 25)], style="F")
-    pdf.set_line_width(0.4)
-    pdf.line(39, 7, 39, 25)
-    pdf.line(41, 9, 41, 25)
-    pdf.line(43, 11, 43, 25)
-    pdf.set_fill_color(13, 27, 110)
-    pdf.ellipse(x=20, y=26.5, w=16, h=4, style="F")
-    pdf.set_fill_color(0, 0, 0)
-    pdf.ellipse(x=29, y=28.5, w=16, h=3.5, style="F")
-
+    # ISO Text under Oval
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "B", 8)
-    pdf.set_xy(7, 35.5)
-    pdf.cell(52, 4, "ISO Certified Company 45001:2018", align="L")
+    pdf.set_xy(7, 36.5)
+    pdf.cell(54, 4, "ISO Certified Company 45001:2018", align="L")
 
+    # Right Side Company Details
     pdf.set_xy(64, 4.5)
     pdf.set_font("Helvetica", "B", 20)
     pdf.cell(138, 8, "M/s INDU SAO", ln=True)
@@ -329,7 +368,8 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
         pdf.set_x(64)
         pdf.cell(138, 4.2, line, ln=True)
 
-    pdf.set_y(55)
+    # Comfortable 20mm Left & Right Margins
+    pdf.set_y(56)
     pdf.set_left_margin(20)
     pdf.set_right_margin(20)
 
@@ -390,20 +430,25 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.cell(col_widths[3] + col_widths[4] + col_widths[5], 7, "", border=1, fill=True)
     pdf.ln(8)
 
+    # --- SIGNATURES WITH CLEAR 18mm STAMP SPACE BETWEEN "M/s INDU SAO" AND "Proprietor" ---
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.cell(170, 5, "THANKING YOU", ln=True)
-    pdf.ln(12)
+    pdf.ln(8)
 
     y_sign = pdf.get_y()
     pdf.set_xy(20, y_sign)
-    pdf.cell(65, 5, "M/s INDU SAO", align="C", ln=True)
-    pdf.set_x(20)
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.cell(65, 5, "M/s INDU SAO", align="C")
+
+    pdf.set_xy(20, y_sign + 18)
+    pdf.set_font("Helvetica", "B", 9)
     pdf.cell(65, 5, "Proprietor", align="C")
 
-    pdf.set_xy(125, y_sign + 5)
+    pdf.set_xy(125, y_sign + 18)
     pdf.set_font("Helvetica", "B", 8.5)
     pdf.cell(65, 5, "Bank Sign & Stamp", align="C")
 
+    # Bottom Yellow + Sky Blue Strip
     pdf.set_fill_color(244, 180, 0)
     pdf.rect(0, 288, 210, 2.5, style="F")
     pdf.set_fill_color(56, 163, 241)
@@ -411,8 +456,9 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
 
     return bytes(pdf.output())
 
+
 def generate_atm_id_cards_pdf(workers_df):
-    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet with real Employee Photo if uploaded."""
+    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet with exact Oval Logo & Employee Photo."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -445,14 +491,14 @@ def generate_atm_id_cards_pdf(workers_df):
         pdf.set_fill_color(244, 180, 0)
         pdf.rect(x0, y0 + 12.5, card_w, 1.3, style="F")
 
-        # Mini Oval Logo
-        pdf.set_fill_color(255, 255, 255)
-        pdf.set_draw_color(0, 0, 0)
-        pdf.set_line_width(0.3)
-        pdf.ellipse(x0 + 2.5, y0 + 2.0, 12.0, 8.5, style="DF")
-        pdf.set_fill_color(13, 27, 110)
-        pdf.rect(x0 + 6.5, y0 + 4.2, 1.5, 4.2, style="F")
-        pdf.rect(x0 + 8.5, y0 + 3.2, 1.5, 5.2, style="F")
+        # Exact High-Res Oval Logo on ID Card
+        card_logo_stream = build_exact_indu_sao_oval_logo_stream()
+        if card_logo_stream:
+            pdf.image(card_logo_stream, x=x0 + 2.2, y=y0 + 1.8, w=12.8, h=8.8)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_draw_color(0, 0, 0)
+            pdf.ellipse(x0 + 2.5, y0 + 2.0, 12.0, 8.5, style="DF")
 
         # Company Header Text
         pdf.set_text_color(0, 0, 0)
@@ -471,7 +517,7 @@ def generate_atm_id_cards_pdf(workers_df):
         pdf.set_xy(x0 + 57.5, y0 + 16.0)
         pdf.cell(25.0, 5.5, wid, align="C", fill=True)
 
-        # Photo Box on Left (Renders Real Photo if Photo_Base64 is present)
+        # Photo Box on Left
         pdf.set_draw_color(148, 163, 184)
         pdf.set_fill_color(248, 250, 252)
         pdf.rect(x0 + 3.5, y0 + 16.0, 19.0, 23.0, style="DF")
@@ -642,7 +688,7 @@ st.markdown("""
         gap: 0.15rem !important;
     }
 
-    /* PARENT MENU BUTTONS (Bold, Prominent Category Headers) */
+    /* PARENT MENU BUTTONS */
     section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {
         width: 100% !important;
         min-height: 38px !important;
@@ -664,7 +710,7 @@ st.markdown("""
         background-color: #e2e8f0 !important;
     }
 
-    /* SUB-MENU INACTIVE BUTTONS (Indented, Lighter, Tree-Line) */
+    /* SUB-MENU INACTIVE BUTTONS */
     section[data-testid="stSidebar"] div.stButton > button[kind="tertiary"] {
         min-height: 33px !important;
         height: 33px !important;
@@ -688,7 +734,7 @@ st.markdown("""
         border-left: 2px solid #64748b !important;
     }
 
-    /* SUB-MENU ACTIVE PILL (Bold Indigo Highlight) */
+    /* SUB-MENU ACTIVE PILL */
     section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
         width: calc(100% - 14px) !important;
         min-height: 34px !important;
@@ -1220,8 +1266,8 @@ elif current_view == "📋 Employee Master Register":
 
                 with p_c1:
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
-                    st.markdown(f"**Division:** {emp_div} &nbsp;|&nbsp; **Role:** {emp_role} &nbsp;|&nbsp; **Contact:** {emp_contact}")
-                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}** &nbsp;|&nbsp; **Status:** `{emp.get('Status', 'ACTIVE')}`")
+                    st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Contact:** {emp_contact}")
+                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}**  |  **Status:** `{emp.get('Status', 'ACTIVE')}`")
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
                     st.markdown(f"**A/C No:** `{emp_acc}`")
@@ -1467,7 +1513,6 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         else:
             st.warning(f"🟡 **PENDING — NOT LOGGED YET** for **{muster_date.strftime('%d %b %Y')}**. Mark attendance below and click 'Save Daily Muster Roll'.")
 
-        # Show all logged dates in the current selected month so user immediately sees what is done vs pending
         days_in_m = calendar.monthrange(muster_date.year, muster_date.month)[1]
         logged_day_nums = {int(d.split("-")[2]) for d in logged_dates_this_month if len(d.split("-")) == 3}
         badges_html = ""
@@ -1644,7 +1689,6 @@ elif current_view == "Monthly Attendance Matrix":
         if m_sub.empty:
             st.info(f"No attendance entries found for {mat_month} {mat_year}.")
         else:
-            # Filter ONLY workers who have at least 1 'P' or 'HD' in this month
             present_wids = m_sub[m_sub["Attendance"].isin(["P", "HD"])]["Worker_ID"].astype(str).unique().tolist()
             
             if not present_wids:
@@ -1656,7 +1700,6 @@ elif current_view == "Monthly Attendance Matrix":
                     w_name = str(w_logs.iloc[0].get("Worker_Name", ""))
                     w_div_val = str(w_logs.iloc[0].get("Division", ""))
                     
-                    # Lookup designation from worker_master if available
                     w_desig = ""
                     if not w_master.empty and "Worker_ID" in w_master.columns:
                         wm_hit = w_master[w_master["Worker_ID"].astype(str) == wid]
@@ -1671,7 +1714,6 @@ elif current_view == "Monthly Attendance Matrix":
                         "Division": w_div_val
                     }
 
-                    # Map day 01..31
                     day_map = {}
                     for _, lr in w_logs.iterrows():
                         d_parts = str(lr["Date"]).split("-")
@@ -1699,7 +1741,6 @@ elif current_view == "Monthly Attendance Matrix":
 
                 matrix_df = pd.DataFrame(matrix_rows)
 
-                # Summary KPIs
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Active Present Workforce", f"{len(matrix_df)} Workers")
                 k2.metric("Total Tata Site Man-Days", f"{matrix_df['Tata Days'].sum():.1f}")
@@ -1708,7 +1749,6 @@ elif current_view == "Monthly Attendance Matrix":
 
                 st.dataframe(matrix_df, use_container_width=True, hide_index=True)
 
-                # Excel-ready CSV Download
                 csv_export = matrix_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label=f"📥 Export {mat_month} {mat_year} Attendance Register (Excel / CSV)",
