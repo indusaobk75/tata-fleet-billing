@@ -8,3 +8,4 @@ google-auth
 reportlab
 fpdf2
 pypdf
+Pillow
