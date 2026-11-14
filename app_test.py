@@ -3,6 +3,7 @@ import os
 import json
 import time
 import re
+import base64
 import datetime
 import calendar
 import pandas as pd
@@ -22,6 +23,12 @@ try:
     FPDF_AVAILABLE = True
 except ImportError:
     FPDF_AVAILABLE = False
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 st.set_page_config(
     page_title="M/s INDU SAO | Enterprise Site ERP",
@@ -57,7 +64,7 @@ USER_COLUMNS = [
 WORKER_MASTER_COLS = [
     "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type", 
     "Base_Rate", "Contact_No", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", 
-    "Status", "Created_Date"
+    "Status", "Created_Date", "Photo_Base64"
 ]
 
 MUSTER_ROLL_COLS = [
@@ -88,6 +95,25 @@ CIVIL_ROLES = [
     "Plumber & Pipe Fitter", "Rigger / Scaffolding Specialist", "Tile & Stone Layer", 
     "Civil Construction Helper", "Civil Site Supervisor", "Other (Custom Entry)"
 ]
+
+def compress_photo_to_base64(uploaded_img):
+    """Compresses an uploaded passport photo into a clean <20KB JPEG base64 string for Google Sheets & PDF ID cards."""
+    if not uploaded_img:
+        return ""
+    try:
+        if PIL_AVAILABLE:
+            im = Image.open(uploaded_img).convert("RGB")
+            im.thumbnail((200, 240))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=78)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+        else:
+            raw = uploaded_img.getvalue()
+            if len(raw) < 42000:
+                return base64.b64encode(raw).decode("utf-8")
+            return ""
+    except Exception:
+        return ""
 
 @st.cache_resource
 def get_gspread_client():
@@ -250,14 +276,13 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     return pd.DataFrame(records)
 
 
-# ----------------- 2. DIRECT PDF GENERATORS (LETTERHEAD + 8-UP ATM ID CARDS) -----------------
+# ----------------- 2. DIRECT PDF GENERATORS (LETTERHEAD + 8-UP ATM ID CARDS WITH PHOTO) -----------------
 def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date):
     """Generates a direct print-ready A4 PDF with the exact M/s INDU SAO letterhead."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
 
-    # Exact Diagonal Header Banner
     pdf.set_fill_color(46, 125, 50)
     pdf.polygon([(0, 46), (210, 36), (210, 39), (0, 49)], style="F")
     pdf.set_fill_color(244, 180, 0)
@@ -265,7 +290,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.set_fill_color(56, 163, 241)
     pdf.polygon([(0, 0), (210, 0), (210, 33), (0, 43)], style="F")
 
-    # Left White Oval Emblem
     pdf.set_fill_color(255, 255, 255)
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.8)
@@ -305,7 +329,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
         pdf.set_x(64)
         pdf.cell(138, 4.2, line, ln=True)
 
-    # Comfortable 20mm Left & Right Margins
     pdf.set_y(55)
     pdf.set_left_margin(20)
     pdf.set_right_margin(20)
@@ -367,7 +390,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.cell(col_widths[3] + col_widths[4] + col_widths[5], 7, "", border=1, fill=True)
     pdf.ln(8)
 
-    # Left: M/s INDU SAO Proprietor | Right: Bank Sign & Stamp
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.cell(170, 5, "THANKING YOU", ln=True)
     pdf.ln(12)
@@ -382,7 +404,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.set_font("Helvetica", "B", 8.5)
     pdf.cell(65, 5, "Bank Sign & Stamp", align="C")
 
-    # Bottom Yellow + Sky Blue Strip
     pdf.set_fill_color(244, 180, 0)
     pdf.rect(0, 288, 210, 2.5, style="F")
     pdf.set_fill_color(56, 163, 241)
@@ -391,7 +412,7 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     return bytes(pdf.output())
 
 def generate_atm_id_cards_pdf(workers_df):
-    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet (2 cols x 4 rows)."""
+    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet with real Employee Photo if uploaded."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -418,7 +439,7 @@ def generate_atm_id_cards_pdf(workers_df):
         pdf.set_line_width(0.35)
         pdf.rect(x0, y0, card_w, card_h, style="D")
 
-        # Card Header Banner (Sky Blue + Yellow Accent)
+        # Card Header Banner
         pdf.set_fill_color(56, 163, 241)
         pdf.rect(x0, y0, card_w, 12.5, style="F")
         pdf.set_fill_color(244, 180, 0)
@@ -450,14 +471,27 @@ def generate_atm_id_cards_pdf(workers_df):
         pdf.set_xy(x0 + 57.5, y0 + 16.0)
         pdf.cell(25.0, 5.5, wid, align="C", fill=True)
 
-        # Photo Placeholder Box on Left
+        # Photo Box on Left (Renders Real Photo if Photo_Base64 is present)
         pdf.set_draw_color(148, 163, 184)
         pdf.set_fill_color(248, 250, 252)
         pdf.rect(x0 + 3.5, y0 + 16.0, 19.0, 23.0, style="DF")
-        pdf.set_text_color(100, 116, 139)
-        pdf.set_font("Helvetica", "", 6)
-        pdf.set_xy(x0 + 3.5, y0 + 25.5)
-        pdf.cell(19.0, 3.5, "PHOTO", align="C")
+        
+        photo_b64 = str(emp.get("Photo_Base64", "")).strip()
+        photo_drawn = False
+        if photo_b64 and len(photo_b64) > 50:
+            try:
+                img_bytes = base64.b64decode(photo_b64)
+                img_stream = io.BytesIO(img_bytes)
+                pdf.image(img_stream, x=x0 + 3.7, y=y0 + 16.2, w=18.6, h=22.6)
+                photo_drawn = True
+            except Exception:
+                photo_drawn = False
+
+        if not photo_drawn:
+            pdf.set_text_color(100, 116, 139)
+            pdf.set_font("Helvetica", "", 6)
+            pdf.set_xy(x0 + 3.5, y0 + 25.5)
+            pdf.cell(19.0, 3.5, "PHOTO", align="C")
 
         # Employee Details
         wname = str(emp.get("Full_Name", "")).upper()[:24]
@@ -506,6 +540,7 @@ TAB_REGISTRY = {
     "➕ Employee Enrolment": "Attendance",
     "📋 Employee Master Register": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
+    "Monthly Attendance Matrix": "Attendance",
     "Advance & Expense Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance",
 
@@ -538,6 +573,7 @@ WORKSPACES_TREE = [
             ("Employee Enrolment", "➕ Employee Enrolment"),
             ("Master Register & ID Cards", "📋 Employee Master Register"),
             ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
+            ("Monthly Attendance Matrix", "Monthly Attendance Matrix"),
             ("Advance & Expenses", "Advance & Expense Register"),
             ("Wages & Bank Letters", "Monthly Wages & Payout Summary")
         ]
@@ -888,7 +924,7 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        # MAIN MENU HEADER (Bold, Dark Slate)
+        # MAIN MENU HEADER
         if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
             st.session_state.selected_worker_card_id = None
@@ -896,7 +932,7 @@ with st.sidebar:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
-        # SUB-MENU ITEMS (Indented with Vertical Tree Line)
+        # SUB-MENU ITEMS
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
@@ -975,10 +1011,10 @@ st.markdown("<hr style='margin-top: 10px; margin-bottom: 18px; border: none; bor
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
-# ----------------- VIEW 1: EMPLOYEE ENROLMENT -----------------
+# ----------------- VIEW 1: EMPLOYEE ENROLMENT (WITH PHOTO UPLOAD) -----------------
 if current_view == "➕ Employee Enrolment":
     st.markdown("#### Employee Enrolment")
-    st.caption("Onboard workforce members with identity and bank account particulars")
+    st.caption("Onboard workforce members with identity, passport photo, and bank account particulars")
 
     entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload"], horizontal=True)
 
@@ -992,8 +1028,14 @@ if current_view == "➕ Employee Enrolment":
                 next_wid = generate_next_worker_id(w_div, w_df_current)
                 st.caption(f"Assigned System ID: **{next_wid}**")
 
-                w_name = st.text_input("Full Official Name", key="enrol_name").strip()
-                w_ref = st.text_input("Identity Verification Reference", key="enrol_ref", help="Distinguishes duplicate names").strip()
+                c_np1, c_np2 = st.columns([1.6, 1.0])
+                with c_np1:
+                    w_name = st.text_input("Full Official Name", key="enrol_name").strip()
+                    w_ref = st.text_input("Identity Verification Reference", key="enrol_ref", help="Distinguishes duplicate names").strip()
+                with c_np2:
+                    w_photo_file = st.file_uploader("Passport Photo (Optional)", type=["jpg", "jpeg", "png"], key="enrol_photo")
+                    if w_photo_file:
+                        st.image(w_photo_file, width=85)
 
                 role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
                 sel_role = st.selectbox("Designation / Role", role_choices, key="enrol_role")
@@ -1031,6 +1073,7 @@ if current_view == "➕ Employee Enrolment":
                         st.error("Please specify custom role.")
                     else:
                         w_df = load_sheet_df("worker_master")
+                        photo_b64_str = compress_photo_to_base64(w_photo_file)
                         new_row = {
                             "Worker_ID": next_wid,
                             "Full_Name": w_name,
@@ -1044,7 +1087,8 @@ if current_view == "➕ Employee Enrolment":
                             "Bank_IFSC_Code": b_ifsc,
                             "Bank_Branch_Details": b_branch,
                             "Status": w_status,
-                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
+                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
+                            "Photo_Base64": photo_b64_str
                         }
                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
@@ -1053,10 +1097,10 @@ if current_view == "➕ Employee Enrolment":
 
         with c_info:
             with st.container(border=True):
-                st.markdown("###### Routing Guidelines")
+                st.markdown("###### Photo & Routing Guidelines")
+                st.caption("• **Employee Photo:** Uploaded photos are compressed automatically and printed directly onto the 8-up ATM ID Cards PDF.")
                 st.caption("• **Bank of India (BOI):** IFSC codes starting with `BKID` automatically route to the BOI internal transfer batch.")
                 st.caption("• **Other Banks (NEFT):** All non-BOI IFSC codes route to the NEFT covering sheet.")
-                st.caption("• **Cash Settlement:** Leave Bank Account blank if the worker receives cash disbursements.")
 
     else:
         with st.container(border=True):
@@ -1097,7 +1141,8 @@ if current_view == "➕ Employee Enrolment":
                             "Bank_IFSC_Code": str(b_row.get("Bank_IFSC_Code", "")).strip().upper(),
                             "Bank_Branch_Details": str(b_row.get("Bank_Branch_Details", "")).strip().upper(),
                             "Status": str(b_row.get("Status", "ACTIVE")).strip().upper(),
-                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d")
+                            "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
+                            "Photo_Base64": ""
                         })
 
                     fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
@@ -1106,14 +1151,14 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
-# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, EDITABLE PROFILE LEDGER & SELECTIVE 8-UP ATM ID CARDS -----------------
+# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, PHOTO UPDATE & SELECTIVE 8-UP ATM ID CARDS -----------------
 elif current_view == "📋 Employee Master Register":
     w_table = load_sheet_df("worker_master")
     muster_all = load_sheet_df("muster_roll")
     adv_all = load_sheet_df("worker_advances")
     tata_all = load_sheet_df("tata_form_xvii")
 
-    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE & EDITABLE ATTENDANCE HISTORY
+    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE, PHOTO UPLOAD & EDITABLE ATTENDANCE HISTORY
     if st.session_state.selected_worker_card_id:
         target_wid = st.session_state.selected_worker_card_id
         
@@ -1137,6 +1182,7 @@ elif current_view == "📋 Employee Master Register":
             emp_ifsc = str(emp.get("Bank_IFSC_Code", "")) or "N/A"
             emp_branch = str(emp.get("Bank_Branch_Details", "")) or "Cash Disbursement"
             emp_contact = str(emp.get("Contact_No", "")) or "N/A"
+            emp_photo_b64 = str(emp.get("Photo_Base64", "")).strip()
 
             with top_nav2:
                 if FPDF_AVAILABLE:
@@ -1150,9 +1196,30 @@ elif current_view == "📋 Employee Master Register":
                     )
 
             with st.container(border=True):
-                p_c1, p_c2 = st.columns([2.2, 1.3])
+                p_c0, p_c1, p_c2 = st.columns([0.65, 1.85, 1.25])
+                with p_c0:
+                    if emp_photo_b64 and len(emp_photo_b64) > 50:
+                        st.markdown(
+                            f'<img src="data:image/jpeg;base64,{emp_photo_b64}" style="width: 92px; height: 110px; object-fit: cover; border-radius: 8px; border: 1px solid #cbd5e1;" />',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            '<div style="width: 92px; height: 110px; background: #f1f5f9; border: 1px dashed #94a3b8; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.72rem; color: #64748b;">No Photo</div>',
+                            unsafe_allow_html=True
+                        )
+                    new_photo_up = st.file_uploader("Update Photo", type=["jpg", "jpeg", "png"], key=f"upd_photo_{target_wid}", label_visibility="collapsed")
+                    if new_photo_up:
+                        if st.button("Save Photo", key=f"save_ph_{target_wid}", type="primary", use_container_width=True):
+                            b64_new = compress_photo_to_base64(new_photo_up)
+                            if b64_new:
+                                w_table.loc[w_table["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = b64_new
+                                if save_sheet_df("worker_master", w_table[WORKER_MASTER_COLS]):
+                                    st.success("Photo updated!")
+                                    st.rerun()
+
                 with p_c1:
-                    st.markdown(f"### 🪪 {emp_name} (`{target_wid}`)")
+                    st.markdown(f"### {emp_name} (`{target_wid}`)")
                     st.markdown(f"**Division:** {emp_div} &nbsp;|&nbsp; **Role:** {emp_role} &nbsp;|&nbsp; **Contact:** {emp_contact}")
                     st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}** &nbsp;|&nbsp; **Status:** `{emp.get('Status', 'ACTIVE')}`")
                 with p_c2:
@@ -1268,7 +1335,7 @@ elif current_view == "📋 Employee Master Register":
     # MASTER DIRECTORY + SELECTIVE 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
     else:
         st.markdown("#### Employee Master Register & Selective ATM ID Cards")
-        st.caption("Inspect/edit individual employee attendance ledgers or select specific employees to print 8-up ATM-sized ID cards")
+        st.caption("Inspect/edit employee profiles, upload photos, or select specific employees to print 8-up ATM-sized ID cards")
 
         if w_table.empty or "Worker_ID" not in w_table.columns:
             st.info("No employee records found.")
@@ -1301,7 +1368,7 @@ elif current_view == "📋 Employee Master Register":
             act_c1, act_c2 = st.columns([1.25, 1.35], gap="medium")
             with act_c1:
                 with st.container(border=True):
-                    st.markdown("###### 🔍 Open Employee Profile & Edit Attendance")
+                    st.markdown("###### 🔍 Open Employee Profile, Photo & Attendance")
                     emp_choices = {
                         f"{r['Worker_ID']} — {r['Full_Name']} ({r['Designation']})": str(r["Worker_ID"])
                         for _, r in disp_table.iterrows()
@@ -1350,25 +1417,28 @@ elif current_view == "📋 Employee Master Register":
                     elif not FPDF_AVAILABLE:
                         st.warning("Add 'fpdf2' to requirements.txt to enable PDF ID cards.")
 
-            req_cols = ["Worker_ID", "Full_Name", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
-            safe_cols = [c for c in req_cols if c in disp_table.columns]
-            st.dataframe(disp_table[safe_cols], use_container_width=True, hide_index=True)
+            disp_table_view = disp_table.copy()
+            disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅ Uploaded" if str(x).strip() else "—")
+            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
+            safe_cols = [c for c in req_cols if c in disp_table_view.columns]
+            st.dataframe(disp_table_view[safe_cols], use_container_width=True, hide_index=True)
 
 
-# ----------------- VIEW 3: DAILY FIELD MUSTER ROLL (WITH SELECTIVE MARKING & CLEAR SITE PURPOSE) -----------------
+# ----------------- VIEW 3: DAILY FIELD MUSTER ROLL (WITH SAVED/PENDING STATUS & DATE TRACKER) -----------------
 elif current_view == "Daily Muster Roll (Field Attendance)":
     st.markdown("#### Daily Field Muster Roll")
-    st.caption("Log daily shift attendance and separate Tata In-Plant Compliance vs Private/Internal Site Work")
+    st.caption("Log daily shift attendance with real-time Saved vs Pending date tracking")
 
     w_master = load_sheet_df("worker_master")
     if w_master.empty or "Worker_ID" not in w_master.columns:
         st.warning("No employees available to mark attendance.")
     else:
         active_workers = w_master[w_master["Status"] == "ACTIVE"].copy()
+        muster_df = load_sheet_df("muster_roll")
 
         top_m1, top_m2, top_m3 = st.columns([1.1, 1.2, 1.2])
         with top_m1:
-            muster_date = st.date_input("Date", value=datetime.date.today(), key="muster_dt_pick")
+            muster_date = st.date_input("Select Date", value=datetime.date.today(), key="muster_dt_pick")
             muster_date_str = muster_date.strftime("%Y-%m-%d")
         with top_m2:
             sel_division = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
@@ -1378,10 +1448,44 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         if sel_division != "All Divisions":
             active_workers = active_workers[active_workers["Division"] == sel_division]
 
-        muster_df = load_sheet_df("muster_roll")
         day_records = pd.DataFrame()
         if not muster_df.empty and "Date" in muster_df.columns:
             day_records = muster_df[muster_df["Date"].astype(str) == muster_date_str]
+
+        # CLEAR SAVED vs PENDING INDICATOR FOR SELECTED DATE + MONTHLY LOGGED DATES STRIP
+        ym_prefix = muster_date.strftime("%Y-%m")
+        logged_dates_this_month = []
+        if not muster_df.empty and "Date" in muster_df.columns:
+            m_dates = muster_df[muster_df["Date"].astype(str).str.startswith(ym_prefix)]["Date"].astype(str).unique().tolist()
+            logged_dates_this_month = sorted(m_dates)
+
+        if not day_records.empty:
+            sup_by = str(day_records.iloc[0].get("Supervisor", "Admin"))
+            p_cnt = len(day_records[day_records["Attendance"] == "P"])
+            a_cnt = len(day_records[day_records["Attendance"] == "A"])
+            st.success(f"🟢 **SAVED / ALREADY LOGGED** for **{muster_date.strftime('%d %b %Y')}** ({len(day_records)} workers • {p_cnt} Present, {a_cnt} Absent • Logged by `{sup_by}`). You can edit and re-save anytime.")
+        else:
+            st.warning(f"🟡 **PENDING — NOT LOGGED YET** for **{muster_date.strftime('%d %b %Y')}**. Mark attendance below and click 'Save Daily Muster Roll'.")
+
+        # Show all logged dates in the current selected month so user immediately sees what is done vs pending
+        days_in_m = calendar.monthrange(muster_date.year, muster_date.month)[1]
+        logged_day_nums = {int(d.split("-")[2]) for d in logged_dates_this_month if len(d.split("-")) == 3}
+        badges_html = ""
+        for d_num in range(1, days_in_m + 1):
+            if d_num in logged_day_nums:
+                badges_html += f"<span style='display:inline-block; background:#dcfce7; color:#166534; border:1px solid #86efac; border-radius:5px; padding:1px 6px; margin:2px; font-size:0.74rem; font-weight:700;'>{d_num:02d} ✓</span>"
+            else:
+                badges_html += f"<span style='display:inline-block; background:#f8fafc; color:#94a3b8; border:1px solid #e2e8f0; border-radius:5px; padding:1px 6px; margin:2px; font-size:0.74rem;'>{d_num:02d}</span>"
+
+        st.markdown(
+            f"""
+            <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:8px 12px; margin-bottom:10px;">
+                <div style="font-size:0.76rem; font-weight:600; color:#334155; margin-bottom:4px;">📅 {muster_date.strftime('%B %Y')} Entry Status (Green ✓ = Saved, Gray = Pending):</div>
+                <div>{badges_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         cache_key = f"att_state_{muster_date_str}"
         if cache_key not in st.session_state:
@@ -1405,7 +1509,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         # SELECTIVE BULK MARKING PANEL
         with st.container(border=True):
             st.markdown("###### ⚡ Selective Quick-Mark Tool")
-            st.caption("Select specific workers below (or leave empty to apply to all shown workers). Note: 'Tata Site' counts toward Tata Form XVII & RA Billing; 'Private / Internal' tracks non-Tata site costing.")
+            st.caption("Select specific workers below (or leave empty to apply to all shown workers).")
             
             worker_map = {
                 f"{r['Worker_ID']} — {r['Full_Name']}": str(r["Worker_ID"])
@@ -1506,8 +1610,113 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
             updated_m = pd.concat([all_m, pd.DataFrame(marked_rows)], ignore_index=True)
             if save_sheet_df("muster_roll", updated_m[MUSTER_ROLL_COLS]):
-                st.success("Daily Muster Roll saved.")
+                st.success(f"Daily Muster Roll for {muster_date_str} saved!")
                 st.rerun()
+
+
+# ----------------- NEW VIEW: MONTHLY ATTENDANCE MATRIX (EXCEL-STYLE REGISTER FOR PRESENT EMPLOYEES) -----------------
+elif current_view == "Monthly Attendance Matrix":
+    st.markdown("#### Monthly Attendance Matrix (Excel Register)")
+    st.caption("Day-by-day attendance register showing only employees with at least 1 Present or Half-Day in the selected month")
+
+    w_master = load_sheet_df("worker_master")
+    muster_df = load_sheet_df("muster_roll")
+
+    mc1, mc2, mc3 = st.columns([1.0, 1.2, 1.3])
+    with mc1:
+        mat_year = st.selectbox("Year", [2025, 2026, 2027], index=1, key="mat_yr")
+    with mc2:
+        mat_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1, key="mat_mo")
+    with mc3:
+        mat_div = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="mat_dv")
+
+    m_num = list(calendar.month_name).index(mat_month)
+    ym_str = f"{mat_year}-{m_num:02d}"
+    days_cnt = calendar.monthrange(mat_year, m_num)[1]
+
+    if muster_df.empty or "Date" not in muster_df.columns:
+        st.info(f"No attendance data recorded for {mat_month} {mat_year}.")
+    else:
+        m_sub = muster_df[muster_df["Date"].astype(str).str.startswith(ym_str)].copy()
+        if mat_div != "All Divisions" and "Division" in m_sub.columns:
+            m_sub = m_sub[m_sub["Division"] == mat_div]
+
+        if m_sub.empty:
+            st.info(f"No attendance entries found for {mat_month} {mat_year}.")
+        else:
+            # Filter ONLY workers who have at least 1 'P' or 'HD' in this month
+            present_wids = m_sub[m_sub["Attendance"].isin(["P", "HD"])]["Worker_ID"].astype(str).unique().tolist()
+            
+            if not present_wids:
+                st.warning(f"No employee has any Present ('P' or 'HD') days in {mat_month} {mat_year}.")
+            else:
+                matrix_rows = []
+                for wid in sorted(present_wids):
+                    w_logs = m_sub[m_sub["Worker_ID"].astype(str) == wid]
+                    w_name = str(w_logs.iloc[0].get("Worker_Name", ""))
+                    w_div_val = str(w_logs.iloc[0].get("Division", ""))
+                    
+                    # Lookup designation from worker_master if available
+                    w_desig = ""
+                    if not w_master.empty and "Worker_ID" in w_master.columns:
+                        wm_hit = w_master[w_master["Worker_ID"].astype(str) == wid]
+                        if not wm_hit.empty:
+                            w_name = str(wm_hit.iloc[0].get("Full_Name", w_name))
+                            w_desig = str(wm_hit.iloc[0].get("Designation", ""))
+
+                    row_dict = {
+                        "Worker ID": wid,
+                        "Employee Name": w_name,
+                        "Designation": w_desig,
+                        "Division": w_div_val
+                    }
+
+                    # Map day 01..31
+                    day_map = {}
+                    for _, lr in w_logs.iterrows():
+                        d_parts = str(lr["Date"]).split("-")
+                        if len(d_parts) == 3:
+                            day_map[int(d_parts[2])] = str(lr["Attendance"])
+
+                    for d_i in range(1, days_cnt + 1):
+                        row_dict[f"{d_i:02d}"] = day_map.get(d_i, "")
+
+                    tata_p = len(w_logs[(w_logs["Duty_Location"] == "Tata Site (In-Plant)") & (w_logs["Attendance"] == "P")]) + (
+                        len(w_logs[(w_logs["Duty_Location"] == "Tata Site (In-Plant)") & (w_logs["Attendance"] == "HD")]) * 0.5
+                    )
+                    pvt_p = len(w_logs[(w_logs["Duty_Location"] == "Private / Internal") & (w_logs["Attendance"] == "P")]) + (
+                        len(w_logs[(w_logs["Duty_Location"] == "Private / Internal") & (w_logs["Attendance"] == "HD")]) * 0.5
+                    )
+                    tot_present = tata_p + pvt_p
+                    tot_ot = pd.to_numeric(w_logs["OT_Hours"], errors="coerce").fillna(0.0).sum()
+
+                    row_dict["Tata Days"] = tata_p
+                    row_dict["Pvt Days"] = pvt_p
+                    row_dict["Total Days"] = tot_present
+                    row_dict["OT Hrs"] = tot_ot
+
+                    matrix_rows.append(row_dict)
+
+                matrix_df = pd.DataFrame(matrix_rows)
+
+                # Summary KPIs
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Active Present Workforce", f"{len(matrix_df)} Workers")
+                k2.metric("Total Tata Site Man-Days", f"{matrix_df['Tata Days'].sum():.1f}")
+                k3.metric("Total Private Man-Days", f"{matrix_df['Pvt Days'].sum():.1f}")
+                k4.metric("Total Overtime Hours", f"{matrix_df['OT Hrs'].sum():.1f} hrs")
+
+                st.dataframe(matrix_df, use_container_width=True, hide_index=True)
+
+                # Excel-ready CSV Download
+                csv_export = matrix_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=f"📥 Export {mat_month} {mat_year} Attendance Register (Excel / CSV)",
+                    data=csv_export,
+                    file_name=f"M_s_INDU_SAO_Attendance_Matrix_{ym_str}.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
 
 
 # ----------------- VIEW 4: ADVANCE REGISTER -----------------
