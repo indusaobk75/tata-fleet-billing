@@ -1106,14 +1106,14 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
-# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, PROFILE LEDGER & 8-UP ATM ID CARDS PDF -----------------
+# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, EDITABLE PROFILE LEDGER & SELECTIVE 8-UP ATM ID CARDS -----------------
 elif current_view == "📋 Employee Master Register":
     w_table = load_sheet_df("worker_master")
     muster_all = load_sheet_df("muster_roll")
     adv_all = load_sheet_df("worker_advances")
     tata_all = load_sheet_df("tata_form_xvii")
 
-    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE & FULL ATTENDANCE HISTORY
+    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE & EDITABLE ATTENDANCE HISTORY
     if st.session_state.selected_worker_card_id:
         target_wid = st.session_state.selected_worker_card_id
         
@@ -1153,8 +1153,8 @@ elif current_view == "📋 Employee Master Register":
                 p_c1, p_c2 = st.columns([2.2, 1.3])
                 with p_c1:
                     st.markdown(f"### 🪪 {emp_name} (`{target_wid}`)")
-                    st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Contact:** {emp_contact}")
-                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}**  |  **Status:** `{emp.get('Status', 'ACTIVE')}`")
+                    st.markdown(f"**Division:** {emp_div} &nbsp;|&nbsp; **Role:** {emp_role} &nbsp;|&nbsp; **Contact:** {emp_contact}")
+                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}** &nbsp;|&nbsp; **Status:** `{emp.get('Status', 'ACTIVE')}`")
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
                     st.markdown(f"**A/C No:** `{emp_acc}`")
@@ -1172,14 +1172,20 @@ elif current_view == "📋 Employee Master Register":
             if not tata_all.empty and "Worker_Name" in tata_all.columns:
                 emp_tata = tata_all[tata_all["Worker_Name"].astype(str).str.strip().str.upper() == emp_name.strip().upper()].copy()
 
-            c_f1, _ = st.columns([1, 2.5])
+            # YEAR + MONTH FILTER FOR EMPLOYEE LEDGER
+            c_f1, c_f2, _ = st.columns([1.0, 1.2, 2.0])
             with c_f1:
-                card_month_filter = st.selectbox("Filter Attendance Month", ["All Months"] + list(calendar.month_name)[1:], key="card_m_flt")
+                card_year_filter = st.selectbox("Filter Year", ["All Years", "2025", "2026", "2027"], index=2, key="card_y_flt")
+            with c_f2:
+                card_month_filter = st.selectbox("Filter Month", ["All Months"] + list(calendar.month_name)[1:], key="card_m_flt")
 
-            if not emp_muster.empty and card_month_filter != "All Months":
-                m_idx = list(calendar.month_name).index(card_month_filter)
-                m_prefix = f"-{m_idx:02d}-"
-                emp_muster = emp_muster[emp_muster["Date"].astype(str).str.contains(m_prefix)]
+            if not emp_muster.empty:
+                if card_year_filter != "All Years":
+                    emp_muster = emp_muster[emp_muster["Date"].astype(str).str.startswith(card_year_filter)]
+                if card_month_filter != "All Months":
+                    m_idx = list(calendar.month_name).index(card_month_filter)
+                    m_prefix = f"-{m_idx:02d}-"
+                    emp_muster = emp_muster[emp_muster["Date"].astype(str).str.contains(m_prefix)]
 
             tot_p = len(emp_muster[emp_muster["Attendance"] == "P"]) if not emp_muster.empty else 0
             tot_hd = len(emp_muster[emp_muster["Attendance"] == "HD"]) if not emp_muster.empty else 0
@@ -1196,13 +1202,49 @@ elif current_view == "📋 Employee Master Register":
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-            det_c1, det_c2 = st.columns([1.4, 1.0], gap="large")
+            # EDITABLE ATTENDANCE LEDGER + COMPLIANCE PAYOUTS
+            det_c1, det_c2 = st.columns([1.5, 1.0], gap="large")
             with det_c1:
                 with st.container(border=True):
-                    st.markdown("###### 📅 Daily Field Attendance Log")
+                    st.markdown("###### 📅 Daily Field Attendance Log (Direct Edit)")
+                    st.caption("Edit Status, Location, OT Hours, or Remarks below and click 'Save Attendance Changes' to sync everywhere")
+                    
                     if not emp_muster.empty:
-                        disp_m_cols = [c for c in ["Date", "Attendance", "Duty_Location", "OT_Hours", "Supervisor", "Remarks"] if c in emp_muster.columns]
-                        st.dataframe(emp_muster.sort_values(by="Date", ascending=False)[disp_m_cols], use_container_width=True, hide_index=True)
+                        emp_muster_sorted = emp_muster.sort_values(by="Date", ascending=False).copy()
+                        emp_muster_sorted["OT_Hours"] = pd.to_numeric(emp_muster_sorted["OT_Hours"], errors="coerce").fillna(0.0)
+                        edit_cols = ["Date", "Attendance", "Duty_Location", "OT_Hours", "Remarks"]
+                        
+                        edited_emp_df = st.data_editor(
+                            emp_muster_sorted[edit_cols],
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=["Date"],
+                            column_config={
+                                "Attendance": st.column_config.SelectboxColumn("Status", options=["P", "HD", "A", "WO"], required=True),
+                                "Duty_Location": st.column_config.SelectboxColumn("Location", options=["Tata Site (In-Plant)", "Private / Internal"], required=True),
+                                "OT_Hours": st.column_config.NumberColumn("OT (Hrs)", min_value=0.0, max_value=16.0, step=0.5),
+                                "Remarks": st.column_config.TextColumn("Remarks")
+                            },
+                            key=f"editor_att_{target_wid}"
+                        )
+
+                        if st.button("💾 Save Attendance Changes", type="primary", use_container_width=True, key=f"save_edit_att_{target_wid}"):
+                            full_m_df = load_sheet_df("muster_roll")
+                            if not full_m_df.empty:
+                                for _, erow in edited_emp_df.iterrows():
+                                    d_val = str(erow["Date"])
+                                    mask = (full_m_df["Worker_ID"].astype(str) == target_wid) & (full_m_df["Date"].astype(str) == d_val)
+                                    full_m_df.loc[mask, "Attendance"] = str(erow["Attendance"])
+                                    full_m_df.loc[mask, "Duty_Location"] = str(erow["Duty_Location"])
+                                    full_m_df.loc[mask, "OT_Hours"] = float(erow["OT_Hours"] or 0.0)
+                                    full_m_df.loc[mask, "Remarks"] = str(erow["Remarks"] or "")
+                                
+                                if save_sheet_df("muster_roll", full_m_df[MUSTER_ROLL_COLS]):
+                                    for k in list(st.session_state.keys()):
+                                        if str(k).startswith("att_state_"):
+                                            del st.session_state[k]
+                                    st.success("Attendance updated and synced across all modules!")
+                                    st.rerun()
                     else:
                         st.info("No field attendance logs recorded for this period.")
 
@@ -1223,10 +1265,10 @@ elif current_view == "📋 Employee Master Register":
                     else:
                         st.info("No advances disbursed.")
 
-    # MASTER DIRECTORY + 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
+    # MASTER DIRECTORY + SELECTIVE 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
     else:
-        st.markdown("#### Employee Master Register & ATM ID Cards")
-        st.caption("Inspect complete employee attendance ledgers or download 8-up ATM-sized ID cards on A4 sheets")
+        st.markdown("#### Employee Master Register & Selective ATM ID Cards")
+        st.caption("Inspect/edit individual employee attendance ledgers or select specific employees to print 8-up ATM-sized ID cards")
 
         if w_table.empty or "Worker_ID" not in w_table.columns:
             st.info("No employee records found.")
@@ -1256,11 +1298,10 @@ elif current_view == "📋 Employee Master Register":
                     disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
                 ]
 
-            # Action Bar: Open Employee Profile Card OR Download 8-Up ATM ID Cards PDF
-            act_c1, act_c2 = st.columns([1.4, 1.1], gap="medium")
+            act_c1, act_c2 = st.columns([1.25, 1.35], gap="medium")
             with act_c1:
                 with st.container(border=True):
-                    st.markdown("###### 🔍 Open Employee Profile & Attendance Ledger")
+                    st.markdown("###### 🔍 Open Employee Profile & Edit Attendance")
                     emp_choices = {
                         f"{r['Worker_ID']} — {r['Full_Name']} ({r['Designation']})": str(r["Worker_ID"])
                         for _, r in disp_table.iterrows()
@@ -1276,14 +1317,32 @@ elif current_view == "📋 Employee Master Register":
 
             with act_c2:
                 with st.container(border=True):
-                    st.markdown("###### 🪪 Print 8-Up ATM ID Cards (A4 PDF)")
-                    if FPDF_AVAILABLE and not disp_table.empty:
-                        cards_pdf_bytes = generate_atm_id_cards_pdf(disp_table)
-                        pages_cnt = (len(disp_table) + 7) // 8
+                    st.markdown("###### 🪪 Selective 8-Up ATM ID Cards (A4 PDF)")
+                    all_card_options = {
+                        f"{r['Worker_ID']} — {r['Full_Name']}": str(r["Worker_ID"])
+                        for _, r in disp_table.iterrows()
+                    }
+                    sel_card_labels = st.multiselect(
+                        "Select Employees for ID Cards (Leave empty to select all filtered)",
+                        options=list(all_card_options.keys()),
+                        placeholder="Choose specific employees to print cards..."
+                    )
+                    
+                    target_wids_for_cards = [all_card_options[lbl] for lbl in sel_card_labels] if sel_card_labels else list(all_card_options.values())
+                    cards_subset_df = disp_table[disp_table["Worker_ID"].astype(str).isin(target_wids_for_cards)]
+
+                    if FPDF_AVAILABLE and not cards_subset_df.empty:
+                        cards_pdf_bytes = generate_atm_id_cards_pdf(cards_subset_df)
+                        pages_cnt = (len(cards_subset_df) + 7) // 8
+                        btn_lbl = (
+                            f"📥 Download Selected ID Cards PDF ({len(cards_subset_df)} Cards • {pages_cnt} Page)"
+                            if sel_card_labels else
+                            f"📥 Download All Filtered ID Cards PDF ({len(cards_subset_df)} Cards • {pages_cnt} Page)"
+                        )
                         st.download_button(
-                            label=f"📥 Download ATM ID Cards PDF ({len(disp_table)} Cards • {pages_cnt} A4 Pages)",
+                            label=btn_lbl,
                             data=cards_pdf_bytes,
-                            file_name=f"M_s_INDU_SAO_Employee_ID_Cards_{datetime.date.today().strftime('%Y%m%d')}.pdf",
+                            file_name=f"M_s_INDU_SAO_ID_Cards_{datetime.date.today().strftime('%Y%m%d')}.pdf",
                             mime="application/pdf",
                             type="primary",
                             use_container_width=True
@@ -1296,10 +1355,10 @@ elif current_view == "📋 Employee Master Register":
             st.dataframe(disp_table[safe_cols], use_container_width=True, hide_index=True)
 
 
-# ----------------- VIEW 3: DAILY FIELD MUSTER ROLL -----------------
+# ----------------- VIEW 3: DAILY FIELD MUSTER ROLL (WITH SELECTIVE MARKING & CLEAR SITE PURPOSE) -----------------
 elif current_view == "Daily Muster Roll (Field Attendance)":
     st.markdown("#### Daily Field Muster Roll")
-    st.caption("Log daily shift attendance and deployment location (Tata Plant vs Private Works)")
+    st.caption("Log daily shift attendance and separate Tata In-Plant Compliance vs Private/Internal Site Work")
 
     w_master = load_sheet_df("worker_master")
     if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -1343,29 +1402,57 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     "att": def_att, "ot": def_ot, "loc": def_loc
                 }
 
-        b_c1, b_c2, b_c3 = st.columns(3)
-        with b_c1:
-            if st.button("Mark All Present (Tata Site)", use_container_width=True):
-                for wid in active_workers["Worker_ID"].astype(str):
-                    if wid in st.session_state[cache_key]:
-                        st.session_state[cache_key][wid]["att"] = "P"
-                        st.session_state[cache_key][wid]["loc"] = "Tata Site (In-Plant)"
-                st.rerun()
-        with b_c2:
-            if st.button("Mark All Present (Private Work)", use_container_width=True):
-                for wid in active_workers["Worker_ID"].astype(str):
-                    if wid in st.session_state[cache_key]:
-                        st.session_state[cache_key][wid]["att"] = "P"
-                        st.session_state[cache_key][wid]["loc"] = "Private / Internal"
-                st.rerun()
-        with b_c3:
-            if st.button("Mark All Absent", use_container_width=True):
-                for wid in active_workers["Worker_ID"].astype(str):
-                    if wid in st.session_state[cache_key]:
-                        st.session_state[cache_key][wid]["att"] = "A"
-                st.rerun()
+        # SELECTIVE BULK MARKING PANEL
+        with st.container(border=True):
+            st.markdown("###### ⚡ Selective Quick-Mark Tool")
+            st.caption("Select specific workers below (or leave empty to apply to all shown workers). Note: 'Tata Site' counts toward Tata Form XVII & RA Billing; 'Private / Internal' tracks non-Tata site costing.")
+            
+            worker_map = {
+                f"{r['Worker_ID']} — {r['Full_Name']}": str(r["Worker_ID"])
+                for _, r in active_workers.iterrows()
+            }
+            
+            sm_c1, sm_c2, sm_c3 = st.columns([2.0, 1.3, 1.0])
+            with sm_c1:
+                chosen_labels = st.multiselect(
+                    "Choose Specific Workers",
+                    options=list(worker_map.keys()),
+                    placeholder="Leave empty for ALL workers, or pick specific names...",
+                    label_visibility="collapsed"
+                )
+            with sm_c2:
+                bulk_action = st.selectbox(
+                    "Quick Action",
+                    [
+                        "Present — Tata Site (In-Plant)",
+                        "Present — Private / Internal",
+                        "Half Day (HD) — Tata Site",
+                        "Absent (A)",
+                        "Week Off (WO)"
+                    ],
+                    label_visibility="collapsed"
+                )
+            with sm_c3:
+                if st.button("Apply to Selected", type="primary", use_container_width=True):
+                    target_wids = [worker_map[l] for l in chosen_labels] if chosen_labels else list(worker_map.values())
+                    for wid in target_wids:
+                        if wid in st.session_state[cache_key]:
+                            if bulk_action == "Present — Tata Site (In-Plant)":
+                                st.session_state[cache_key][wid]["att"] = "P"
+                                st.session_state[cache_key][wid]["loc"] = "Tata Site (In-Plant)"
+                            elif bulk_action == "Present — Private / Internal":
+                                st.session_state[cache_key][wid]["att"] = "P"
+                                st.session_state[cache_key][wid]["loc"] = "Private / Internal"
+                            elif bulk_action == "Half Day (HD) — Tata Site":
+                                st.session_state[cache_key][wid]["att"] = "HD"
+                                st.session_state[cache_key][wid]["loc"] = "Tata Site (In-Plant)"
+                            elif bulk_action == "Absent (A)":
+                                st.session_state[cache_key][wid]["att"] = "A"
+                            elif bulk_action == "Week Off (WO)":
+                                st.session_state[cache_key][wid]["att"] = "WO"
+                    st.rerun()
 
-        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         grid_cols = st.columns(2, gap="medium")
         
         for idx, (_, w_row) in enumerate(active_workers.iterrows()):
@@ -1385,7 +1472,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     with r_c1:
                         cur_state["att"] = st.selectbox("Status", ["P", "HD", "A", "WO"], index=["P", "HD", "A", "WO"].index(cur_state.get("att", "P")), key=f"att_s_{wid}")
                     with r_c2:
-                        cur_state["loc"] = st.selectbox("Location", ["Tata Site (In-Plant)", "Private / Internal"], index=["Tata Site (In-Plant)", "Private / Internal"].index(cur_state.get("loc", "Tata Site (In-Plant)")), key=f"loc_s_{wid}")
+                        cur_state["loc"] = st.selectbox("Duty Site", ["Tata Site (In-Plant)", "Private / Internal"], index=["Tata Site (In-Plant)", "Private / Internal"].index(cur_state.get("loc", "Tata Site (In-Plant)")), key=f"loc_s_{wid}")
                     with r_c3:
                         cur_state["ot"] = st.number_input("OT (Hrs)", min_value=0.0, max_value=16.0, step=0.5, value=float(cur_state.get("ot", 0.0)), key=f"ot_s_{wid}")
 
@@ -1478,7 +1565,7 @@ elif current_view == "Advance & Expense Register":
 # ----------------- VIEW 5: WAGES, FORM XVII & DIRECT PDF BANK LETTERS -----------------
 elif current_view == "Monthly Wages & Payout Summary":
     st.markdown("#### Monthly Wages, Form XVII Audit & Direct PDF Bank Letters")
-    st.caption("Reconcile field duty with Tata Steel Form XVII and download direct print-ready PDF covering letters")
+    st.caption("Reconcile Tata In-Plant field duty with Tata Steel Form XVII and download direct print-ready PDF covering letters")
 
     w_master = load_sheet_df("worker_master")
     muster_df = load_sheet_df("muster_roll")
@@ -1583,7 +1670,7 @@ elif current_view == "Monthly Wages & Payout Summary":
                 if not xvii_file.name.lower().endswith(".pdf") or PYPDF_AVAILABLE:
                     st.error("Could not find 'Net_Amount_Paid' column in uploaded file.")
 
-    st.markdown(f"###### Reconciliation Cockpit ({wage_period_str} Field Duty vs Form XVII)")
+    st.markdown(f"###### Reconciliation Cockpit ({wage_period_str} Tata Site Duty vs Form XVII)")
 
     if not tata_df.empty and "Wages_Period" in tata_df.columns:
         tata_cur = tata_df[tata_df["Wages_Period"].apply(period_matches)]
@@ -1605,13 +1692,18 @@ elif current_view == "Monthly Wages & Payout Summary":
             b_ifsc = str(w.get("Bank_IFSC_Code", "")).strip().upper()
             b_branch = str(w.get("Bank_Branch_Details", "")).strip().upper()
 
-            sup_days = 0.0
+            tata_field_days = 0.0
+            pvt_field_days = 0.0
             if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
                 w_m = muster_df[(muster_df["Worker_ID"].astype(str) == wid) & 
                                (muster_df["Date"].astype(str) >= d_start) & 
-                               (muster_df["Date"].astype(str) <= d_end) & 
-                               (muster_df["Duty_Location"] == "Tata Site (In-Plant)")]
-                sup_days = len(w_m[w_m["Attendance"] == "P"]) + (len(w_m[w_m["Attendance"] == "HD"]) * 0.5)
+                               (muster_df["Date"].astype(str) <= d_end)]
+                
+                w_tata = w_m[w_m["Duty_Location"] == "Tata Site (In-Plant)"]
+                tata_field_days = len(w_tata[w_tata["Attendance"] == "P"]) + (len(w_tata[w_tata["Attendance"] == "HD"]) * 0.5)
+
+                w_pvt = w_m[w_m["Duty_Location"] == "Private / Internal"]
+                pvt_field_days = len(w_pvt[w_pvt["Attendance"] == "P"]) + (len(w_pvt[w_pvt["Attendance"] == "HD"]) * 0.5)
 
             tata_approved_days = 0.0
             tata_net_paid = 0.0
@@ -1623,18 +1715,19 @@ elif current_view == "Monthly Wages & Payout Summary":
                     tata_net_paid = float(pd.to_numeric(tata_match.iloc[0].get("Net_Amount_Paid", 0.0), errors="coerce") or 0.0)
 
             status_badge = "🟢 Matched"
-            if tata_approved_days == 0 and sup_days > 0:
+            if tata_approved_days == 0 and tata_field_days > 0:
                 status_badge = "🔴 No Punch (Field Only)"
-            elif tata_approved_days != sup_days:
-                status_badge = f"🟡 Variance ({sup_days - tata_approved_days:+.1f} d)"
+            elif tata_approved_days != tata_field_days:
+                status_badge = f"🟡 Variance ({tata_field_days - tata_approved_days:+.1f} d)"
 
             final_bank_transfer = tata_net_paid
 
             recon_rows.append({
                 "Worker ID": wid,
                 "Name": wname,
-                "Field Days": sup_days,
-                "Tata Days": tata_approved_days,
+                "Tata Field Days": tata_field_days,
+                "Private Days": pvt_field_days,
+                "Form XVII Days": tata_approved_days,
                 "Status": status_badge,
                 "Locked Net (₹)": final_bank_transfer,
                 "IFSC": b_ifsc,
