@@ -54,6 +54,7 @@ COMPANY_HEADER = {
 }
 
 SKILL_CATEGORIES = ["Unskilled", "Semi-Skilled", "Skilled", "Highly Skilled"]
+WEEK_DAYS_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "No Fixed Week-Off"]
 
 WAGE_MASTER_COLS = [
     "Skill_Category", "Basic_Pay", "VDA_Allowance", "Total_Daily_Rate", "Effective_From", "Remarks"
@@ -76,8 +77,8 @@ USER_COLUMNS = [
 
 WORKER_MASTER_COLS = [
     "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type", 
-    "Skill_Category", "Base_Rate", "Contact_No", "Bank_Account_No", "Bank_IFSC_Code", 
-    "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
+    "Skill_Category", "Base_Rate", "Week_Off_Day", "Contact_No", "Bank_Account_No", 
+    "Bank_IFSC_Code", "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
 ]
 
 MUSTER_ROLL_COLS = [
@@ -110,11 +111,29 @@ CIVIL_ROLES = [
 ]
 
 def normalize_duty_type(val):
-    """Backward-compatible normalizer mapping legacy Tata/Private labels to Punch/Non-Punch."""
     s = str(val).strip()
     if s in ["Punch", "Tata Site (In-Plant)"]:
         return "Punch"
     return "Non-Punch"
+
+def normalize_week_off(val):
+    s = str(val).strip()
+    if s in WEEK_DAYS_OPTIONS:
+        return s
+    return "Sunday"
+
+def count_working_days_for_worker(year_val, month_val, week_off_day):
+    """Counts total days in month excluding the employee's assigned Week_Off_Day."""
+    days_in_m = calendar.monthrange(year_val, month_val)[1]
+    wo_norm = normalize_week_off(week_off_day)
+    if wo_norm == "No Fixed Week-Off":
+        return days_in_m
+    wo_count = 0
+    for d in range(1, days_in_m + 1):
+        dt = datetime.date(year_val, month_val, d)
+        if dt.strftime("%A") == wo_norm:
+            wo_count += 1
+    return max(1, days_in_m - wo_count)
 
 def infer_skill_category_from_role_or_rate(role_str, rate_val, wage_type="DAILY_WAGE"):
     if str(wage_type).upper() == "MONTHLY_FIXED":
@@ -139,7 +158,6 @@ def infer_skill_category_from_role_or_rate(role_str, rate_val, wage_type="DAILY_
     return "Unskilled"
 
 def compress_photo_to_base64(uploaded_img):
-    """Compresses an uploaded passport photo into a clean <20KB JPEG base64 string for Google Sheets & PDF ID cards."""
     if not uploaded_img:
         return ""
     try:
@@ -331,42 +349,204 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     return pd.DataFrame(records)
 
 
-# ----------------- 2. DIRECT PDF GENERATORS (LETTERHEAD, 8-UP ATM ID CARDS, 3-UP SALARY SLIPS) -----------------
+# ----------------- 2. PAYROLL & ADVANCE CARRY-FORWARD ENGINE -----------------
+def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num):
+    """
+    Computes exact monthly payroll across all months up to (sel_year, month_num) so that
+    any unrecovered advance balance cleanly carries forward month-by-month.
+    Rules:
+    - Form XVII (Punch) net amount is STRICT bank payout (0 site advance deducted).
+    - Daily Wage Non-Punch (or non-Form XVII duty): Gross = (Days * Rate) + (Rate/8 * OT), minus PF (12%) & ESIC (0.75%).
+    - Fixed Monthly: Gross = (Monthly_Rate / Working_Days_Excl_WeekOff) * (P + 0.5*HD + L), PF = 0, ESIC = 0.
+    - Site Advance deducts ONLY from Non-Punch Net (or Fixed Monthly Net); excess carries forward to next month.
+    """
+    target_ym = f"{sel_year}-{month_num:02d}"
+
+    all_periods = set([target_ym])
+    if not adv_df.empty and "Date" in adv_df.columns:
+        for d in adv_df["Date"].astype(str):
+            if len(d) >= 7 and d[:7] <= target_ym:
+                all_periods.add(d[:7])
+    if not muster_df.empty and "Date" in muster_df.columns:
+        for d in muster_df["Date"].astype(str):
+            if len(d) >= 7 and d[:7] <= target_ym:
+                all_periods.add(d[:7])
+    sorted_periods = sorted(list(all_periods))
+
+    carry_fwd_map = {}
+    results_for_target = {}
+
+    for ym in sorted_periods:
+        y_i = int(ym.split("-")[0])
+        m_i = int(ym.split("-")[1])
+        p_start = f"{y_i}-{m_i:02d}-01"
+        p_end = f"{y_i}-{m_i:02d}-{calendar.monthrange(y_i, m_i)[1]:02d}"
+        m_abbr = calendar.month_name[m_i][:3].lower()
+        y_short = str(y_i)[-2:]
+
+        def _p_match(v):
+            s = str(v).strip().lower()
+            return (ym in s) or (f"{m_abbr}-{y_i}" in s) or (f"{m_abbr}-{y_short}" in s)
+
+        tata_p_df = pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
+        if not tata_df.empty and "Wages_Period" in tata_df.columns:
+            tata_p_df = tata_df[tata_df["Wages_Period"].apply(_p_match)]
+
+        for _, w in w_master.iterrows():
+            wid = str(w["Worker_ID"])
+            wname = str(w["Full_Name"])
+            wdiv = str(w.get("Division", ""))
+            wrole = str(w.get("Designation", ""))
+            wskill = str(w.get("Skill_Category", ""))
+            wwtype = str(w.get("Wage_Type", "DAILY_WAGE")).upper()
+            wrate = float(pd.to_numeric(w.get("Base_Rate", 0.0), errors="coerce") or 0.0)
+            w_wo = normalize_week_off(w.get("Week_Off_Day", "Sunday"))
+            b_acc = str(w.get("Bank_Account_No", "")).strip()
+            b_ifsc = str(w.get("Bank_IFSC_Code", "")).strip().upper()
+            b_branch = str(w.get("Bank_Branch_Details", "")).strip().upper()
+
+            opening_adv = carry_fwd_map.get(wid, 0.0)
+
+            new_adv = 0.0
+            if not adv_df.empty and "Date" in adv_df.columns and "Worker_ID" in adv_df.columns:
+                wa = adv_df[(adv_df["Worker_ID"].astype(str) == wid) &
+                            (adv_df["Date"].astype(str) >= p_start) &
+                            (adv_df["Date"].astype(str) <= p_end)]
+                new_adv = float(pd.to_numeric(wa["Amount"], errors="coerce").fillna(0.0).sum())
+
+            total_adv_due = opening_adv + new_adv
+
+            punch_days = 0.0
+            non_punch_days = 0.0
+            paid_leave_days = 0.0
+            ot_hrs = 0.0
+            if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
+                wm = muster_df[(muster_df["Worker_ID"].astype(str) == wid) &
+                               (muster_df["Date"].astype(str) >= p_start) &
+                               (muster_df["Date"].astype(str) <= p_end)].copy()
+                wm["Duty_Location"] = wm["Duty_Location"].apply(normalize_duty_type)
+
+                wp = wm[wm["Duty_Location"] == "Punch"]
+                punch_days = len(wp[wp["Attendance"] == "P"]) + (len(wp[wp["Attendance"] == "HD"]) * 0.5)
+
+                wnp = wm[wm["Duty_Location"] == "Non-Punch"]
+                non_punch_days = len(wnp[wnp["Attendance"] == "P"]) + (len(wnp[wnp["Attendance"] == "HD"]) * 0.5)
+
+                paid_leave_days = float(len(wm[wm["Attendance"] == "L"]))
+                ot_hrs = float(pd.to_numeric(wm["OT_Hours"], errors="coerce").fillna(0.0).sum())
+
+            f17_days = 0.0
+            f17_net = 0.0
+            if not tata_p_df.empty and "Worker_Name" in tata_p_df.columns:
+                tm = tata_p_df[tata_p_df["Worker_Name"].astype(str).str.strip().str.upper() == wname.strip().upper()]
+                if not tm.empty:
+                    f17_days = float(pd.to_numeric(tm["Approved_Days"], errors="coerce").fillna(0.0).sum())
+                    f17_net = float(pd.to_numeric(tm["Net_Amount_Paid"], errors="coerce").fillna(0.0).sum())
+
+            if wwtype == "MONTHLY_FIXED":
+                working_days_in_month = count_working_days_for_worker(y_i, m_i, w_wo)
+                per_day_fixed = wrate / float(working_days_in_month)
+                total_paid_days = min(float(working_days_in_month), punch_days + non_punch_days + paid_leave_days)
+                
+                gross_total = round(per_day_fixed * total_paid_days, 0)
+                pf_ded = 0.0
+                esic_ded = 0.0
+                
+                adjustable_pool = max(0.0, gross_total - f17_net)
+                adv_deducted = min(total_adv_due, adjustable_pool)
+                closing_adv = max(0.0, total_adv_due - adv_deducted)
+                non_punch_take_home = max(0.0, adjustable_pool - adv_deducted)
+                total_net_payable = f17_net + non_punch_take_home
+            else:
+                total_paid_days = punch_days + non_punch_days
+                ot_pay = (wrate / 8.0) * ot_hrs
+
+                if f17_net > 0:
+                    np_gross = round((non_punch_days * wrate) + ot_pay, 0)
+                    pf_ded = round(np_gross * 0.12, 0)
+                    esic_ded = round(np_gross * 0.0075, 0)
+                    np_net_before_adv = max(0.0, np_gross - pf_ded - esic_ded)
+
+                    f17_approx_gross = round(f17_net / 0.8725, 0)
+                    gross_total = f17_approx_gross + np_gross
+                else:
+                    gross_total = round((total_paid_days * wrate) + ot_pay, 0)
+                    pf_ded = round(gross_total * 0.12, 0)
+                    esic_ded = round(gross_total * 0.0075, 0)
+                    np_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
+
+                adv_deducted = min(total_adv_due, np_net_before_adv)
+                closing_adv = max(0.0, total_adv_due - adv_deducted)
+                non_punch_take_home = max(0.0, np_net_before_adv - adv_deducted)
+                total_net_payable = f17_net + non_punch_take_home
+
+            carry_fwd_map[wid] = closing_adv
+
+            if ym == target_ym:
+                results_for_target[wid] = {
+                    "Worker_ID": wid,
+                    "Worker_Name": wname,
+                    "Division": wdiv,
+                    "Designation": wrole,
+                    "Skill_Category": wskill,
+                    "Wage_Type": wwtype,
+                    "Base_Rate": wrate,
+                    "Week_Off_Day": w_wo,
+                    "Status": str(w.get("Status", "ACTIVE")).upper(),
+                    "Bank_Account_No": b_acc,
+                    "Bank_IFSC_Code": b_ifsc,
+                    "Bank_Branch_Details": b_branch,
+                    "Punch_Days": punch_days,
+                    "Non_Punch_Days": non_punch_days,
+                    "Paid_Leave_Days": paid_leave_days,
+                    "Total_Days": total_paid_days,
+                    "OT_Hours": ot_hrs,
+                    "Form_XVII_Days": f17_days,
+                    "Form_XVII_Net": f17_net,
+                    "Gross_Wages": gross_total,
+                    "PF_Deduction": pf_ded,
+                    "ESIC_Deduction": esic_ded,
+                    "Opening_Advance": opening_adv,
+                    "Month_New_Advance": new_adv,
+                    "Total_Advance_Due": total_adv_due,
+                    "Advance_Deducted": adv_deducted,
+                    "Closing_Carry_Forward": closing_adv,
+                    "Non_Punch_Net_Pay": non_punch_take_home,
+                    "Net_Payable": total_net_payable
+                }
+
+    return results_for_target
+
+
+# ----------------- 3. DIRECT PDF GENERATORS (LETTERHEAD, 8-UP ATM ID CARDS, 3-UP SALARY SLIPS) -----------------
 def build_exact_indu_sao_oval_logo_stream():
-    """Renders the exact M/s INDU SAO oval emblem as a crisp high-res PNG stream for FPDF."""
     if not PIL_AVAILABLE:
         return None
     W, H = 660, 450
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # White Oval with Thick Black Border
     draw.ellipse([12, 10, W - 12, H - 10], fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=14)
     navy = (12, 24, 108, 255)
     black = (10, 10, 10, 255)
     white = (255, 255, 255, 255)
 
-    # Three Stepped Navy Building Towers
     draw.polygon([(175, 285), (175, 185), (235, 148), (235, 285)], fill=navy)
     draw.polygon([(248, 285), (248, 140), (315, 98), (315, 285)], fill=navy)
     draw.polygon([(275, 285), (275, 182), (315, 158), (315, 285)], fill=white)
     draw.polygon([(328, 285), (328, 90), (398, 46), (398, 285)], fill=navy)
 
-    # Three Vertical Accent Bars on Right
     draw.rectangle([414, 56, 423, 285], fill=black)
     draw.rectangle([438, 76, 447, 285], fill=black)
     draw.rectangle([462, 96, 471, 285], fill=black)
 
-    # Diagonal Wedge Accent
     draw.polygon([(308, 255), (378, 290), (308, 290)], fill=navy)
 
-    # Bottom Navy Swoosh + Dot ("i" motif)
     draw.pieslice([145, 282, 515, 392], start=95, end=255, fill=navy)
     draw.pieslice([198, 294, 485, 366], start=90, end=265, fill=white)
     draw.rectangle([312, 326, 362, 388], fill=navy)
     draw.ellipse([312, 302, 362, 320], fill=navy)
 
-    # Bottom Black Outer Swoosh
     draw.pieslice([185, 305, 535, 422], start=335, end=105, fill=black)
     draw.pieslice([175, 312, 475, 398], start=330, end=110, fill=white)
     draw.rectangle([312, 326, 362, 388], fill=navy)
@@ -378,12 +558,10 @@ def build_exact_indu_sao_oval_logo_stream():
 
 
 def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date):
-    """Generates a direct print-ready A4 PDF with the exact M/s INDU SAO letterhead, high-res oval logo, and Proprietor stamp gap."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
 
-    # Exact Diagonal Header Banner
     pdf.set_fill_color(46, 125, 50)
     pdf.polygon([(0, 47), (210, 36), (210, 39.5), (0, 50.5)], style="F")
     pdf.set_fill_color(244, 180, 0)
@@ -391,7 +569,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.set_fill_color(56, 163, 241)
     pdf.polygon([(0, 0), (210, 0), (210, 32.5), (0, 43.5)], style="F")
 
-    # Left High-Res Exact Oval Emblem
     logo_stream = build_exact_indu_sao_oval_logo_stream()
     if logo_stream:
         pdf.image(logo_stream, x=7.5, y=3.0, w=48.0, h=32.5)
@@ -482,7 +659,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.cell(col_widths[3] + col_widths[4] + col_widths[5], 7, "", border=1, fill=True)
     pdf.ln(8)
 
-    # Left: M/s INDU SAO -> 18mm Stamp Gap -> Proprietor | Right: Bank Sign & Stamp
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.cell(170, 5, "THANKING YOU", ln=True)
     pdf.ln(8)
@@ -509,7 +685,6 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
 
 
 def generate_atm_id_cards_pdf(workers_df):
-    """Generates 8 ATM-sized (85.6mm x 54mm) Employee ID Cards per A4 sheet with Authorised Signatory."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -625,7 +800,7 @@ def generate_atm_id_cards_pdf(workers_df):
 
 
 def generate_compact_salary_slips_pdf(slip_records, wage_period_label):
-    """Generates 3 Compact Salary Slips per A4 portrait page (86mm height each) with Authorised Signatory."""
+    """Generates 3 Compact Salary Slips per A4 portrait page (86mm height each) with PF, ESIC, Form XVII, Carry-Forward Advance & Authorised Signatory."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -650,75 +825,83 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label):
 
         # Top Header Strip
         pdf.set_fill_color(56, 163, 241)
-        pdf.rect(x0, y0, slip_w, 13.0, style="F")
+        pdf.rect(x0, y0, slip_w, 12.5, style="F")
         pdf.set_fill_color(244, 180, 0)
-        pdf.rect(x0, y0 + 13.0, slip_w, 1.2, style="F")
+        pdf.rect(x0, y0 + 12.5, slip_w, 1.2, style="F")
 
         logo_s = build_exact_indu_sao_oval_logo_stream()
         if logo_s:
-            pdf.image(logo_s, x=x0 + 2.5, y=y0 + 1.5, w=14.5, h=10.0)
+            pdf.image(logo_s, x=x0 + 2.5, y=y0 + 1.4, w=14.0, h=9.6)
 
         pdf.set_text_color(0, 0, 0)
-        pdf.set_font("Helvetica", "B", 11.5)
-        pdf.set_xy(x0 + 19.0, y0 + 2.0)
-        pdf.cell(105, 5.0, "M/s INDU SAO")
-        pdf.set_font("Helvetica", "B", 6.8)
-        pdf.set_xy(x0 + 19.0, y0 + 7.2)
-        pdf.cell(105, 4.0, "Sondiha, Chainpur, Ramgarh (JH) | GST: 20AUOPK2982K1ZC | Vendor: ID47")
+        pdf.set_font("Helvetica", "B", 11.2)
+        pdf.set_xy(x0 + 18.5, y0 + 1.8)
+        pdf.cell(108, 4.8, "M/s INDU SAO")
+        pdf.set_font("Helvetica", "B", 6.6)
+        pdf.set_xy(x0 + 18.5, y0 + 6.8)
+        pdf.cell(108, 3.8, "Sondiha, Chainpur, Ramgarh (JH) | GST: 20AUOPK2982K1ZC | Vendor: ID47")
 
         # Pay Slip Pill
         pdf.set_fill_color(15, 23, 42)
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Helvetica", "B", 8.0)
-        pdf.set_xy(x0 + 132.0, y0 + 3.0)
-        pdf.cell(51.0, 7.0, f"PAY SLIP: {wage_period_label}", align="C", fill=True)
+        pdf.set_font("Helvetica", "B", 7.8)
+        pdf.set_xy(x0 + 132.0, y0 + 2.8)
+        pdf.cell(51.0, 6.8, f"PAY SLIP: {wage_period_label}", align="C", fill=True)
 
         # Employee Metadata Grid
         pdf.set_text_color(15, 23, 42)
-        pdf.set_font("Helvetica", "B", 7.8)
-        pdf.set_xy(x0 + 3.0, y0 + 16.0)
-        pdf.cell(92, 4.5, f"Name: {s['Worker_Name']} ({s['Worker_ID']})")
-        pdf.cell(88, 4.5, f"Designation: {s['Designation']} [{s['Skill_Category']}]", align="R")
+        pdf.set_font("Helvetica", "B", 7.6)
+        pdf.set_xy(x0 + 3.0, y0 + 15.2)
+        pdf.cell(94, 4.3, f"Name: {s['Worker_Name']} ({s['Worker_ID']})")
+        pdf.cell(86, 4.3, f"{s['Designation']} [{s['Skill_Category']}]", align="R")
 
-        pdf.set_font("Helvetica", "", 7.5)
-        pdf.set_xy(x0 + 3.0, y0 + 20.8)
-        pdf.cell(92, 4.2, f"Division: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f} ({s['Wage_Type']})")
-        pdf.cell(88, 4.2, f"Bank A/C: {s['Bank_Account_No']} ({s['Bank_IFSC_Code']})", align="R")
+        pdf.set_font("Helvetica", "", 7.2)
+        pdf.set_xy(x0 + 3.0, y0 + 19.6)
+        b_disp = s["Bank_Account_No"] if s["Bank_Account_No"] else "Cash"
+        i_disp = s["Bank_IFSC_Code"] if s["Bank_IFSC_Code"] else "N/A"
+        pdf.cell(94, 4.0, f"Div: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f} ({s['Wage_Type']})")
+        pdf.cell(86, 4.0, f"Bank A/C: {b_disp} ({i_disp})", align="R")
 
-        # Earnings & Deductions Table
-        t_y = y0 + 26.8
+        # 7-Column Earnings & Statutory Deductions Table (Total Width = 186mm)
+        t_y = y0 + 25.0
         pdf.set_fill_color(241, 245, 249)
         pdf.set_draw_color(100, 116, 139)
         pdf.set_line_width(0.25)
-        pdf.set_font("Helvetica", "B", 7.4)
+        pdf.set_font("Helvetica", "B", 7.0)
 
-        w_cols = [30, 30, 32, 30, 32, 32]  # 186mm
-        h_cols = ["Punch Days", "Non-Punch Days", "OT Hours", "Gross Earned", "Advance / Ded.", "NET PAYABLE"]
+        w_cols = [22, 22, 28, 24, 24, 28, 38]  # Sum = 186mm
+        h_cols = ["Total Days", "OT Hrs", "Gross Wages", "PF (12%)", "ESIC (0.75%)", "Adv. Ded.", "NET PAYABLE"]
         pdf.set_xy(x0, t_y)
         for wc, hc in zip(w_cols, h_cols):
-            pdf.cell(wc, 6.5, hc, border=1, align="C", fill=True)
+            pdf.cell(wc, 6.2, hc, border=1, align="C", fill=True)
 
-        pdf.set_xy(x0, t_y + 6.5)
-        pdf.set_font("Helvetica", "", 8.0)
-        pdf.cell(w_cols[0], 7.5, f"{s['Punch_Days']:.1f} d", border=1, align="C")
-        pdf.cell(w_cols[1], 7.5, f"{s['Non_Punch_Days']:.1f} d", border=1, align="C")
-        pdf.cell(w_cols[2], 7.5, f"{s['OT_Hours']:.1f} hrs", border=1, align="C")
-        pdf.set_font("Helvetica", "B", 8.0)
-        pdf.cell(w_cols[3], 7.5, f"Rs. {s['Gross_Wages']:,.0f}", border=1, align="R")
-        pdf.cell(w_cols[4], 7.5, f"Rs. {s['Advance_Deducted']:,.0f}", border=1, align="R")
+        pdf.set_xy(x0, t_y + 6.2)
+        pdf.set_font("Helvetica", "", 7.6)
+        pdf.cell(w_cols[0], 7.2, f"{s['Total_Days']:.1f} d", border=1, align="C")
+        pdf.cell(w_cols[1], 7.2, f"{s['OT_Hours']:.1f} h", border=1, align="C")
+        pdf.set_font("Helvetica", "B", 7.6)
+        pdf.cell(w_cols[2], 7.2, f"Rs.{s['Gross_Wages']:,.0f}", border=1, align="R")
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.cell(w_cols[3], 7.2, f"Rs.{s['PF_Deduction']:,.0f}", border=1, align="R")
+        pdf.cell(w_cols[4], 7.2, f"Rs.{s['ESIC_Deduction']:,.0f}", border=1, align="R")
+        pdf.cell(w_cols[5], 7.2, f"Rs.{s['Advance_Deducted']:,.0f}", border=1, align="R")
         pdf.set_fill_color(236, 253, 245)
-        pdf.cell(w_cols[5], 7.5, f"Rs. {s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
+        pdf.set_font("Helvetica", "B", 8.0)
+        pdf.cell(w_cols[6], 7.2, f"Rs.{s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
 
-        # Compliance Note & Signatures
-        pdf.set_font("Helvetica", "", 7.0)
-        pdf.set_text_color(71, 85, 105)
-        pdf.set_xy(x0 + 3.0, y0 + 43.0)
-        pdf.cell(180, 4.0, f"Settlement Mode: {s['Settlement_Mode']}   |   Tata Form XVII Approved Days: {s['Form_XVII_Days']:.1f} d")
+        # Form XVII Statutory Split & Closing Carry-Forward Advance Line
+        pdf.set_font("Helvetica", "B", 6.8)
+        pdf.set_text_color(30, 41, 59)
+        pdf.set_xy(x0 + 3.0, y0 + 40.5)
+        f17_str = f"Form XVII Bank Payout: Rs.{s['Form_XVII_Net']:,.0f} ({s['Form_XVII_Days']:.1f} d)" if s['Form_XVII_Net'] > 0 else "Form XVII Bank Payout: Rs.0"
+        np_str = f"Balance Non-Punch/Fixed Net: Rs.{s['Non_Punch_Net_Pay']:,.0f}"
+        cf_str = f"Closing Adv. Bal (Next Month): Rs.{s['Closing_Carry_Forward']:,.0f}"
+        pdf.cell(180, 4.0, f"{f17_str}   |   {np_str}   |   {cf_str}")
 
-        # Bottom Signature Row
+        # Bottom Signature Row (Authorised Signatory)
         pdf.set_text_color(15, 23, 42)
-        pdf.set_font("Helvetica", "B", 7.8)
-        pdf.set_xy(x0 + 8.0, y0 + 73.0)
+        pdf.set_font("Helvetica", "B", 7.6)
+        pdf.set_xy(x0 + 8.0, y0 + 73.5)
         pdf.cell(55, 4.5, "Employee Sign / Thumb", align="C")
 
         pdf.set_xy(x0 + 118.0, y0 + 67.5)
@@ -737,7 +920,7 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label):
     return bytes(pdf.output())
 
 
-# ----------------- 3. HIERARCHICAL WORKSPACES & RBAC -----------------
+# ----------------- 4. HIERARCHICAL WORKSPACES & RBAC -----------------
 TAB_REGISTRY = {
     "➕ Employee Enrolment": "Attendance",
     "📋 Employee Master Register": "Attendance",
@@ -970,7 +1153,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ----------------- 4. AUTHENTICATION & SESSION ENGINE -----------------
+# ----------------- 5. AUTHENTICATION & SESSION ENGINE -----------------
 def init_session():
     if "user_authenticated" not in st.session_state:
         st.session_state.user_authenticated = False
@@ -1091,7 +1274,7 @@ if not st.session_state.user_authenticated:
     st.stop()
 
 
-# ----------------- 5. SLEEK SIDEBAR TREE NAVIGATION -----------------
+# ----------------- 6. SLEEK SIDEBAR TREE NAVIGATION -----------------
 with st.sidebar:
     st.markdown(
         f"""
@@ -1158,7 +1341,7 @@ with st.sidebar:
                 st.rerun()
 
 
-# ----------------- 6. CLEAN TOP BAR -----------------
+# ----------------- 7. CLEAN TOP BAR -----------------
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 name_parts = str(user_display_name).strip().split()
 initials = "".join([p[0] for p in name_parts[:2] if p]).upper() if name_parts else "US"
@@ -1203,13 +1386,13 @@ with h_col3:
 st.markdown("<hr style='margin-top: 10px; margin-bottom: 18px; border: none; border-top: 1px solid #f1f5f9;' />", unsafe_allow_html=True)
 
 
-# ----------------- 7. MAIN VIEW ROUTING -----------------
+# ----------------- 8. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
 # ----------------- VIEW 1: EMPLOYEE ENROLMENT -----------------
 if current_view == "➕ Employee Enrolment":
     st.markdown("#### Employee Enrolment")
-    st.caption("Onboard workforce members with statutory skill category, passport photo, and bank account particulars")
+    st.caption("Onboard workforce members with statutory skill category, fixed Week-Off day, photo, and bank particulars")
 
     wage_rates_df = get_active_wage_rates_df()
     rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
@@ -1258,7 +1441,11 @@ if current_view == "➕ Employee Enrolment":
                     else:
                         w_rate = st.number_input("Monthly Salary (₹)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
 
-                w_contact = st.text_input("Contact Mobile Number", key="enrol_contact").strip()
+                c_wo1, c_wo2 = st.columns(2)
+                with c_wo1:
+                    w_week_off = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=0, key="enrol_week_off")
+                with c_wo2:
+                    w_contact = st.text_input("Contact Mobile Number", key="enrol_contact").strip()
 
                 st.markdown("###### Bank Transfer Details")
                 b_acc = st.text_input("Bank Account Number", key="enrol_b_acc").strip()
@@ -1288,6 +1475,7 @@ if current_view == "➕ Employee Enrolment":
                             "Wage_Type": w_wage_type,
                             "Skill_Category": w_skill_cat,
                             "Base_Rate": w_rate,
+                            "Week_Off_Day": w_week_off,
                             "Contact_No": w_contact,
                             "Bank_Account_No": b_acc,
                             "Bank_IFSC_Code": b_ifsc,
@@ -1298,7 +1486,7 @@ if current_view == "➕ Employee Enrolment":
                         }
                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                            st.success(f"Employee {w_name} ({next_wid}) enrolled under {w_skill_cat} @ ₹{w_rate:,.0f}/day.")
+                            st.success(f"Employee {w_name} ({next_wid}) enrolled (Week-Off: {w_week_off}).")
                             st.rerun()
 
         with c_info:
@@ -1307,12 +1495,13 @@ if current_view == "➕ Employee Enrolment":
                 for _, rr in wage_rates_df.iterrows():
                     st.caption(f"• **{rr['Skill_Category']}:** ₹{float(rr['Total_Daily_Rate']):,.0f}/day *(Basic ₹{float(rr['Basic_Pay']):,.0f} + VDA ₹{float(rr['VDA_Allowance']):,.0f})*")
                 st.markdown("---")
-                st.caption("Update rates anytime in **Statutory Wage Rates** to revise all workers in one click.")
+                st.markdown("###### Weekly-Off Lock Rule")
+                st.caption("On an employee's assigned Week-Off day, daily attendance automatically locks to **WO**. Only Admin can override/approve duty on that day.")
 
     else:
         with st.container(border=True):
             st.markdown("###### Bulk Employee Roster Import")
-            st.caption("Upload CSV or Excel file containing workforce details. Missing Skill Categories will be auto-mapped from designation/rate.")
+            st.caption("Upload CSV or Excel file containing workforce details.")
 
             up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
             if up_file:
@@ -1341,6 +1530,8 @@ if current_view == "➕ Employee Enrolment":
                         if not raw_skill or raw_skill.lower() == "nan":
                             raw_skill = infer_skill_category_from_role_or_rate(clean_desig, b_rate_val, w_type_val)
 
+                        wo_val = normalize_week_off(b_row.get("Week_Off_Day", "Sunday"))
+
                         appended_rows.append({
                             "Worker_ID": new_gen_id,
                             "Full_Name": str(b_row.get("Full_Name", "")).strip(),
@@ -1350,6 +1541,7 @@ if current_view == "➕ Employee Enrolment":
                             "Wage_Type": w_type_val,
                             "Skill_Category": raw_skill,
                             "Base_Rate": b_rate_val,
+                            "Week_Off_Day": wo_val,
                             "Contact_No": str(b_row.get("Contact_No", "")).strip(),
                             "Bank_Account_No": str(b_row.get("Bank_Account_No", "")).strip(),
                             "Bank_IFSC_Code": str(b_row.get("Bank_IFSC_Code", "")).strip().upper(),
@@ -1365,7 +1557,7 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
-# ----------------- NEW VIEW: STATUTORY WAGE RATE MASTER & 1-CLICK BULK REVISION -----------------
+# ----------------- VIEW 2: STATUTORY WAGE RATE MASTER & 1-CLICK BULK REVISION -----------------
 elif current_view == "⚖️ Statutory Wage Rates":
     st.markdown("#### Statutory Minimum Wage Rate Master (Category-Wise)")
     st.caption("Update Basic + VDA/DA rates for Unskilled, Semi-Skilled, Skilled, and Highly Skilled categories and sync all workers in one click")
@@ -1378,7 +1570,7 @@ elif current_view == "⚖️ Statutory Wage Rates":
     for idx, cat in enumerate(SKILL_CATEGORIES):
         cnt = 0
         if not w_master.empty and "Skill_Category" in w_master.columns:
-            cnt = len(w_master[(w_master["Status"] == "ACTIVE") & (w_master["Skill_Category"].astype(str) == cat)])
+            cnt = len(w_master[(w_master["Status"].astype(str).str.upper() == "ACTIVE") & (w_master["Skill_Category"].astype(str) == cat)])
         cur_r = float(wage_rates_df[wage_rates_df["Skill_Category"] == cat]["Total_Daily_Rate"].iloc[0])
         kpi_cols[idx].metric(f"{cat}", f"₹{cur_r:,.0f} / day", f"{cnt} Active Workers")
 
@@ -1386,8 +1578,6 @@ elif current_view == "⚖️ Statutory Wage Rates":
 
     with st.container(border=True):
         st.markdown("###### Edit Category Wage Rates (Basic + VDA = Total Daily Rate)")
-        st.caption("Modify Basic Pay, VDA/DA Allowance, or Total Daily Rate below. If Total Daily Rate is left unchanged after editing Basic/VDA, it auto-sums Basic + VDA.")
-
         edited_rates_df = st.data_editor(
             wage_rates_df[WAGE_MASTER_COLS],
             use_container_width=True,
@@ -1452,7 +1642,7 @@ elif current_view == "⚖️ Statutory Wage Rates":
                     st.rerun()
 
         with b_col2:
-            if st.button("🔄 Auto-Assign Skill Categories to Existing Workers", type="secondary", use_container_width=True):
+            if st.button("🔄 Auto-Assign Skill Categories & Defaults", type="secondary", use_container_width=True):
                 if not w_master.empty:
                     assigned = 0
                     for idx, wr in w_master.iterrows():
@@ -1463,21 +1653,22 @@ elif current_view == "⚖️ Statutory Wage Rates":
                             )
                             w_master.at[idx, "Skill_Category"] = inferred
                             assigned += 1
+                        cur_wo = str(wr.get("Week_Off_Day", "")).strip()
+                        if not cur_wo or cur_wo not in WEEK_DAYS_OPTIONS:
+                            w_master.at[idx, "Week_Off_Day"] = "Sunday"
                     if save_sheet_df("worker_master", w_master[WORKER_MASTER_COLS]):
-                        st.success(f"Assigned Skill Categories to {assigned} workers!")
+                        st.success(f"Updated {assigned} worker categories & default Week-Off days!")
                         st.rerun()
 
 
-# ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, FULL EDIT/DELETE PROFILE & SELECTIVE ID CARDS -----------------
+# ----------------- VIEW 3: EMPLOYEE MASTER REGISTER, FULL EDIT/DELETE PROFILE & SELECTIVE ID CARDS -----------------
 elif current_view == "📋 Employee Master Register":
     w_table = load_sheet_df("worker_master")
     muster_all = load_sheet_df("muster_roll")
     adv_all = load_sheet_df("worker_advances")
     tata_all = load_sheet_df("tata_form_xvii")
-    wage_rates_df = get_active_wage_rates_df()
-    rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
 
-    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE (FULL EDIT, SAFE DELETE, PHOTO UPLOAD & ATTENDANCE EDITOR)
+    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE (FULL EDIT, WEEK-OFF, SAFE DELETE, PHOTO UPLOAD & ATTENDANCE EDITOR)
     if st.session_state.selected_worker_card_id:
         target_wid = st.session_state.selected_worker_card_id
         
@@ -1499,6 +1690,7 @@ elif current_view == "📋 Employee Master Register":
             emp_wage_type = str(emp.get("Wage_Type", "DAILY_WAGE"))
             emp_skill = str(emp.get("Skill_Category", "")).strip() or infer_skill_category_from_role_or_rate(emp_role, emp.get("Base_Rate", 0), emp_wage_type)
             emp_rate = float(pd.to_numeric(emp.get("Base_Rate", 0.0), errors="coerce") or 0.0)
+            emp_wo = normalize_week_off(emp.get("Week_Off_Day", "Sunday"))
             emp_acc = str(emp.get("Bank_Account_No", ""))
             emp_ifsc = str(emp.get("Bank_IFSC_Code", ""))
             emp_branch = str(emp.get("Bank_Branch_Details", ""))
@@ -1542,8 +1734,8 @@ elif current_view == "📋 Employee Master Register":
 
                 with p_c1:
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
-                    st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Contact:** {emp_contact or 'N/A'}")
-                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Rate:** **₹{emp_rate:,.0f}**  |  **Status:** `{emp_status}`")
+                    st.markdown(f"**Division:** {emp_div} &nbsp;|&nbsp; **Role:** {emp_role} &nbsp;|&nbsp; **Fixed Week-Off:** `{emp_wo}`")
+                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type}) &nbsp;|&nbsp; **Rate:** **₹{emp_rate:,.0f}** &nbsp;|&nbsp; **Status:** `{emp_status}`")
 
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
@@ -1562,8 +1754,7 @@ elif current_view == "📋 Employee Master Register":
                         div_opts = ["Fleet Operations", "Civil Construction"]
                         ed_div = st.selectbox("Division", div_opts, index=div_opts.index(emp_div) if emp_div in div_opts else 0)
                         ed_role = st.text_input("Designation / Role", value=emp_role).strip()
-                        stat_opts = ["ACTIVE", "INACTIVE"]
-                        ed_status = st.selectbox("Employment Status", stat_opts, index=stat_opts.index(emp_status) if emp_status in stat_opts else 0)
+                        ed_wo = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=WEEK_DAYS_OPTIONS.index(emp_wo))
                     with ed_c3:
                         wt_opts = ["DAILY_WAGE", "MONTHLY_FIXED"]
                         ed_wtype = st.selectbox("Wage Model", wt_opts, index=wt_opts.index(emp_wage_type) if emp_wage_type in wt_opts else 0)
@@ -1571,14 +1762,16 @@ elif current_view == "📋 Employee Master Register":
                         ed_skill = st.selectbox("Skill Category", sk_opts, index=sk_opts.index(emp_skill) if emp_skill in sk_opts else 0)
                         ed_rate = st.number_input("Base Rate (₹)", min_value=0.0, value=emp_rate, step=10.0)
 
-                    st.markdown("**Bank Account Particulars:**")
-                    eb_c1, eb_c2, eb_c3 = st.columns(3)
+                    eb_c1, eb_c2, eb_c3, eb_c4 = st.columns([1.2, 1.0, 1.2, 0.9])
                     with eb_c1:
                         ed_acc = st.text_input("Bank Account No", value=emp_acc).strip()
                     with eb_c2:
                         ed_ifsc = st.text_input("IFSC Code", value=emp_ifsc).strip().upper()
                     with eb_c3:
                         ed_branch = st.text_input("Bank & Branch Details", value=emp_branch).strip().upper()
+                    with eb_c4:
+                        stat_opts = ["ACTIVE", "INACTIVE"]
+                        ed_status = st.selectbox("Status", stat_opts, index=stat_opts.index(emp_status) if emp_status in stat_opts else 0)
 
                     if st.form_submit_button("💾 Save Updated Employee Profile", type="primary", use_container_width=True):
                         if not ed_name:
@@ -1590,6 +1783,7 @@ elif current_view == "📋 Employee Master Register":
                             w_table.loc[mask_w, "Contact_No"] = ed_contact
                             w_table.loc[mask_w, "Division"] = ed_div
                             w_table.loc[mask_w, "Designation"] = ed_role
+                            w_table.loc[mask_w, "Week_Off_Day"] = ed_wo
                             w_table.loc[mask_w, "Status"] = ed_status
                             w_table.loc[mask_w, "Wage_Type"] = ed_wtype
                             w_table.loc[mask_w, "Skill_Category"] = ed_skill
@@ -1629,6 +1823,11 @@ elif current_view == "📋 Employee Master Register":
                             st.success(f"Employee {emp_name} ({target_wid}) deleted.")
                             st.rerun()
 
+            # Compute current pending carry-forward advance balance for this employee
+            today_dt = datetime.date.today()
+            cur_payroll_map = compute_monthly_payroll_and_advances(w_table, muster_all, adv_all, tata_all, today_dt.year, today_dt.month)
+            emp_cf_bal = cur_payroll_map.get(target_wid, {}).get("Closing_Carry_Forward", 0.0)
+
             emp_muster = pd.DataFrame()
             if not muster_all.empty and "Worker_ID" in muster_all.columns:
                 emp_muster = muster_all[muster_all["Worker_ID"].astype(str) == target_wid].copy()
@@ -1658,16 +1857,15 @@ elif current_view == "📋 Employee Master Register":
 
             tot_p = len(emp_muster[emp_muster["Attendance"] == "P"]) if not emp_muster.empty else 0
             tot_hd = len(emp_muster[emp_muster["Attendance"] == "HD"]) if not emp_muster.empty else 0
-            tot_a = len(emp_muster[emp_muster["Attendance"] == "A"]) if not emp_muster.empty else 0
+            tot_l = len(emp_muster[emp_muster["Attendance"] == "L"]) if not emp_muster.empty else 0
             tot_ot = pd.to_numeric(emp_muster["OT_Hours"], errors="coerce").fillna(0).sum() if not emp_muster.empty else 0.0
-            tot_adv_amt = pd.to_numeric(emp_adv["Amount"], errors="coerce").fillna(0).sum() if not emp_adv.empty else 0.0
 
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("Present Days (P)", f"{tot_p} d")
             k2.metric("Half Days (HD)", f"{tot_hd} d")
-            k3.metric("Absent Days (A)", f"{tot_a} d")
+            k3.metric("Paid Leaves (L)", f"{tot_l} d")
             k4.metric("Overtime (OT)", f"{tot_ot:.1f} hrs")
-            k5.metric("Total Advances", f"₹{tot_adv_amt:,.0f}")
+            k5.metric("Pending Advance Bal.", f"₹{emp_cf_bal:,.0f}")
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
@@ -1675,7 +1873,7 @@ elif current_view == "📋 Employee Master Register":
             with det_c1:
                 with st.container(border=True):
                     st.markdown("###### 📅 Daily Field Attendance Log (Direct Edit)")
-                    st.caption("Edit Status, Punch Type (Punch vs Non-Punch), OT Hours, or Remarks below and click 'Save Attendance Changes'")
+                    st.caption("Edit Status (`P`, `HD`, `L` Paid Leave, `A`, `WO`), Punch Type, OT Hours, or Remarks")
                     
                     if not emp_muster.empty:
                         emp_muster_sorted = emp_muster.sort_values(by="Date", ascending=False).copy()
@@ -1688,7 +1886,7 @@ elif current_view == "📋 Employee Master Register":
                             hide_index=True,
                             disabled=["Date"],
                             column_config={
-                                "Attendance": st.column_config.SelectboxColumn("Status", options=["P", "HD", "A", "WO"], required=True),
+                                "Attendance": st.column_config.SelectboxColumn("Status", options=["P", "HD", "L", "A", "WO"], required=True),
                                 "Duty_Location": st.column_config.SelectboxColumn("Punch Type", options=["Punch", "Non-Punch"], required=True),
                                 "OT_Hours": st.column_config.NumberColumn("OT (Hrs)", min_value=0.0, max_value=16.0, step=0.5),
                                 "Remarks": st.column_config.TextColumn("Remarks")
@@ -1736,7 +1934,7 @@ elif current_view == "📋 Employee Master Register":
     # MASTER DIRECTORY + SELECTIVE 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
     else:
         st.markdown("#### Employee Master Register & Selective ATM ID Cards")
-        st.caption("Open any employee profile to edit details/photo/attendance/delete, or select specific employees to print 8-up ATM ID cards")
+        st.caption("Open any employee profile to edit details/week-off/photo/delete, or select specific employees to print 8-up ATM ID cards")
 
         if w_table.empty or "Worker_ID" not in w_table.columns:
             st.info("No employee records found.")
@@ -1820,15 +2018,16 @@ elif current_view == "📋 Employee Master Register":
 
             disp_table_view = disp_table.copy()
             disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅" if str(x).strip() else "—")
-            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Status"]
+            disp_table_view["Week_Off_Day"] = disp_table_view["Week_Off_Day"].apply(normalize_week_off)
+            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Week_Off_Day", "Bank_Account_No", "Status"]
             safe_cols = [c for c in req_cols if c in disp_table_view.columns]
             st.dataframe(disp_table_view[safe_cols], use_container_width=True, hide_index=True)
 
 
-# ----------------- VIEW 3: DAILY FIELD MUSTER ROLL (PUNCH vs NON-PUNCH + DATE TRACKER) -----------------
+# ----------------- VIEW 4: DAILY FIELD MUSTER ROLL (WEEK-OFF LOCK + PAID LEAVE L + PUNCH/NON-PUNCH) -----------------
 elif current_view == "Daily Muster Roll (Field Attendance)":
     st.markdown("#### Daily Field Muster Roll")
-    st.caption("Log daily shift attendance (Punch vs Non-Punch) with real-time Saved vs Pending date tracking")
+    st.caption("Log daily shift attendance with Employee-Specific Week-Off Lock, Paid Leave (L), and Punch/Non-Punch tracking")
 
     w_master = load_sheet_df("worker_master")
     if w_master.empty or "Worker_ID" not in w_master.columns:
@@ -1841,13 +2040,23 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         with top_m1:
             muster_date = st.date_input("Select Date", value=datetime.date.today(), key="muster_dt_pick")
             muster_date_str = muster_date.strftime("%Y-%m-%d")
+            selected_weekday_name = muster_date.strftime("%A")
         with top_m2:
             sel_division = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
         with top_m3:
-            st.metric("Active Crew", len(active_workers))
+            st.metric(f"Active Crew ({selected_weekday_name})", len(active_workers))
 
         if sel_division != "All Divisions":
             active_workers = active_workers[active_workers["Division"] == sel_division]
+
+        # Admin Override Toggle for Week-Off Locked Employees
+        admin_unlock_wo = False
+        if st.session_state.current_role == "ADMIN":
+            admin_unlock_wo = st.checkbox(
+                f"🔓 Admin Approval: Unlock Weekly-Off Duty for {muster_date.strftime('%d %b %Y')} ({selected_weekday_name})",
+                value=False,
+                key=f"adm_wo_unlock_{muster_date_str}"
+            )
 
         day_records = pd.DataFrame()
         if not muster_df.empty and "Date" in muster_df.columns:
@@ -1862,10 +2071,10 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         if not day_records.empty:
             sup_by = str(day_records.iloc[0].get("Supervisor", "Admin"))
             p_cnt = len(day_records[day_records["Attendance"] == "P"])
-            a_cnt = len(day_records[day_records["Attendance"] == "A"])
-            st.success(f"🟢 **SAVED / ALREADY LOGGED** for **{muster_date.strftime('%d %b %Y')}** ({len(day_records)} workers • {p_cnt} Present, {a_cnt} Absent • Logged by `{sup_by}`). You can edit and re-save anytime.")
+            wo_cnt = len(day_records[day_records["Attendance"] == "WO"])
+            st.success(f"🟢 **SAVED / ALREADY LOGGED** for **{muster_date.strftime('%d %b %Y')}** ({len(day_records)} workers • {p_cnt} Present, {wo_cnt} Week-Off • Logged by `{sup_by}`).")
         else:
-            st.warning(f"🟡 **PENDING — NOT LOGGED YET** for **{muster_date.strftime('%d %b %Y')}**. Mark attendance below and click 'Save Daily Muster Roll'.")
+            st.warning(f"🟡 **PENDING — NOT LOGGED YET** for **{muster_date.strftime('%d %b %Y')} ({selected_weekday_name})**. Mark attendance below and click 'Save Daily Muster Roll'.")
 
         days_in_m = calendar.monthrange(muster_date.year, muster_date.month)[1]
         logged_day_nums = {int(d.split("-")[2]) for d in logged_dates_this_month if len(d.split("-")) == 3}
@@ -1891,13 +2100,18 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
             st.session_state[cache_key] = {}
             for _, w in active_workers.iterrows():
                 wid = str(w["Worker_ID"])
-                def_att, def_ot, def_loc = "P", 0.0, "Punch"
+                w_wo_day = normalize_week_off(w.get("Week_Off_Day", "Sunday"))
+                is_wo_today = (w_wo_day == selected_weekday_name)
+
+                def_att = "WO" if is_wo_today else "P"
+                def_ot = 0.0
+                def_loc = "Punch"
 
                 if not day_records.empty and "Worker_ID" in day_records.columns:
                     match_prev = day_records[day_records["Worker_ID"].astype(str) == wid]
                     if not match_prev.empty:
                         r0 = match_prev.iloc[0]
-                        def_att = str(r0.get("Attendance", "P"))
+                        def_att = str(r0.get("Attendance", def_att))
                         def_ot = float(r0.get("OT_Hours", 0.0) or 0.0)
                         def_loc = normalize_duty_type(r0.get("Duty_Location", "Punch"))
 
@@ -1907,10 +2121,14 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
         with st.container(border=True):
             st.markdown("###### ⚡ Selective Quick-Mark Tool")
-            st.caption("Select specific workers below (or leave empty to apply to all shown workers). Note: 'Punch' reconciles with Tata Form XVII; 'Non-Punch' tracks non-punch/private duty.")
+            st.caption("Select specific workers below (or leave empty to apply to all unlocked workers). Week-Off locked workers cannot be overwritten without Admin approval.")
             
             worker_map = {
                 f"{r['Worker_ID']} — {r['Full_Name']}": str(r["Worker_ID"])
+                for _, r in active_workers.iterrows()
+            }
+            wo_lookup_map = {
+                str(r["Worker_ID"]): (normalize_week_off(r.get("Week_Off_Day", "Sunday")) == selected_weekday_name)
                 for _, r in active_workers.iterrows()
             }
             
@@ -1919,7 +2137,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                 chosen_labels = st.multiselect(
                     "Choose Specific Workers",
                     options=list(worker_map.keys()),
-                    placeholder="Leave empty for ALL workers, or pick specific names...",
+                    placeholder="Leave empty for ALL unlocked workers, or pick specific names...",
                     label_visibility="collapsed"
                 )
             with sm_c2:
@@ -1930,6 +2148,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                         "Present — Non-Punch",
                         "Half Day (HD) — Punch",
                         "Half Day (HD) — Non-Punch",
+                        "Paid Leave (L)",
                         "Absent (A)",
                         "Week Off (WO)"
                     ],
@@ -1939,6 +2158,8 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                 if st.button("Apply to Selected", type="primary", use_container_width=True):
                     target_wids = [worker_map[l] for l in chosen_labels] if chosen_labels else list(worker_map.values())
                     for wid in target_wids:
+                        if wo_lookup_map.get(wid, False) and not admin_unlock_wo:
+                            continue  # Respect Week-Off lock!
                         if wid in st.session_state[cache_key]:
                             if bulk_action == "Present — Punch":
                                 st.session_state[cache_key][wid]["att"] = "P"
@@ -1952,6 +2173,8 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                             elif bulk_action == "Half Day (HD) — Non-Punch":
                                 st.session_state[cache_key][wid]["att"] = "HD"
                                 st.session_state[cache_key][wid]["loc"] = "Non-Punch"
+                            elif bulk_action == "Paid Leave (L)":
+                                st.session_state[cache_key][wid]["att"] = "L"
                             elif bulk_action == "Absent (A)":
                                 st.session_state[cache_key][wid]["att"] = "A"
                             elif bulk_action == "Week Off (WO)":
@@ -1960,6 +2183,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
 
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         grid_cols = st.columns(2, gap="medium")
+        att_options_list = ["P", "HD", "L", "A", "WO"]
         
         for idx, (_, w_row) in enumerate(active_workers.iterrows()):
             col_target = grid_cols[idx % 2]
@@ -1968,21 +2192,48 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
             wdiv = str(w_row["Division"])
             wrole = str(w_row["Designation"])
             wskill = str(w_row.get("Skill_Category", ""))
+            w_wo_day = normalize_week_off(w_row.get("Week_Off_Day", "Sunday"))
+            is_wo_locked = (w_wo_day == selected_weekday_name) and (not admin_unlock_wo)
+
             cur_state = st.session_state[cache_key].get(wid, {})
+            if is_wo_locked and cur_state.get("att") not in ["WO"]:
+                # If no prior admin-approved working entry exists for today, enforce WO lock
+                has_saved_working = False
+                if not day_records.empty and "Worker_ID" in day_records.columns:
+                    prev_r = day_records[day_records["Worker_ID"].astype(str) == wid]
+                    if not prev_r.empty and str(prev_r.iloc[0].get("Attendance")) in ["P", "HD"]:
+                        has_saved_working = True
+                if not has_saved_working:
+                    cur_state["att"] = "WO"
+                    cur_state["ot"] = 0.0
+
+            cur_att_val = cur_state.get("att", "P")
+            if cur_att_val not in att_options_list:
+                cur_att_val = "P"
             cur_loc_norm = normalize_duty_type(cur_state.get("loc", "Punch"))
 
             with col_target:
                 with st.container(border=True):
-                    st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>", unsafe_allow_html=True)
-                    st.caption(f"{wrole} ({wskill})")
+                    lock_tag = f" &nbsp;•&nbsp; <span style='color:#dc2626; font-size:0.74rem; font-weight:600;'>🔒 Weekly Off ({w_wo_day})</span>" if is_wo_locked else ""
+                    st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>{lock_tag}", unsafe_allow_html=True)
+                    st.caption(f"{wrole} ({wskill}) • Assigned Off: {w_wo_day}")
 
                     r_c1, r_c2, r_c3 = st.columns([1.1, 1.3, 1.0])
                     with r_c1:
-                        cur_state["att"] = st.selectbox("Status", ["P", "HD", "A", "WO"], index=["P", "HD", "A", "WO"].index(cur_state.get("att", "P")), key=f"att_s_{wid}")
+                        cur_state["att"] = st.selectbox(
+                            "Status", att_options_list, index=att_options_list.index(cur_att_val),
+                            disabled=is_wo_locked, key=f"att_s_{wid}"
+                        )
                     with r_c2:
-                        cur_state["loc"] = st.selectbox("Punch Type", ["Punch", "Non-Punch"], index=["Punch", "Non-Punch"].index(cur_loc_norm), key=f"loc_s_{wid}")
+                        cur_state["loc"] = st.selectbox(
+                            "Punch Type", ["Punch", "Non-Punch"], index=["Punch", "Non-Punch"].index(cur_loc_norm),
+                            disabled=is_wo_locked, key=f"loc_s_{wid}"
+                        )
                     with r_c3:
-                        cur_state["ot"] = st.number_input("OT (Hrs)", min_value=0.0, max_value=16.0, step=0.5, value=float(cur_state.get("ot", 0.0)), key=f"ot_s_{wid}")
+                        cur_state["ot"] = st.number_input(
+                            "OT (Hrs)", min_value=0.0, max_value=16.0, step=0.5, value=float(cur_state.get("ot", 0.0)),
+                            disabled=is_wo_locked, key=f"ot_s_{wid}"
+                        )
 
             st.session_state[cache_key][wid] = cur_state
 
@@ -2003,7 +2254,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     "Advance_Amount": 0.0,
                     "Payment_Mode": "Cash",
                     "Supervisor": st.session_state.current_user,
-                    "Remarks": ""
+                    "Remarks": "Admin WO Approved" if (normalize_week_off(w_row.get("Week_Off_Day", "Sunday")) == selected_weekday_name and s_data.get("att") in ["P", "HD"]) else ""
                 })
 
             all_m = load_sheet_df("muster_roll")
@@ -2018,10 +2269,10 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                 st.rerun()
 
 
-# ----------------- VIEW 4: MONTHLY ATTENDANCE MATRIX (EXCEL REGISTER FOR PRESENT EMPLOYEES) -----------------
+# ----------------- VIEW 5: MONTHLY ATTENDANCE MATRIX (EXCEL REGISTER FOR PRESENT EMPLOYEES) -----------------
 elif current_view == "Monthly Attendance Matrix":
     st.markdown("#### Monthly Attendance Matrix (Excel Register)")
-    st.caption("Day-by-day attendance register showing only employees with at least 1 Present or Half-Day in the selected month")
+    st.caption("Day-by-day attendance register showing only employees with at least 1 Present, Half-Day, or Paid Leave in the selected month")
 
     w_master = load_sheet_df("worker_master")
     muster_df = load_sheet_df("muster_roll")
@@ -2049,10 +2300,10 @@ elif current_view == "Monthly Attendance Matrix":
         if m_sub.empty:
             st.info(f"No attendance entries found for {mat_month} {mat_year}.")
         else:
-            present_wids = m_sub[m_sub["Attendance"].isin(["P", "HD"])]["Worker_ID"].astype(str).unique().tolist()
+            present_wids = m_sub[m_sub["Attendance"].isin(["P", "HD", "L"])]["Worker_ID"].astype(str).unique().tolist()
             
             if not present_wids:
-                st.warning(f"No employee has any Present ('P' or 'HD') days in {mat_month} {mat_year}.")
+                st.warning(f"No employee has any Present ('P', 'HD', or 'L') days in {mat_month} {mat_year}.")
             else:
                 matrix_rows = []
                 for wid in sorted(present_wids):
@@ -2092,11 +2343,13 @@ elif current_view == "Monthly Attendance Matrix":
                     non_punch_p = len(w_logs[(w_logs["Duty_Location"] == "Non-Punch") & (w_logs["Attendance"] == "P")]) + (
                         len(w_logs[(w_logs["Duty_Location"] == "Non-Punch") & (w_logs["Attendance"] == "HD")]) * 0.5
                     )
-                    tot_present = punch_p + non_punch_p
+                    paid_l = len(w_logs[w_logs["Attendance"] == "L"])
+                    tot_present = punch_p + non_punch_p + paid_l
                     tot_ot = pd.to_numeric(w_logs["OT_Hours"], errors="coerce").fillna(0.0).sum()
 
                     row_dict["Punch Days"] = punch_p
                     row_dict["Non-Punch Days"] = non_punch_p
+                    row_dict["Paid Leave"] = paid_l
                     row_dict["Total Days"] = tot_present
                     row_dict["OT Hrs"] = tot_ot
 
@@ -2122,18 +2375,22 @@ elif current_view == "Monthly Attendance Matrix":
                 )
 
 
-# ----------------- VIEW 5: ADVANCE REGISTER -----------------
+# ----------------- VIEW 6: ADVANCE REGISTER WITH RUNNING CARRY-FORWARD LEDGER -----------------
 elif current_view == "Advance & Expense Register":
-    st.markdown("#### Advance & Expense Register")
-    st.caption("Disburse and track site advances and allowances")
+    st.markdown("#### Advance & Expense Register (With Carry-Forward Ledger)")
+    st.caption("Site advances deduct ONLY from Non-Punch / Fixed wages. Any unrecovered balance automatically carries forward to the next month.")
 
     w_master = load_sheet_df("worker_master")
+    muster_df = load_sheet_df("muster_roll")
+    adv_history = load_sheet_df("worker_advances")
+    tata_df = load_sheet_df("tata_form_xvii")
+
     worker_options = {}
     if not w_master.empty and "Worker_ID" in w_master.columns:
         for _, r in w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].iterrows():
             worker_options[f"{r['Full_Name']} ({r['Worker_ID']})"] = (r['Worker_ID'], r['Full_Name'], r['Division'])
 
-    c_adv1, c_adv2 = st.columns([1, 2], gap="large")
+    c_adv1, c_adv2 = st.columns([1.0, 2.0], gap="large")
     with c_adv1:
         with st.container(border=True):
             st.markdown("###### Disburse Advance")
@@ -2147,7 +2404,6 @@ elif current_view == "Advance & Expense Register":
 
                     if st.form_submit_button("Record Transaction", type="primary", use_container_width=True):
                         w_id, w_name, w_div = worker_options[sel_w]
-                        adv_df = load_sheet_df("worker_advances")
                         new_adv = {
                             "Txn_ID": f"ADV-{int(time.time())}",
                             "Date": a_date.strftime("%Y-%m-%d"),
@@ -2159,25 +2415,46 @@ elif current_view == "Advance & Expense Register":
                             "Supervisor": st.session_state.current_user,
                             "Remarks": a_rem
                         }
-                        updated_adv = pd.concat([adv_df, pd.DataFrame([new_adv])], ignore_index=True)
+                        updated_adv = pd.concat([adv_history, pd.DataFrame([new_adv])], ignore_index=True)
                         if save_sheet_df("worker_advances", updated_adv[ADVANCE_LOG_COLS]):
                             st.success("Transaction recorded.")
                             st.rerun()
 
     with c_adv2:
         with st.container(border=True):
+            st.markdown("###### 📊 Worker-Wise Advance Balance & Carry-Forward Status")
+            today_dt = datetime.date.today()
+            payroll_now = compute_monthly_payroll_and_advances(w_master, muster_df, adv_history, tata_df, today_dt.year, today_dt.month)
+            
+            bal_rows = []
+            for wid, pdata in payroll_now.items():
+                if pdata["Total_Advance_Due"] > 0 or pdata["Closing_Carry_Forward"] > 0:
+                    bal_rows.append({
+                        "Worker ID": wid,
+                        "Name": pdata["Worker_Name"],
+                        "Opening Adv. (₹)": pdata["Opening_Advance"],
+                        "This Month Adv. (₹)": pdata["Month_New_Advance"],
+                        "Adjusted in Wages (₹)": pdata["Advance_Deducted"],
+                        "Carry Forward Next Month (₹)": pdata["Closing_Carry_Forward"]
+                    })
+            if bal_rows:
+                bal_df = pd.DataFrame(bal_rows)
+                st.dataframe(bal_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("All employee advances are fully settled (₹0 pending balance).")
+
+        with st.container(border=True):
             st.markdown("###### Recent Advance Transactions")
-            adv_history = load_sheet_df("worker_advances")
             if not adv_history.empty and "Txn_ID" in adv_history.columns:
                 st.dataframe(adv_history[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
             else:
                 st.info("No recorded transactions.")
 
 
-# ----------------- VIEW 6: WAGES, FORM XVII, 3-UP SALARY SLIPS & DIRECT PDF BANK LETTERS -----------------
+# ----------------- VIEW 7: WAGES, FORM XVII, 3-UP SALARY SLIPS & DIRECT PDF BANK LETTERS -----------------
 elif current_view == "Monthly Wages & Payout Summary":
     st.markdown("#### Monthly Wages, Form XVII Audit, Salary Slips & Bank Letters")
-    st.caption("Reconcile Punch duty with Form XVII, print 3-up Salary Slips (Authorised Signatory), and download Bank Covering Letters")
+    st.caption("Strict Form XVII bank transfers, Non-Punch/Fixed payroll (with PF/ESIC/Paid Leave/Carry-Forward), and 3-up Salary Slips")
 
     w_master = load_sheet_df("worker_master")
     muster_df = load_sheet_df("muster_roll")
@@ -2287,7 +2564,6 @@ elif current_view == "Monthly Wages & Payout Summary":
                             tata_df = tata_df[~tata_df["Wages_Period"].apply(period_matches)]
                         final_tata = pd.concat([tata_df, new_df], ignore_index=True)
                     else:
-                        # Append / Merge with existing month records (group by Worker_Name to sum multiple bills cleanly)
                         existing_m = pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
                         other_m = tata_df.copy()
                         if not tata_df.empty and "Wages_Period" in tata_df.columns:
@@ -2313,133 +2589,62 @@ elif current_view == "Monthly Wages & Payout Summary":
                 if not xvii_file.name.lower().endswith(".pdf") or PYPDF_AVAILABLE:
                     st.error("Could not find 'Net_Amount_Paid' column in uploaded file.")
 
-    st.markdown(f"###### Reconciliation Cockpit ({wage_period_str} Punch Duty vs Form XVII)")
+    st.markdown(f"###### Reconciliation & Payroll Cockpit ({wage_period_str})")
 
-    if not tata_df.empty and "Wages_Period" in tata_df.columns:
-        tata_cur = tata_df[tata_df["Wages_Period"].apply(period_matches)]
-    else:
-        tata_cur = pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
-
-    d_start = f"{sel_year}-{month_num:02d}-01"
-    d_end = f"{sel_year}-{month_num:02d}-{calendar.monthrange(sel_year, month_num)[1]:02d}"
+    payroll_results = compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num)
 
     recon_rows = []
     boi_batch = []
     neft_batch = []
     salary_slip_records = []
 
-    if not w_master.empty and "Worker_ID" in w_master.columns:
-        for _, w in w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].iterrows():
-            wid = str(w["Worker_ID"])
-            wname = str(w["Full_Name"])
-            wdiv = str(w.get("Division", ""))
-            wrole = str(w.get("Designation", ""))
-            wskill = str(w.get("Skill_Category", ""))
-            wwtype = str(w.get("Wage_Type", "DAILY_WAGE"))
-            wrate = float(pd.to_numeric(w.get("Base_Rate", 0.0), errors="coerce") or 0.0)
-            b_acc = str(w.get("Bank_Account_No", "")).strip()
-            b_ifsc = str(w.get("Bank_IFSC_Code", "")).strip().upper()
-            b_branch = str(w.get("Bank_Branch_Details", "")).strip().upper()
+    for wid, p in payroll_results.items():
+        if p["Status"] != "ACTIVE" and p["Total_Days"] == 0 and p["Form_XVII_Net"] == 0 and p["Closing_Carry_Forward"] == 0:
+            continue
 
-            punch_days = 0.0
-            non_punch_days = 0.0
-            ot_hrs_tot = 0.0
-            if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
-                w_m = muster_df[(muster_df["Worker_ID"].astype(str) == wid) & 
-                               (muster_df["Date"].astype(str) >= d_start) & 
-                               (muster_df["Date"].astype(str) <= d_end)].copy()
-                w_m["Duty_Location"] = w_m["Duty_Location"].apply(normalize_duty_type)
-                
-                w_punch = w_m[w_m["Duty_Location"] == "Punch"]
-                punch_days = len(w_punch[w_punch["Attendance"] == "P"]) + (len(w_punch[w_punch["Attendance"] == "HD"]) * 0.5)
+        punch_days = p["Punch_Days"]
+        f17_days = p["Form_XVII_Days"]
+        f17_net = p["Form_XVII_Net"]
+        b_acc = p["Bank_Account_No"]
+        b_ifsc = p["Bank_IFSC_Code"]
+        b_branch = p["Bank_Branch_Details"]
 
-                w_non_punch = w_m[w_m["Duty_Location"] == "Non-Punch"]
-                non_punch_days = len(w_non_punch[w_non_punch["Attendance"] == "P"]) + (len(w_non_punch[w_non_punch["Attendance"] == "HD"]) * 0.5)
+        status_badge = "🟢 Matched"
+        if f17_days == 0 and punch_days > 0:
+            status_badge = "🔴 No Punch (Field Only)"
+        elif f17_days != punch_days:
+            status_badge = f"🟡 Variance ({punch_days - f17_days:+.1f} d)"
 
-                ot_hrs_tot = pd.to_numeric(w_m["OT_Hours"], errors="coerce").fillna(0.0).sum()
+        if p["Total_Days"] > 0 or f17_net > 0 or p["Total_Advance_Due"] > 0:
+            salary_slip_records.append(p)
 
-            # Advances deducted in this month
-            adv_deducted = 0.0
-            if not adv_df.empty and "Date" in adv_df.columns and "Worker_ID" in adv_df.columns:
-                w_adv = adv_df[(adv_df["Worker_ID"].astype(str) == wid) &
-                               (adv_df["Date"].astype(str) >= d_start) &
-                               (adv_df["Date"].astype(str) <= d_end)]
-                adv_deducted = pd.to_numeric(w_adv["Amount"], errors="coerce").fillna(0.0).sum()
+        recon_rows.append({
+            "Worker ID": wid,
+            "Name": p["Worker_Name"],
+            "Punch": punch_days,
+            "Non-Punch": p["Non_Punch_Days"],
+            "Leave (L)": p["Paid_Leave_Days"],
+            "Form XVII": f17_days,
+            "Status": status_badge,
+            "Form XVII Bank (₹)": f17_net,
+            "Non-Punch/Fixed Net (₹)": p["Non_Punch_Net_Pay"],
+            "Adv. Ded. (₹)": p["Advance_Deducted"],
+            "Carry Fwd Adv (₹)": p["Closing_Carry_Forward"]
+        })
 
-            tata_approved_days = 0.0
-            tata_net_paid = 0.0
-            if not tata_cur.empty and "Worker_Name" in tata_cur.columns:
-                tata_match = tata_cur[tata_cur["Worker_Name"].astype(str).str.strip().str.upper() == wname.strip().upper()]
-                if not tata_match.empty:
-                    tata_approved_days = float(pd.to_numeric(tata_match["Approved_Days"], errors="coerce").fillna(0.0).sum())
-                    tata_net_paid = float(pd.to_numeric(tata_match["Net_Amount_Paid"], errors="coerce").fillna(0.0).sum())
-
-            status_badge = "🟢 Matched"
-            if tata_approved_days == 0 and punch_days > 0:
-                status_badge = "🔴 No Punch (Field Only)"
-            elif tata_approved_days != punch_days:
-                status_badge = f"🟡 Variance ({punch_days - tata_approved_days:+.1f} d)"
-
-            final_bank_transfer = tata_net_paid
-
-            # Calculate Gross & Net for Salary Slip (Uses Form XVII locked amount if available, else Field days * Rate + OT)
-            total_worked_days = punch_days + non_punch_days
-            if tata_net_paid > 0:
-                gross_earned = tata_net_paid + adv_deducted
-                net_slip_pay = max(0.0, tata_net_paid - adv_deducted)
+        # Strict Form XVII Bank Transfer (Zero advance deduction on Form XVII amount)
+        if f17_net > 0 and b_acc:
+            item = {
+                "NAME": p["Worker_Name"],
+                "AMOUNT": f17_net,
+                "BENEFICIARY ACCOUNT NO": b_acc,
+                "IFSC CODE": b_ifsc,
+                "BANK & BRANCH DETAILS": b_branch
+            }
+            if b_ifsc.startswith("BKID"):
+                boi_batch.append(item)
             else:
-                if wwtype == "MONTHLY_FIXED":
-                    gross_earned = wrate if total_worked_days > 0 else 0.0
-                else:
-                    ot_pay = (wrate / 8.0) * ot_hrs_tot
-                    gross_earned = (total_worked_days * wrate) + ot_pay
-                net_slip_pay = max(0.0, gross_earned - adv_deducted)
-
-            if total_worked_days > 0 or tata_net_paid > 0:
-                salary_slip_records.append({
-                    "Worker_ID": wid,
-                    "Worker_Name": wname,
-                    "Designation": wrole,
-                    "Skill_Category": wskill,
-                    "Division": wdiv,
-                    "Wage_Type": wwtype,
-                    "Base_Rate": wrate,
-                    "Bank_Account_No": b_acc or "Cash",
-                    "Bank_IFSC_Code": b_ifsc or "N/A",
-                    "Punch_Days": punch_days,
-                    "Non_Punch_Days": non_punch_days,
-                    "OT_Hours": ot_hrs_tot,
-                    "Gross_Wages": gross_earned,
-                    "Advance_Deducted": adv_deducted,
-                    "Net_Payable": net_slip_pay,
-                    "Form_XVII_Days": tata_approved_days,
-                    "Settlement_Mode": f"Bank ({b_branch})" if b_acc else "Cash Disbursement"
-                })
-
-            recon_rows.append({
-                "Worker ID": wid,
-                "Name": wname,
-                "Punch Days": punch_days,
-                "Non-Punch Days": non_punch_days,
-                "Form XVII Days": tata_approved_days,
-                "Status": status_badge,
-                "Locked Net (₹)": final_bank_transfer,
-                "IFSC": b_ifsc,
-                "Bank Details": b_branch
-            })
-
-            if final_bank_transfer > 0 and b_acc:
-                item = {
-                    "NAME": wname,
-                    "AMOUNT": final_bank_transfer,
-                    "BENEFICIARY ACCOUNT NO": b_acc,
-                    "IFSC CODE": b_ifsc,
-                    "BANK & BRANCH DETAILS": b_branch
-                }
-                if b_ifsc.startswith("BKID"):
-                    boi_batch.append(item)
-                else:
-                    neft_batch.append(item)
+                neft_batch.append(item)
 
     recon_df = pd.DataFrame(recon_rows)
     if not recon_df.empty:
@@ -2448,12 +2653,12 @@ elif current_view == "Monthly Wages & Payout Summary":
     # --- SECTION A: 3-UP COMPACT SALARY SLIPS PDF (AUTHORISED SIGNATORY) ---
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
     with st.container(border=True):
-        st.markdown("###### 🧾 Worker Salary Slips (3 Slips per A4 Page • Authorised Signatory)")
+        st.markdown("###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF, ESIC, Form XVII & Carry-Forward Advance)")
         if not salary_slip_records:
             st.info("No active attendance or Form XVII payouts found for this month to generate Salary Slips.")
         else:
             slip_options = {
-                f"{r['Worker_ID']} — {r['Worker_Name']} (Net: ₹{r['Net_Payable']:,.0f})": r["Worker_ID"]
+                f"{r['Worker_ID']} — {r['Worker_Name']} (Net: ₹{r['Net_Payable']:,.0f} | CF Adv: ₹{r['Closing_Carry_Forward']:,.0f})": r["Worker_ID"]
                 for r in salary_slip_records
             }
             sc_1, sc_2 = st.columns([2.1, 1.1])
@@ -2483,7 +2688,7 @@ elif current_view == "Monthly Wages & Payout Summary":
 
     # --- SECTION B: DIRECT PDF BANK COVERING LETTERS ---
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    st.markdown("###### Automated Bank Covering Letters (Direct PDF Download)")
+    st.markdown("###### Automated Bank Covering Letters (Strict Form XVII Bank Payouts)")
 
     p_c1, p_c2 = st.columns([1.2, 1.2])
     with p_c1:
@@ -2535,7 +2740,7 @@ elif current_view == "Monthly Wages & Payout Summary":
             st.info("No NEFT transfers in this batch.")
 
 
-# ----------------- VIEW 7: BILLING MODULE PLACEHOLDERS -----------------
+# ----------------- VIEW 8: BILLING MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Logsheet Entry", "Monthly Statement & Abstract", "Locked RA Bills Repository", 
                       "Delivery Order (DO) Contract Management", "Vehicle Fleet Master Mapping", "Commercial Rate Master"]:
     st.markdown(f"#### {current_view}")
@@ -2543,14 +2748,14 @@ elif current_view in ["Daily Logsheet Entry", "Monthly Statement & Abstract", "L
     st.info(f"Module '{current_view}' is ready.")
 
 
-# ----------------- VIEW 8: FUEL MODULE PLACEHOLDERS -----------------
+# ----------------- VIEW 9: FUEL MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Diesel Issue Slip", "Fleet Fuel Benchmark Master", "Theft & Pilferage Audit"]:
     st.markdown(f"#### {current_view}")
     st.caption("Fleet Fuel Control, Bowser Dispatches and Anti-Theft Analytics")
     st.info(f"Module '{current_view}' is ready.")
 
 
-# ----------------- VIEW 9: ADMIN & USER PERMISSIONS (ADMIN ONLY) -----------------
+# ----------------- VIEW 10: ADMIN & USER PERMISSIONS (ADMIN ONLY) -----------------
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
     st.markdown("#### User Accounts & Access Control (RBAC)")
     st.caption("Provision credentials and configure sub-menu permissions per user")
