@@ -53,6 +53,19 @@ COMPANY_HEADER = {
     "CURRENT_AC": "482025110000105"
 }
 
+SKILL_CATEGORIES = ["Unskilled", "Semi-Skilled", "Skilled", "Highly Skilled"]
+
+WAGE_MASTER_COLS = [
+    "Skill_Category", "Basic_Pay", "VDA_Allowance", "Total_Daily_Rate", "Effective_From", "Remarks"
+]
+
+DEFAULT_WAGE_RATES = [
+    {"Skill_Category": "Unskilled", "Basic_Pay": 350.0, "VDA_Allowance": 215.0, "Total_Daily_Rate": 565.0, "Effective_From": "2026-10-01", "Remarks": "Tata Steel West Bokaro / Central Rate"},
+    {"Skill_Category": "Semi-Skilled", "Basic_Pay": 400.0, "VDA_Allowance": 250.0, "Total_Daily_Rate": 650.0, "Effective_From": "2026-10-01", "Remarks": "Tata Steel West Bokaro / Central Rate"},
+    {"Skill_Category": "Skilled", "Basic_Pay": 494.0, "VDA_Allowance": 300.0, "Total_Daily_Rate": 794.0, "Effective_From": "2026-10-01", "Remarks": "Tata Steel West Bokaro / Central Rate"},
+    {"Skill_Category": "Highly Skilled", "Basic_Pay": 565.0, "VDA_Allowance": 350.0, "Total_Daily_Rate": 915.0, "Effective_From": "2026-10-01", "Remarks": "Tata Steel West Bokaro / Central Rate"}
+]
+
 # ----------------- 1. DATABASE & SECRETS CONFIGURATION -----------------
 SHEET_NAME = st.secrets.get("test_spreadsheet_name", st.secrets.get("spreadsheet_name", "Tata_Steel_ERP_TEST_DB"))
 
@@ -63,8 +76,8 @@ USER_COLUMNS = [
 
 WORKER_MASTER_COLS = [
     "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type", 
-    "Base_Rate", "Contact_No", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", 
-    "Status", "Created_Date", "Photo_Base64"
+    "Skill_Category", "Base_Rate", "Contact_No", "Bank_Account_No", "Bank_IFSC_Code", 
+    "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
 ]
 
 MUSTER_ROLL_COLS = [
@@ -95,6 +108,28 @@ CIVIL_ROLES = [
     "Plumber & Pipe Fitter", "Rigger / Scaffolding Specialist", "Tile & Stone Layer", 
     "Civil Construction Helper", "Civil Site Supervisor", "Other (Custom Entry)"
 ]
+
+def infer_skill_category_from_role_or_rate(role_str, rate_val, wage_type="DAILY_WAGE"):
+    if str(wage_type).upper() == "MONTHLY_FIXED":
+        return "Monthly Fixed"
+    r = str(role_str).lower()
+    if "supervisor" in r or "excavator" in r or "crane" in r or "dozer" in r:
+        return "Highly Skilled"
+    if "driver" in r or "operator" in r or "mason" in r or "welder" in r or "electrician" in r or "mechanic" in r or "carpenter" in r or "plumber" in r or "tile" in r or "fitter" in r:
+        return "Skilled"
+    if "rigger" in r or "painter" in r or "gypsum" in r or "bender" in r:
+        return "Semi-Skilled"
+    try:
+        rv = float(rate_val or 0)
+        if rv >= 850:
+            return "Highly Skilled"
+        elif rv >= 700:
+            return "Skilled"
+        elif rv >= 600:
+            return "Semi-Skilled"
+    except Exception:
+        pass
+    return "Unskilled"
 
 def compress_photo_to_base64(uploaded_img):
     """Compresses an uploaded passport photo into a clean <20KB JPEG base64 string for Google Sheets & PDF ID cards."""
@@ -134,7 +169,8 @@ def load_sheet_df(worksheet_name):
         "muster_roll": MUSTER_ROLL_COLS,
         "worker_advances": ADVANCE_LOG_COLS,
         "tata_form_xvii": TATA_COMPLIANCE_COLS,
-        "app_users": USER_COLUMNS
+        "app_users": USER_COLUMNS,
+        "wage_rate_master": WAGE_MASTER_COLS
     }
     expected_cols = schema_map.get(worksheet_name, [])
 
@@ -155,6 +191,18 @@ def load_sheet_df(worksheet_name):
                 continue
             return pd.DataFrame(columns=expected_cols)
     return pd.DataFrame(columns=expected_cols)
+
+def get_active_wage_rates_df():
+    df = load_sheet_df("wage_rate_master")
+    if df.empty or "Skill_Category" not in df.columns:
+        return pd.DataFrame(DEFAULT_WAGE_RATES)
+    existing_cats = df["Skill_Category"].astype(str).tolist()
+    missing = [d for d in DEFAULT_WAGE_RATES if d["Skill_Category"] not in existing_cats]
+    if missing:
+        df = pd.concat([df, pd.DataFrame(missing)], ignore_index=True)
+    for col in ["Basic_Pay", "VDA_Allowance", "Total_Daily_Rate"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    return df
 
 def save_sheet_df(worksheet_name, df):
     if df is None:
@@ -585,6 +633,7 @@ def generate_atm_id_cards_pdf(workers_df):
 TAB_REGISTRY = {
     "➕ Employee Enrolment": "Attendance",
     "📋 Employee Master Register": "Attendance",
+    "⚖️ Statutory Wage Rates": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
     "Monthly Attendance Matrix": "Attendance",
     "Advance & Expense Register": "Attendance",
@@ -618,6 +667,7 @@ WORKSPACES_TREE = [
         "submenus": [
             ("Employee Enrolment", "➕ Employee Enrolment"),
             ("Master Register & ID Cards", "📋 Employee Master Register"),
+            ("Statutory Wage Rates", "⚖️ Statutory Wage Rates"),
             ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
             ("Monthly Attendance Matrix", "Monthly Attendance Matrix"),
             ("Advance & Expenses", "Advance & Expense Register"),
@@ -970,7 +1020,6 @@ with st.sidebar:
         is_open = (st.session_state.active_workspace == ws_id)
         chevron = "▾" if is_open else "▸"
 
-        # MAIN MENU HEADER
         if st.button(f"{chevron}  {ws_icon}  {ws_title}", key=f"nav_ws_{ws_id}", use_container_width=True, type="secondary"):
             st.session_state.active_workspace = ws_id
             st.session_state.selected_worker_card_id = None
@@ -978,7 +1027,6 @@ with st.sidebar:
                 st.session_state.active_subtab = permitted_submenus[0][1]
             st.rerun()
 
-        # SUB-MENU ITEMS
         if is_open:
             for disp_name, reg_key in permitted_submenus:
                 is_sub_active = (st.session_state.active_subtab == reg_key)
@@ -989,7 +1037,6 @@ with st.sidebar:
                     st.session_state.selected_worker_card_id = None
                     st.rerun()
 
-    # ADMIN SECTION
     if st.session_state.current_role == "ADMIN":
         st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #e2e8f0;' />", unsafe_allow_html=True)
         is_admin_open = (st.session_state.active_workspace == "Admin")
@@ -1057,10 +1104,13 @@ st.markdown("<hr style='margin-top: 10px; margin-bottom: 18px; border: none; bor
 # ----------------- 7. MAIN VIEW ROUTING -----------------
 current_view = st.session_state.active_subtab
 
-# ----------------- VIEW 1: EMPLOYEE ENROLMENT (WITH PHOTO UPLOAD) -----------------
+# ----------------- VIEW 1: EMPLOYEE ENROLMENT (WITH SKILL CATEGORY & AUTO-RATE) -----------------
 if current_view == "➕ Employee Enrolment":
     st.markdown("#### Employee Enrolment")
-    st.caption("Onboard workforce members with identity, passport photo, and bank account particulars")
+    st.caption("Onboard workforce members with statutory skill category, passport photo, and bank details")
+
+    wage_rates_df = get_active_wage_rates_df()
+    rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
 
     entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload"], horizontal=True)
 
@@ -1090,12 +1140,19 @@ if current_view == "➕ Employee Enrolment":
                 if sel_role == "Other (Custom Entry)":
                     custom_role = st.text_input("Specify Custom Role", key="enrol_custom_role").strip()
 
-                c_w1, c_w2 = st.columns(2)
+                c_w1, c_w2, c_w3 = st.columns([1.0, 1.1, 1.0])
                 with c_w1:
                     w_wage_type = st.selectbox("Wage Model", ["DAILY_WAGE", "MONTHLY_FIXED"], key="enrol_wage_type")
                 with c_w2:
                     if w_wage_type == "DAILY_WAGE":
-                        w_rate = st.number_input("Daily Wage Rate (₹)", min_value=100.0, value=650.0, step=50.0, key="enrol_rate_daily")
+                        w_skill_cat = st.selectbox("Skill Category", SKILL_CATEGORIES, key="enrol_skill_cat")
+                    else:
+                        w_skill_cat = "Monthly Fixed"
+                        st.text_input("Skill Category", value="Monthly Fixed", disabled=True, key="enrol_skill_fixed")
+                with c_w3:
+                    if w_wage_type == "DAILY_WAGE":
+                        auto_rate_val = float(rate_lookup.get(w_skill_cat, 565.0))
+                        w_rate = st.number_input("Daily Wage Rate (₹)", min_value=100.0, value=auto_rate_val, step=10.0, key=f"enrol_rate_{w_skill_cat}")
                     else:
                         w_rate = st.number_input("Monthly Salary (₹)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
 
@@ -1127,6 +1184,7 @@ if current_view == "➕ Employee Enrolment":
                             "Division": w_div,
                             "Designation": final_role,
                             "Wage_Type": w_wage_type,
+                            "Skill_Category": w_skill_cat,
                             "Base_Rate": w_rate,
                             "Contact_No": w_contact,
                             "Bank_Account_No": b_acc,
@@ -1138,20 +1196,21 @@ if current_view == "➕ Employee Enrolment":
                         }
                         updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                         if save_sheet_df("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                            st.success(f"Employee {w_name} ({next_wid}) enrolled.")
+                            st.success(f"Employee {w_name} ({next_wid}) enrolled under {w_skill_cat} @ ₹{w_rate:,.0f}/day.")
                             st.rerun()
 
         with c_info:
             with st.container(border=True):
-                st.markdown("###### Photo & Routing Guidelines")
-                st.caption("• **Employee Photo:** Uploaded photos are compressed automatically and printed directly onto the 8-up ATM ID Cards PDF.")
-                st.caption("• **Bank of India (BOI):** IFSC codes starting with `BKID` automatically route to the BOI internal transfer batch.")
-                st.caption("• **Other Banks (NEFT):** All non-BOI IFSC codes route to the NEFT covering sheet.")
+                st.markdown("###### Active Statutory Daily Rates")
+                for _, rr in wage_rates_df.iterrows():
+                    st.caption(f"• **{rr['Skill_Category']}:** ₹{float(rr['Total_Daily_Rate']):,.0f}/day *(Basic ₹{float(rr['Basic_Pay']):,.0f} + VDA ₹{float(rr['VDA_Allowance']):,.0f})*")
+                st.markdown("---")
+                st.caption("Update rates anytime in **Statutory Wage Rates** to revise all workers in one click.")
 
     else:
         with st.container(border=True):
             st.markdown("###### Bulk Employee Roster Import")
-            st.caption("Upload CSV or Excel file containing workforce details and bank accounts.")
+            st.caption("Upload CSV or Excel file containing workforce details. Missing Skill Categories will be auto-mapped from designation/rate.")
 
             up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
             if up_file:
@@ -1173,6 +1232,12 @@ if current_view == "➕ Employee Enrolment":
 
                         raw_desig = str(b_row.get("Designation", "")).strip()
                         clean_desig = raw_desig if raw_desig and raw_desig.lower() != "nan" else "Unassigned"
+                        w_type_val = str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper()
+                        b_rate_val = float(b_row.get("Base_Rate", 565.0) or 565.0)
+                        
+                        raw_skill = str(b_row.get("Skill_Category", "")).strip()
+                        if not raw_skill or raw_skill.lower() == "nan":
+                            raw_skill = infer_skill_category_from_role_or_rate(clean_desig, b_rate_val, w_type_val)
 
                         appended_rows.append({
                             "Worker_ID": new_gen_id,
@@ -1180,8 +1245,9 @@ if current_view == "➕ Employee Enrolment":
                             "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")).strip(),
                             "Division": div_val,
                             "Designation": clean_desig,
-                            "Wage_Type": str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper(),
-                            "Base_Rate": float(b_row.get("Base_Rate", 565.0) or 565.0),
+                            "Wage_Type": w_type_val,
+                            "Skill_Category": raw_skill,
+                            "Base_Rate": b_rate_val,
                             "Contact_No": str(b_row.get("Contact_No", "")).strip(),
                             "Bank_Account_No": str(b_row.get("Bank_Account_No", "")).strip(),
                             "Bank_IFSC_Code": str(b_row.get("Bank_IFSC_Code", "")).strip().upper(),
@@ -1197,14 +1263,122 @@ if current_view == "➕ Employee Enrolment":
                         st.rerun()
 
 
+# ----------------- NEW VIEW: STATUTORY WAGE RATE MASTER & 1-CLICK BULK REVISION -----------------
+elif current_view == "⚖️ Statutory Wage Rates":
+    st.markdown("#### Statutory Minimum Wage Rate Master (Category-Wise)")
+    st.caption("Update Basic + VDA/DA rates for Unskilled, Semi-Skilled, Skilled, and Highly Skilled categories and sync all workers in one click")
+
+    wage_rates_df = get_active_wage_rates_df()
+    w_master = load_sheet_df("worker_master")
+
+    # Show current worker headcount per skill category
+    c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
+    kpi_cols = [c_kpi1, c_kpi2, c_kpi3, c_kpi4]
+    for idx, cat in enumerate(SKILL_CATEGORIES):
+        cnt = 0
+        if not w_master.empty and "Skill_Category" in w_master.columns:
+            cnt = len(w_master[(w_master["Status"] == "ACTIVE") & (w_master["Skill_Category"].astype(str) == cat)])
+        cur_r = float(wage_rates_df[wage_rates_df["Skill_Category"] == cat]["Total_Daily_Rate"].iloc[0])
+        kpi_cols[idx].metric(f"{cat}", f"₹{cur_r:,.0f} / day", f"{cnt} Active Workers")
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+    with st.container(border=True):
+        st.markdown("###### Edit Category Wage Rates (Basic + VDA = Total Daily Rate)")
+        st.caption("Modify Basic Pay, VDA/DA Allowance, or Total Daily Rate below. If Total Daily Rate is left as 0, it will automatically sum Basic + VDA.")
+
+        edited_rates_df = st.data_editor(
+            wage_rates_df[WAGE_MASTER_COLS],
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Skill_Category"],
+            column_config={
+                "Skill_Category": st.column_config.TextColumn("Skill Category"),
+                "Basic_Pay": st.column_config.NumberColumn("Basic / Day (₹)", min_value=0.0, step=1.0),
+                "VDA_Allowance": st.column_config.NumberColumn("VDA / DA (₹)", min_value=0.0, step=1.0),
+                "Total_Daily_Rate": st.column_config.NumberColumn("Total Daily Rate (₹)", min_value=0.0, step=1.0),
+                "Effective_From": st.column_config.TextColumn("Effective Date (YYYY-MM-DD)"),
+                "Remarks": st.column_config.TextColumn("Notification / Circular Ref")
+            },
+            key="wage_rate_editor"
+        )
+
+        b_col1, b_col2 = st.columns([1.4, 1.0])
+        with b_col1:
+            if st.button("🚀 Save Rates & Update All Daily Wage Workers", type="primary", use_container_width=True):
+                cleaned_rates = []
+                new_rate_map = {}
+                for _, r in edited_rates_df.iterrows():
+                    cat = str(r["Skill_Category"])
+                    b_pay = float(pd.to_numeric(r["Basic_Pay"], errors="coerce") or 0.0)
+                    vda_pay = float(pd.to_numeric(r["VDA_Allowance"], errors="coerce") or 0.0)
+                    tot_pay = float(pd.to_numeric(r["Total_Daily_Rate"], errors="coerce") or 0.0)
+                    
+                    # Auto-calculate Total if Basic + VDA was modified and Total wasn't manually overridden
+                    orig_row = wage_rates_df[wage_rates_df["Skill_Category"] == cat].iloc[0]
+                    if (b_pay != float(orig_row["Basic_Pay"]) or vda_pay != float(orig_row["VDA_Allowance"])) and tot_pay == float(orig_row["Total_Daily_Rate"]):
+                        tot_pay = b_pay + vda_pay
+                    elif tot_pay <= 0:
+                        tot_pay = b_pay + vda_pay
+
+                    new_rate_map[cat] = tot_pay
+                    cleaned_rates.append({
+                        "Skill_Category": cat,
+                        "Basic_Pay": b_pay,
+                        "VDA_Allowance": vda_pay,
+                        "Total_Daily_Rate": tot_pay,
+                        "Effective_From": str(r["Effective_From"]).strip() or datetime.date.today().strftime("%Y-%m-%d"),
+                        "Remarks": str(r["Remarks"]).strip()
+                    })
+
+                rates_saved = save_sheet_df("wage_rate_master", pd.DataFrame(cleaned_rates)[WAGE_MASTER_COLS])
+
+                # Bulk update every DAILY_WAGE worker in worker_master matching that Skill_Category
+                updated_count = 0
+                if not w_master.empty and "Wage_Type" in w_master.columns:
+                    for idx, wr in w_master.iterrows():
+                        if str(wr.get("Wage_Type", "")).upper() == "DAILY_WAGE":
+                            w_cat = str(wr.get("Skill_Category", "")).strip()
+                            if not w_cat or w_cat not in new_rate_map:
+                                w_cat = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), "DAILY_WAGE")
+                                w_master.at[idx, "Skill_Category"] = w_cat
+                            if w_cat in new_rate_map:
+                                w_master.at[idx, "Base_Rate"] = new_rate_map[w_cat]
+                                updated_count += 1
+
+                    save_sheet_df("worker_master", w_master[WORKER_MASTER_COLS])
+
+                if rates_saved:
+                    st.success(f"Updated Statutory Rates and revised Base_Rate for **{updated_count} Daily Wage Workers** across the ERP!")
+                    st.rerun()
+
+        with b_col2:
+            if st.button("🔄 Auto-Assign Skill Categories to Existing Workers", type="secondary", use_container_width=True):
+                if not w_master.empty:
+                    assigned = 0
+                    for idx, wr in w_master.iterrows():
+                        cur_cat = str(wr.get("Skill_Category", "")).strip()
+                        if not cur_cat or cur_cat.lower() == "nan":
+                            inferred = infer_skill_category_from_role_or_rate(
+                                wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE")
+                            )
+                            w_master.at[idx, "Skill_Category"] = inferred
+                            assigned += 1
+                    if save_sheet_df("worker_master", w_master[WORKER_MASTER_COLS]):
+                        st.success(f"Assigned Skill Categories to {assigned} workers!")
+                        st.rerun()
+
+
 # ----------------- VIEW 2: EMPLOYEE MASTER REGISTER, PHOTO UPDATE & SELECTIVE 8-UP ATM ID CARDS -----------------
 elif current_view == "📋 Employee Master Register":
     w_table = load_sheet_df("worker_master")
     muster_all = load_sheet_df("muster_roll")
     adv_all = load_sheet_df("worker_advances")
     tata_all = load_sheet_df("tata_form_xvii")
+    wage_rates_df = get_active_wage_rates_df()
+    rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
 
-    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE, PHOTO UPLOAD & EDITABLE ATTENDANCE HISTORY
+    # DRILLDOWN VIEW: OPEN-ABLE EMPLOYEE PROFILE, PHOTO UPLOAD, SKILL CATEGORY & EDITABLE ATTENDANCE
     if st.session_state.selected_worker_card_id:
         target_wid = st.session_state.selected_worker_card_id
         
@@ -1222,7 +1396,8 @@ elif current_view == "📋 Employee Master Register":
             emp_name = str(emp.get("Full_Name", ""))
             emp_div = str(emp.get("Division", ""))
             emp_role = str(emp.get("Designation", ""))
-            emp_wage_type = str(emp.get("Wage_Type", ""))
+            emp_wage_type = str(emp.get("Wage_Type", "DAILY_WAGE"))
+            emp_skill = str(emp.get("Skill_Category", "")).strip() or infer_skill_category_from_role_or_rate(emp_role, emp.get("Base_Rate", 0), emp_wage_type)
             emp_rate = float(pd.to_numeric(emp.get("Base_Rate", 0.0), errors="coerce") or 0.0)
             emp_acc = str(emp.get("Bank_Account_No", "")) or "Not Linked"
             emp_ifsc = str(emp.get("Bank_IFSC_Code", "")) or "N/A"
@@ -1267,7 +1442,23 @@ elif current_view == "📋 Employee Master Register":
                 with p_c1:
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
                     st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Contact:** {emp_contact}")
-                    st.markdown(f"**Wage Structure:** `{emp_wage_type}` @ **₹{emp_rate:,.0f}**  |  **Status:** `{emp.get('Status', 'ACTIVE')}`")
+                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Rate:** **₹{emp_rate:,.0f}**  |  **Status:** `{emp.get('Status', 'ACTIVE')}`")
+                    
+                    # Quick Skill Category Promotion / Re-classification
+                    if emp_wage_type == "DAILY_WAGE":
+                        sc_col1, sc_col2 = st.columns([1.4, 1.0])
+                        with sc_col1:
+                            default_sc_idx = SKILL_CATEGORIES.index(emp_skill) if emp_skill in SKILL_CATEGORIES else 0
+                            upd_skill = st.selectbox("Change Skill Category", SKILL_CATEGORIES, index=default_sc_idx, key=f"chg_sk_{target_wid}", label_visibility="collapsed")
+                        with sc_col2:
+                            if st.button("Update Category & Rate", key=f"btn_sk_{target_wid}", type="secondary", use_container_width=True):
+                                new_r = float(rate_lookup.get(upd_skill, emp_rate))
+                                w_table.loc[w_table["Worker_ID"].astype(str) == target_wid, "Skill_Category"] = upd_skill
+                                w_table.loc[w_table["Worker_ID"].astype(str) == target_wid, "Base_Rate"] = new_r
+                                if save_sheet_df("worker_master", w_table[WORKER_MASTER_COLS]):
+                                    st.success(f"Updated to {upd_skill} (₹{new_r:,.0f}/day)!")
+                                    st.rerun()
+
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
                     st.markdown(f"**A/C No:** `{emp_acc}`")
@@ -1285,7 +1476,6 @@ elif current_view == "📋 Employee Master Register":
             if not tata_all.empty and "Worker_Name" in tata_all.columns:
                 emp_tata = tata_all[tata_all["Worker_Name"].astype(str).str.strip().str.upper() == emp_name.strip().upper()].copy()
 
-            # YEAR + MONTH FILTER FOR EMPLOYEE LEDGER
             c_f1, c_f2, _ = st.columns([1.0, 1.2, 2.0])
             with c_f1:
                 card_year_filter = st.selectbox("Filter Year", ["All Years", "2025", "2026", "2027"], index=2, key="card_y_flt")
@@ -1315,7 +1505,6 @@ elif current_view == "📋 Employee Master Register":
 
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-            # EDITABLE ATTENDANCE LEDGER + COMPLIANCE PAYOUTS
             det_c1, det_c2 = st.columns([1.5, 1.0], gap="large")
             with det_c1:
                 with st.container(border=True):
@@ -1381,22 +1570,26 @@ elif current_view == "📋 Employee Master Register":
     # MASTER DIRECTORY + SELECTIVE 8-UP ATM ID CARDS PDF DOWNLOADER + OPEN-ABLE EMPLOYEE INSPECTOR
     else:
         st.markdown("#### Employee Master Register & Selective ATM ID Cards")
-        st.caption("Inspect/edit employee profiles, upload photos, or select specific employees to print 8-up ATM-sized ID cards")
+        st.caption("Inspect/edit employee profiles, filter by skill category, or select specific employees to print 8-up ATM-sized ID cards")
 
         if w_table.empty or "Worker_ID" not in w_table.columns:
             st.info("No employee records found.")
         else:
-            flt_c1, flt_c2, flt_c3 = st.columns([1.1, 1.2, 1.9])
+            flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.0, 1.0, 1.1, 1.6])
             with flt_c1:
                 f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
             with flt_c2:
-                f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
+                f_skill = st.selectbox("Skill Category", ["All"] + SKILL_CATEGORIES + ["Monthly Fixed"], key="reg_skill_f")
             with flt_c3:
+                f_bank = st.selectbox("Bank Routing", ["All", "BOI Accounts", "Other Banks (NEFT)", "Cash (No Bank)"], key="reg_bank_f")
+            with flt_c4:
                 f_search = st.text_input("Search Employee", placeholder="Filter by Name, ID, or Account...").strip().lower()
 
             disp_table = w_table.copy()
             if f_div != "All":
                 disp_table = disp_table[disp_table["Division"] == f_div]
+            if f_skill != "All":
+                disp_table = disp_table[disp_table["Skill_Category"].astype(str) == f_skill]
             if f_bank == "BOI Accounts":
                 disp_table = disp_table[disp_table["Bank_IFSC_Code"].astype(str).str.startswith("BKID")]
             elif f_bank == "Other Banks (NEFT)":
@@ -1464,8 +1657,8 @@ elif current_view == "📋 Employee Master Register":
                         st.warning("Add 'fpdf2' to requirements.txt to enable PDF ID cards.")
 
             disp_table_view = disp_table.copy()
-            disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅ Uploaded" if str(x).strip() else "—")
-            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Wage_Type", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
+            disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅" if str(x).strip() else "—")
+            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]
             safe_cols = [c for c in req_cols if c in disp_table_view.columns]
             st.dataframe(disp_table_view[safe_cols], use_container_width=True, hide_index=True)
 
@@ -1498,7 +1691,6 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
         if not muster_df.empty and "Date" in muster_df.columns:
             day_records = muster_df[muster_df["Date"].astype(str) == muster_date_str]
 
-        # CLEAR SAVED vs PENDING INDICATOR FOR SELECTED DATE + MONTHLY LOGGED DATES STRIP
         ym_prefix = muster_date.strftime("%Y-%m")
         logged_dates_this_month = []
         if not muster_df.empty and "Date" in muster_df.columns:
@@ -1551,7 +1743,6 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                     "att": def_att, "ot": def_ot, "loc": def_loc
                 }
 
-        # SELECTIVE BULK MARKING PANEL
         with st.container(border=True):
             st.markdown("###### ⚡ Selective Quick-Mark Tool")
             st.caption("Select specific workers below (or leave empty to apply to all shown workers).")
@@ -1610,12 +1801,13 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
             wname = str(w_row["Full_Name"])
             wdiv = str(w_row["Division"])
             wrole = str(w_row["Designation"])
+            wskill = str(w_row.get("Skill_Category", ""))
             cur_state = st.session_state[cache_key].get(wid, {})
 
             with col_target:
                 with st.container(border=True):
                     st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>", unsafe_allow_html=True)
-                    st.caption(f"{wrole}")
+                    st.caption(f"{wrole} ({wskill})")
 
                     r_c1, r_c2, r_c3 = st.columns([1.1, 1.3, 1.0])
                     with r_c1:
@@ -1659,7 +1851,7 @@ elif current_view == "Daily Muster Roll (Field Attendance)":
                 st.rerun()
 
 
-# ----------------- NEW VIEW: MONTHLY ATTENDANCE MATRIX (EXCEL-STYLE REGISTER FOR PRESENT EMPLOYEES) -----------------
+# ----------------- VIEW 4: MONTHLY ATTENDANCE MATRIX (EXCEL-STYLE REGISTER FOR PRESENT EMPLOYEES) -----------------
 elif current_view == "Monthly Attendance Matrix":
     st.markdown("#### Monthly Attendance Matrix (Excel Register)")
     st.caption("Day-by-day attendance register showing only employees with at least 1 Present or Half-Day in the selected month")
@@ -1701,15 +1893,18 @@ elif current_view == "Monthly Attendance Matrix":
                     w_div_val = str(w_logs.iloc[0].get("Division", ""))
                     
                     w_desig = ""
+                    w_skill_v = ""
                     if not w_master.empty and "Worker_ID" in w_master.columns:
                         wm_hit = w_master[w_master["Worker_ID"].astype(str) == wid]
                         if not wm_hit.empty:
                             w_name = str(wm_hit.iloc[0].get("Full_Name", w_name))
                             w_desig = str(wm_hit.iloc[0].get("Designation", ""))
+                            w_skill_v = str(wm_hit.iloc[0].get("Skill_Category", ""))
 
                     row_dict = {
                         "Worker ID": wid,
                         "Employee Name": w_name,
+                        "Category": w_skill_v,
                         "Designation": w_desig,
                         "Division": w_div_val
                     }
@@ -1759,7 +1954,7 @@ elif current_view == "Monthly Attendance Matrix":
                 )
 
 
-# ----------------- VIEW 4: ADVANCE REGISTER -----------------
+# ----------------- VIEW 5: ADVANCE REGISTER -----------------
 elif current_view == "Advance & Expense Register":
     st.markdown("#### Advance & Expense Register")
     st.caption("Disburse and track site advances and allowances")
@@ -1811,7 +2006,7 @@ elif current_view == "Advance & Expense Register":
                 st.info("No recorded transactions.")
 
 
-# ----------------- VIEW 5: WAGES, FORM XVII & DIRECT PDF BANK LETTERS -----------------
+# ----------------- VIEW 6: WAGES, FORM XVII & DIRECT PDF BANK LETTERS -----------------
 elif current_view == "Monthly Wages & Payout Summary":
     st.markdown("#### Monthly Wages, Form XVII Audit & Direct PDF Bank Letters")
     st.caption("Reconcile Tata In-Plant field duty with Tata Steel Form XVII and download direct print-ready PDF covering letters")
@@ -2053,7 +2248,7 @@ elif current_view == "Monthly Wages & Payout Summary":
             st.info("No NEFT transfers in this batch.")
 
 
-# ----------------- VIEW 6: BILLING MODULE PLACEHOLDERS -----------------
+# ----------------- VIEW 7: BILLING MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Logsheet Entry", "Monthly Statement & Abstract", "Locked RA Bills Repository", 
                       "Delivery Order (DO) Contract Management", "Vehicle Fleet Master Mapping", "Commercial Rate Master"]:
     st.markdown(f"#### {current_view}")
@@ -2061,14 +2256,14 @@ elif current_view in ["Daily Logsheet Entry", "Monthly Statement & Abstract", "L
     st.info(f"Module '{current_view}' is ready.")
 
 
-# ----------------- VIEW 7: FUEL MODULE PLACEHOLDERS -----------------
+# ----------------- VIEW 8: FUEL MODULE PLACEHOLDERS -----------------
 elif current_view in ["Daily Diesel Issue Slip", "Fleet Fuel Benchmark Master", "Theft & Pilferage Audit"]:
     st.markdown(f"#### {current_view}")
     st.caption("Fleet Fuel Control, Bowser Dispatches and Anti-Theft Analytics")
     st.info(f"Module '{current_view}' is ready.")
 
 
-# ----------------- VIEW 8: ADMIN & USER PERMISSIONS (ADMIN ONLY) -----------------
+# ----------------- VIEW 9: ADMIN & USER PERMISSIONS (ADMIN ONLY) -----------------
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
     st.markdown("#### User Accounts & Access Control (RBAC)")
     st.caption("Provision credentials and configure sub-menu permissions per user")
