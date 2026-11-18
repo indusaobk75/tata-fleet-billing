@@ -14,7 +14,8 @@ except ImportError:
 
 from worker_attendance import (
     WORKER_MASTER_COLS, MUSTER_ROLL_COLS, ADVANCE_LOG_COLS,
-    TATA_COMPLIANCE_COLS, WAGE_MASTER_COLS, render_attendance_module
+    TATA_COMPLIANCE_COLS, WAGE_MASTER_COLS, PPE_POLICY_COLS,
+    PPE_ISSUE_COLS, render_attendance_module
 )
 from tata_billing import render_billing_module
 from fuel_and_audit import (
@@ -72,6 +73,8 @@ def load_sheet_df(worksheet_name):
         "tata_form_xvii": TATA_COMPLIANCE_COLS,
         "app_users": USER_COLUMNS,
         "wage_rate_master": WAGE_MASTER_COLS,
+        "ppe_policy_master": PPE_POLICY_COLS,
+        "ppe_issue_log": PPE_ISSUE_COLS,
         "fuel_fleet_master": FUEL_FLEET_COLS,
         "fuel_issue_log": FUEL_ISSUE_COLS,
         "fuel_stock_log": FUEL_STOCK_COLS,
@@ -132,7 +135,6 @@ def save_sheet_df(worksheet_name, df):
 
 
 def get_effective_admin_password(users_df):
-    """Checks if a custom admin password was saved in app_users; otherwise uses secrets/default."""
     if not users_df.empty and "Username" in users_df.columns:
         adm_match = users_df[users_df["Username"].astype(str).str.strip().str.lower() == DEFAULT_ADMIN_USER.lower()]
         if not adm_match.empty:
@@ -218,6 +220,7 @@ TAB_REGISTRY = {
     "⚖️ Statutory Wage Rates": "Attendance",
     "Daily Muster Roll (Field Attendance)": "Attendance",
     "Monthly Attendance Matrix": "Attendance",
+    "🦺 PPE & Safety Gear Issue": "Attendance",
     "Advance & Expense Register": "Attendance",
     "Monthly Wages & Payout Summary": "Attendance",
 
@@ -242,6 +245,7 @@ WORKSPACES_TREE = [
             ("Statutory Wage Rates", "⚖️ Statutory Wage Rates"),
             ("Daily Field Muster Roll", "Daily Muster Roll (Field Attendance)"),
             ("Monthly Attendance Matrix", "Monthly Attendance Matrix"),
+            ("PPE & Safety Gear Issue", "🦺 PPE & Safety Gear Issue"),
             ("Advance & Expenses", "Advance & Expense Register"),
             ("Wages, Slips & Bank Letters", "Monthly Wages & Payout Summary")
         ]
@@ -482,7 +486,7 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                 new_allowed_div = st.selectbox(
                     "Allowed Workforce Division",
                     ["All Divisions", "Fleet Operations", "Civil Construction"],
-                    help="Restricts this user to see and mark attendance ONLY for the chosen division."
+                    help="Restricts this user to view and manage attendance ONLY for the selected division."
                 )
 
                 selected_permissions = []
@@ -497,7 +501,7 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                     if not new_username or not new_password:
                         st.error("Username and password are required.")
                     elif new_username.lower() == DEFAULT_ADMIN_USER.lower():
-                        st.warning("Use the 'Change Master Admin Password' box above to update the main admin account.")
+                        st.warning("Use the 'Change Master Admin Password' section above to update the main admin account.")
                     else:
                         users_df = load_sheet_df("app_users")
                         users_df["_u_chk"] = users_df["Username"].astype(str).str.strip().str.lower()
