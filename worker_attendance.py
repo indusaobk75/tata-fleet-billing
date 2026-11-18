@@ -181,7 +181,7 @@ def generate_next_worker_id(division, existing_df):
     return f"{prefix}-{max(matched_nums) + 1}"
 
 
-def build_bulk_employee_template_excel():
+def build_bulk_employee_template_excel(default_div="Fleet Operations"):
     sample_rows = [
         {
             "Full_Name": "RAMESH KUMAR MAHTO",
@@ -230,6 +230,8 @@ def build_bulk_employee_template_excel():
         }
     ]
     df_tpl = pd.DataFrame(sample_rows)
+    if default_div in ["Fleet Operations", "Civil Construction"]:
+        df_tpl["Division"] = default_div
     buf = io.BytesIO()
     try:
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -742,9 +744,20 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn):
     return bytes(pdf.output())
 
 
+# ----------------- DIVISION FILTER HELPER -----------------
+def filter_workers_by_allowed_division(df, allowed_division):
+    if df is None or df.empty or "Division" not in df.columns:
+        return df
+    if not allowed_division or allowed_division == "All Divisions":
+        return df
+    return df[df["Division"].astype(str).str.strip() == allowed_division].copy()
+
+
 # ----------------- MAIN RENDER ENTRYPOINT FOR ATTENDANCE MODULE -----------------
-def render_attendance_module(current_view, load_fn, save_fn, current_user, user_display_name, current_role, letterhead_fn, logo_fn):
+def render_attendance_module(current_view, load_fn, save_fn, current_user, user_display_name, current_role, letterhead_fn, logo_fn, allowed_division="All Divisions"):
     is_admin = (str(current_role).upper() == "ADMIN")
+    eff_div_scope = "All Divisions" if is_admin else (allowed_division or "All Divisions")
+    is_div_restricted = (eff_div_scope in ["Fleet Operations", "Civil Construction"])
 
     # 1. EMPLOYEE ENROLMENT
     if current_view == "➕ Employee Enrolment":
@@ -760,7 +773,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             with c_form:
                 with st.container(border=True):
                     w_df_current = load_fn("worker_master")
-                    w_div = st.selectbox("Operational Division", ["Fleet Operations", "Civil Construction"], key="enrol_div")
+                    div_choices = [eff_div_scope] if is_div_restricted else ["Fleet Operations", "Civil Construction"]
+                    w_div = st.selectbox("Operational Division", div_choices, disabled=is_div_restricted, key="enrol_div")
                     next_wid = generate_next_worker_id(w_div, w_df_current)
                     st.caption(f"Assigned System ID: **{next_wid}**")
 
@@ -842,8 +856,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
         else:
             with st.container(border=True):
                 st.markdown("###### 1. Download Sample Bulk Enrolment Template")
-                st.caption("Download this pre-formatted Excel/CSV template, fill in your employee list (Worker_ID will be auto-generated), and upload below.")
-                tpl_bytes, tpl_ext = build_bulk_employee_template_excel()
+                tpl_bytes, tpl_ext = build_bulk_employee_template_excel(eff_div_scope if is_div_restricted else "Fleet Operations")
                 tpl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if tpl_ext == "xlsx" else "text/csv"
                 st.download_button(
                     label=f"📥 Download Sample Employee Enrolment Template (.{tpl_ext})",
@@ -868,7 +881,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                             fname_chk = str(b_row.get("Full_Name", "")).strip()
                             if not fname_chk or fname_chk.lower() == "nan":
                                 continue
-                            div_val = str(b_row.get("Division", "Fleet Operations")).strip()
+                            div_val = eff_div_scope if is_div_restricted else str(b_row.get("Division", "Fleet Operations")).strip()
                             cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
                             new_gen_id = generate_next_worker_id(div_val, cur_merged)
                             raw_desig = str(b_row.get("Designation", "")).strip()
@@ -901,7 +914,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
     elif current_view == "⚖️ Statutory Wage Rates":
         st.markdown("#### Statutory Minimum Wage Rate Master (Category-Wise)")
         wage_rates_df = get_active_wage_rates_df(load_fn)
-        w_master = load_fn("worker_master")
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
 
         c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
         kpi_cols = [c_kpi1, c_kpi2, c_kpi3, c_kpi4]
@@ -936,39 +949,42 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         })
                     save_fn("wage_rate_master", pd.DataFrame(cleaned_rates)[WAGE_MASTER_COLS])
 
+                    full_w_master = load_fn("worker_master")
                     updated_count = 0
-                    if not w_master.empty and "Wage_Type" in w_master.columns:
-                        for idx, wr in w_master.iterrows():
+                    if not full_w_master.empty and "Wage_Type" in full_w_master.columns:
+                        for idx, wr in full_w_master.iterrows():
                             if str(wr.get("Wage_Type", "")).upper() == "DAILY_WAGE":
                                 w_cat = str(wr.get("Skill_Category", "")).strip()
                                 if not w_cat or w_cat not in new_rate_map:
                                     w_cat = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), "DAILY_WAGE")
-                                    w_master.at[idx, "Skill_Category"] = w_cat
+                                    full_w_master.at[idx, "Skill_Category"] = w_cat
                                 if w_cat in new_rate_map:
-                                    w_master.at[idx, "Base_Rate"] = new_rate_map[w_cat]
+                                    full_w_master.at[idx, "Base_Rate"] = new_rate_map[w_cat]
                                     updated_count += 1
-                        save_fn("worker_master", w_master[WORKER_MASTER_COLS])
+                        save_fn("worker_master", full_w_master[WORKER_MASTER_COLS])
                     st.success(f"Updated rates for **{updated_count} Daily Wage Workers**!")
                     st.rerun()
 
             with b_col2:
                 if st.button("🔄 Auto-Assign Skill Categories & Defaults", type="secondary", use_container_width=True):
-                    if not w_master.empty:
+                    full_w_master = load_fn("worker_master")
+                    if not full_w_master.empty:
                         assigned = 0
-                        for idx, wr in w_master.iterrows():
+                        for idx, wr in full_w_master.iterrows():
                             cur_cat = str(wr.get("Skill_Category", "")).strip()
                             if not cur_cat or cur_cat.lower() == "nan":
-                                w_master.at[idx, "Skill_Category"] = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE"))
+                                full_w_master.at[idx, "Skill_Category"] = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE"))
                                 assigned += 1
                             if str(wr.get("Week_Off_Day", "")).strip() not in WEEK_DAYS_OPTIONS:
-                                w_master.at[idx, "Week_Off_Day"] = "Sunday"
-                        if save_fn("worker_master", w_master[WORKER_MASTER_COLS]):
+                                full_w_master.at[idx, "Week_Off_Day"] = "Sunday"
+                        if save_fn("worker_master", full_w_master[WORKER_MASTER_COLS]):
                             st.success(f"Assigned {assigned} categories & default Week-Off days!")
                             st.rerun()
 
     # 3. EMPLOYEE MASTER REGISTER & OPEN PROFILE
     elif current_view == "📋 Employee Master Register":
-        w_table = load_fn("worker_master")
+        w_table_full = load_fn("worker_master")
+        w_table = filter_workers_by_allowed_division(w_table_full, eff_div_scope)
         muster_all = load_fn("muster_roll")
         adv_all = load_fn("worker_advances")
         tata_all = load_fn("tata_form_xvii")
@@ -983,7 +999,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
 
             w_match = w_table[w_table["Worker_ID"].astype(str) == target_wid]
             if w_match.empty:
-                st.error("Employee record not found.")
+                st.error("Employee record not found or restricted.")
                 return
 
             emp = w_match.iloc[0]
@@ -1021,8 +1037,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                     if new_photo_up and st.button("Save Photo", key=f"save_ph_{target_wid}", type="primary", use_container_width=True):
                         b64_new = compress_photo_to_base64(new_photo_up)
                         if b64_new:
-                            w_table.loc[w_table["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = b64_new
-                            if save_fn("worker_master", w_table[WORKER_MASTER_COLS]):
+                            w_table_full.loc[w_table_full["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = b64_new
+                            if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Photo updated!")
                                 st.rerun()
 
@@ -1044,8 +1060,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         ed_ref = st.text_input("Identity Verification Ref", value=emp_ref).strip()
                         ed_contact = st.text_input("Contact Mobile No", value=emp_contact).strip()
                     with ed_c2:
-                        div_opts = ["Fleet Operations", "Civil Construction"]
-                        ed_div = st.selectbox("Division", div_opts, index=div_opts.index(emp_div) if emp_div in div_opts else 0)
+                        div_opts = [eff_div_scope] if is_div_restricted else ["Fleet Operations", "Civil Construction"]
+                        ed_div = st.selectbox("Division", div_opts, index=div_opts.index(emp_div) if emp_div in div_opts else 0, disabled=is_div_restricted)
                         ed_role = st.text_input("Designation / Role", value=emp_role).strip()
                         ed_wo = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=WEEK_DAYS_OPTIONS.index(emp_wo))
                     with ed_c3:
@@ -1068,11 +1084,11 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
 
                     if st.form_submit_button("💾 Save Updated Employee Profile", type="primary", use_container_width=True):
                         if ed_name:
-                            mask_w = w_table["Worker_ID"].astype(str) == target_wid
-                            w_table.loc[mask_w, ["Full_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
+                            mask_w = w_table_full["Worker_ID"].astype(str) == target_wid
+                            w_table_full.loc[mask_w, ["Full_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
                                 ed_name, ed_ref, ed_contact, ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, ed_acc, ed_ifsc, ed_branch
                             ]
-                            if save_fn("worker_master", w_table[WORKER_MASTER_COLS]):
+                            if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Profile updated!")
                                 st.rerun()
 
@@ -1086,7 +1102,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                     with del_c3:
                         if st.button("🗑️ Delete Permanently", type="secondary", use_container_width=True, key=f"btn_del_{target_wid}"):
                             if confirm_del:
-                                save_fn("worker_master", w_table[w_table["Worker_ID"].astype(str) != target_wid][WORKER_MASTER_COLS])
+                                save_fn("worker_master", w_table_full[w_table_full["Worker_ID"].astype(str) != target_wid][WORKER_MASTER_COLS])
                                 if also_del_logs:
                                     if not muster_all.empty:
                                         save_fn("muster_roll", muster_all[muster_all["Worker_ID"].astype(str) != target_wid][MUSTER_ROLL_COLS])
@@ -1096,7 +1112,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                                 st.rerun()
 
             today_dt = datetime.date.today()
-            cur_payroll_map = compute_monthly_payroll_and_advances(w_table, muster_all, adv_all, tata_all, today_dt.year, today_dt.month)
+            cur_payroll_map = compute_monthly_payroll_and_advances(w_table_full, muster_all, adv_all, tata_all, today_dt.year, today_dt.month)
             emp_cf_bal = cur_payroll_map.get(target_wid, {}).get("Closing_Carry_Forward", 0.0)
 
             emp_muster = muster_all[muster_all["Worker_ID"].astype(str) == target_wid].copy() if not muster_all.empty else pd.DataFrame()
@@ -1150,12 +1166,13 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
         else:
             st.markdown("#### Employee Master Register & Selective ATM ID Cards")
             if w_table.empty or "Worker_ID" not in w_table.columns:
-                st.info("No employee records found.")
+                st.info("No employee records found for your division.")
                 return
 
             flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.0, 1.0, 1.1, 1.6])
             with flt_c1:
-                f_div = st.selectbox("Division", ["All", "Fleet Operations", "Civil Construction"], key="reg_div_f")
+                div_filter_opts = [eff_div_scope] if is_div_restricted else ["All", "Fleet Operations", "Civil Construction"]
+                f_div = st.selectbox("Division", div_filter_opts, disabled=is_div_restricted, key="reg_div_f")
             with flt_c2:
                 f_skill = st.selectbox("Skill Category", ["All"] + SKILL_CATEGORIES + ["Monthly Fixed"], key="reg_skill_f")
             with flt_c3:
@@ -1214,14 +1231,14 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Week_Off_Day", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
 
-    # 4. DAILY FIELD MUSTER ROLL (SUPERVISOR DUPLICATE LOCK + 90-DAY AUDIT LOG + WEEK-OFF LOCK)
+    # 4. DAILY FIELD MUSTER ROLL (SUPERVISOR DUPLICATE LOCK + 90-DAY AUDIT LOG + WEEK-OFF LOCK + DIVISION LOCK)
     elif current_view == "Daily Muster Roll (Field Attendance)":
         st.markdown("#### Daily Field Muster Roll")
         st.caption("Supervisor Duplicate Lock, Employee Week-Off Lock, Paid Leave (L), and 90-Day Audit Trail")
 
-        w_master = load_fn("worker_master")
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
         if w_master.empty or "Worker_ID" not in w_master.columns:
-            st.warning("No employees available.")
+            st.warning("No employees available in your assigned division.")
             return
 
         active_workers = w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].copy()
@@ -1233,7 +1250,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             muster_date_str = muster_date.strftime("%Y-%m-%d")
             selected_weekday_name = muster_date.strftime("%A")
         with top_m2:
-            sel_division = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="muster_div_filter")
+            m_div_opts = [eff_div_scope] if is_div_restricted else ["All Divisions", "Fleet Operations", "Civil Construction"]
+            sel_division = st.selectbox("Division", m_div_opts, disabled=is_div_restricted, key="muster_div_filter")
         with top_m3:
             st.metric(f"Active Crew ({selected_weekday_name})", len(active_workers))
 
@@ -1251,7 +1269,10 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             admin_unlock_wo = st.checkbox(f"🔓 Admin Approval: Unlock Weekly-Off Duty for {muster_date.strftime('%d %b %Y')} ({selected_weekday_name})", value=False, key=f"adm_wo_unlock_{muster_date_str}")
 
         ym_prefix = muster_date.strftime("%Y-%m")
-        logged_dates_this_month = sorted(muster_df[muster_df["Date"].astype(str).str.startswith(ym_prefix)]["Date"].astype(str).unique().tolist()) if not muster_df.empty and "Date" in muster_df.columns else []
+        m_dates_sub = muster_df[muster_df["Date"].astype(str).str.startswith(ym_prefix)] if not muster_df.empty and "Date" in muster_df.columns else pd.DataFrame()
+        if sel_division != "All Divisions" and not m_dates_sub.empty and "Division" in m_dates_sub.columns:
+            m_dates_sub = m_dates_sub[m_dates_sub["Division"] == sel_division]
+        logged_dates_this_month = sorted(m_dates_sub["Date"].astype(str).unique().tolist()) if not m_dates_sub.empty else []
 
         if is_date_already_logged:
             sup_by = str(div_day_records.iloc[0].get("Supervisor", "Admin"))
@@ -1272,9 +1293,9 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             f"<span style='display:inline-block; background:#f8fafc; color:#94a3b8; border:1px solid #e2e8f0; border-radius:5px; padding:1px 6px; margin:2px; font-size:0.74rem;'>{d_num:02d}</span>"
             for d_num in range(1, days_in_m + 1)
         ])
-        st.markdown(f"<div style='background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:8px 12px; margin-bottom:10px;'><div style='font-size:0.76rem; font-weight:600; color:#334155; margin-bottom:4px;'>📅 {muster_date.strftime('%B %Y')} Entry Status:</div><div>{badges_html}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:8px 12px; margin-bottom:10px;'><div style='font-size:0.76rem; font-weight:600; color:#334155; margin-bottom:4px;'>📅 {muster_date.strftime('%B %Y')} Entry Status ({sel_division}):</div><div>{badges_html}</div></div>", unsafe_allow_html=True)
 
-        cache_key = f"att_state_{muster_date_str}"
+        cache_key = f"att_state_{muster_date_str}_{sel_division}"
         if cache_key not in st.session_state:
             st.session_state[cache_key] = {}
             for _, w in active_workers.iterrows():
@@ -1412,8 +1433,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
     # 5. MONTHLY ATTENDANCE MATRIX
     elif current_view == "Monthly Attendance Matrix":
         st.markdown("#### Monthly Attendance Matrix (Excel Register)")
-        w_master = load_fn("worker_master")
-        muster_df = load_fn("muster_roll")
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        muster_df = filter_workers_by_allowed_division(load_fn("muster_roll"), eff_div_scope)
 
         mc1, mc2, mc3 = st.columns([1.0, 1.2, 1.3])
         with mc1:
@@ -1421,7 +1442,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
         with mc2:
             mat_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1, key="mat_mo")
         with mc3:
-            mat_div = st.selectbox("Division", ["All Divisions", "Fleet Operations", "Civil Construction"], key="mat_dv")
+            mat_div_opts = [eff_div_scope] if is_div_restricted else ["All Divisions", "Fleet Operations", "Civil Construction"]
+            mat_div = st.selectbox("Division", mat_div_opts, disabled=is_div_restricted, key="mat_dv")
 
         m_num = list(calendar.month_name).index(mat_month)
         ym_str = f"{mat_year}-{m_num:02d}"
@@ -1482,7 +1504,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
     # 6. ADVANCE & EXPENSE REGISTER
     elif current_view == "Advance & Expense Register":
         st.markdown("#### Advance & Expense Register (With Carry-Forward Ledger)")
-        w_master = load_fn("worker_master")
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
         muster_df = load_fn("muster_roll")
         adv_history = load_fn("worker_advances")
         tata_df = load_fn("tata_form_xvii")
@@ -1532,13 +1554,14 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
 
             with st.container(border=True):
                 st.markdown("###### Recent Advance Transactions")
-                if not adv_history.empty and "Txn_ID" in adv_history.columns:
-                    st.dataframe(adv_history[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
+                disp_adv = filter_workers_by_allowed_division(adv_history, eff_div_scope)
+                if not disp_adv.empty and "Txn_ID" in disp_adv.columns:
+                    st.dataframe(disp_adv[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
 
     # 7. MONTHLY WAGES, FORM XVII, 3-UP SALARY SLIPS & BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
         st.markdown("#### Monthly Wages, Form XVII Audit, Salary Slips & Bank Letters")
-        w_master = load_fn("worker_master")
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
         muster_df = load_fn("muster_roll")
         adv_df = load_fn("worker_advances")
         tata_df = load_fn("tata_form_xvii")
@@ -1592,6 +1615,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
 
                     import_mode = st.radio("Import Mode", ["Replace Month Data", "Append / Merge with Existing Month"], horizontal=True)
                     if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
+                        full_w_all = load_fn("worker_master")
                         new_records = []
                         for _, xr in x_df.iterrows():
                             w_name_raw = str(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "").strip()
@@ -1602,8 +1626,8 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                             if net_paid <= 0:
                                 continue
                             matched_wid = ""
-                            if not w_master.empty and "Full_Name" in w_master.columns:
-                                match_w = w_master[w_master["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
+                            if not full_w_all.empty and "Full_Name" in full_w_all.columns:
+                                match_w = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
                                 if not match_w.empty:
                                     matched_wid = str(match_w.iloc[0]["Worker_ID"])
                             new_records.append({
