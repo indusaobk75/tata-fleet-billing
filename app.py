@@ -131,6 +131,17 @@ def save_sheet_df(worksheet_name, df):
     return False
 
 
+def get_effective_admin_password(users_df):
+    """Checks if a custom admin password was saved in app_users; otherwise uses secrets/default."""
+    if not users_df.empty and "Username" in users_df.columns:
+        adm_match = users_df[users_df["Username"].astype(str).str.strip().str.lower() == DEFAULT_ADMIN_USER.lower()]
+        if not adm_match.empty:
+            saved_p = str(adm_match.iloc[0].get("Password", "")).strip()
+            if saved_p:
+                return saved_p
+    return str(st.secrets.get("app_password", DEFAULT_ADMIN_PASS)).strip()
+
+
 # ----------------- 2. SHARED BRANDING & LETTERHEAD HELPERS -----------------
 def build_exact_indu_sao_oval_logo_stream():
     if not PIL_AVAILABLE:
@@ -300,11 +311,13 @@ def login_screen():
 
         with st.container(border=True):
             st.markdown("##### Sign in to Workspace")
-            username = st.text_input("Username", placeholder="Enter your Username").strip()
-            password = st.text_input("Password", type="password", placeholder="••••••••").strip()
+            username = st.text_input("Username").strip()
+            password = st.text_input("Password", type="password").strip()
             if st.button("Continue →", use_container_width=True, type="primary"):
                 u_lower = username.lower()
-                master_pass = st.secrets.get("app_password", DEFAULT_ADMIN_PASS)
+                users_df = load_sheet_df("app_users")
+                master_pass = get_effective_admin_password(users_df)
+
                 if u_lower == DEFAULT_ADMIN_USER.lower() and password == master_pass:
                     st.session_state.update({
                         "user_authenticated": True, "current_user": DEFAULT_ADMIN_USER,
@@ -313,7 +326,6 @@ def login_screen():
                     })
                     st.rerun()
 
-                users_df = load_sheet_df("app_users")
                 if not users_df.empty and "Username" in users_df.columns:
                     users_df["_u_clean"] = users_df["Username"].astype(str).str.strip().str.lower()
                     u_match = users_df[users_df["_u_clean"] == u_lower]
@@ -374,7 +386,7 @@ with st.sidebar:
             st.session_state.active_subtab = "User Accounts & RBAC"
             st.rerun()
         if is_adm:
-            if st.button("User Permissions (RBAC)", key="nav_sub_rbac", use_container_width=True, type="primary"):
+            if st.button("User Permissions & Password", key="nav_sub_rbac", use_container_width=True, type="primary"):
                 st.session_state.active_subtab = "User Accounts & RBAC"
                 st.rerun()
 
@@ -414,9 +426,40 @@ elif mod_type == "Fuel":
         st.session_state.current_user, st.session_state.current_role, draw_indu_sao_letterhead
     )
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
-    st.markdown("#### User Accounts & Access Control (RBAC)")
-    col_u1, col_u2 = st.columns([1.1, 1.9], gap="large")
+    st.markdown("#### User Accounts, Permissions & Admin Security")
+    col_u1, col_u2 = st.columns([1.15, 1.85], gap="large")
+
     with col_u1:
+        # 1. CHANGE MASTER ADMIN PASSWORD
+        with st.container(border=True):
+            st.markdown("###### 🔑 Change Master Admin Password")
+            with st.form("change_admin_pass_form", clear_on_submit=True):
+                cur_adm_p = st.text_input("Current Admin Password", type="password").strip()
+                new_adm_p1 = st.text_input("New Admin Password", type="password").strip()
+                new_adm_p2 = st.text_input("Confirm New Password", type="password").strip()
+                if st.form_submit_button("Update Admin Password", type="primary", use_container_width=True):
+                    users_df = load_sheet_df("app_users")
+                    actual_cur_p = get_effective_admin_password(users_df)
+                    if cur_adm_p != actual_cur_p:
+                        st.error("Current Admin Password is incorrect.")
+                    elif len(new_adm_p1) < 6:
+                        st.error("New password must be at least 6 characters long.")
+                    elif new_adm_p1 != new_adm_p2:
+                        st.error("New password and confirmation do not match.")
+                    else:
+                        if not users_df.empty and "Username" in users_df.columns:
+                            users_df = users_df[users_df["Username"].astype(str).str.strip().str.lower() != DEFAULT_ADMIN_USER.lower()]
+                        adm_row = pd.DataFrame([{
+                            "Username": DEFAULT_ADMIN_USER, "Password": new_adm_p1, "Full_Name": DEFAULT_ADMIN_NAME,
+                            "Role": "ADMIN", "Allowed_Tabs": "ALL", "Status": "ACTIVE",
+                            "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
+                        }])
+                        if save_sheet_df("app_users", pd.concat([adm_row, users_df], ignore_index=True)[USER_COLUMNS]):
+                            st.success("Master Admin Password updated! Use the new password on your next login.")
+
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+        # 2. PROVISION / UPDATE USER
         with st.container(border=True):
             st.markdown("###### Provision / Update User")
             with st.form("create_user_form", clear_on_submit=False):
@@ -437,17 +480,22 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                                     selected_permissions.append(t_name)
 
                 if st.form_submit_button("Save User Account", use_container_width=True, type="primary"):
-                    if new_username and new_password:
+                    if not new_username or not new_password:
+                        st.error("Username and password are required.")
+                    elif new_username.lower() == DEFAULT_ADMIN_USER.lower():
+                        st.warning("Use the 'Change Master Admin Password' box above to update the main admin account.")
+                    else:
                         users_df = load_sheet_df("app_users")
                         users_df["_u_chk"] = users_df["Username"].astype(str).str.strip().str.lower()
                         has_admin = not users_df[users_df["_u_chk"] == DEFAULT_ADMIN_USER.lower()].empty
                         users_df = users_df[users_df["_u_chk"] != new_username.lower()].drop(columns=["_u_chk"])
 
                         rows_to_add = []
-                        if not has_admin and new_username.lower() != DEFAULT_ADMIN_USER.lower():
+                        if not has_admin:
                             rows_to_add.append({
-                                "Username": DEFAULT_ADMIN_USER, "Password": DEFAULT_ADMIN_PASS, "Full_Name": DEFAULT_ADMIN_NAME,
-                                "Role": "ADMIN", "Allowed_Tabs": "ALL", "Status": "ACTIVE", "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
+                                "Username": DEFAULT_ADMIN_USER, "Password": get_effective_admin_password(users_df),
+                                "Full_Name": DEFAULT_ADMIN_NAME, "Role": "ADMIN", "Allowed_Tabs": "ALL",
+                                "Status": "ACTIVE", "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
                             })
                         rows_to_add.append({
                             "Username": new_username, "Password": new_password, "Full_Name": new_name, "Role": new_role,
@@ -463,4 +511,21 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
             st.markdown("###### Active System Users")
             users_table = load_sheet_df("app_users")
             if not users_table.empty and "Username" in users_table.columns:
-                st.dataframe(users_table[[c for c in ["Username", "Password", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in users_table.columns]], use_container_width=True, hide_index=True)
+                disp_u = users_table[users_table["Username"].astype(str).str.strip().str.lower() != DEFAULT_ADMIN_USER.lower()].copy()
+                if disp_u.empty:
+                    st.info("No additional supervisor/user accounts created yet.")
+                else:
+                    st.dataframe(disp_u[[c for c in ["Username", "Password", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in disp_u.columns]], use_container_width=True, hide_index=True)
+
+                    st.markdown("---")
+                    st.markdown("###### 🗑️ Revoke / Permanently Remove User")
+                    non_admin_users = disp_u["Username"].astype(str).tolist()
+                    rc1, rc2 = st.columns([2.0, 1.0])
+                    with rc1:
+                        u_to_revoke = st.selectbox("Select User to Remove", non_admin_users, label_visibility="collapsed")
+                    with rc2:
+                        if st.button("🗑️ Delete User", type="secondary", use_container_width=True):
+                            clean_u = users_table[users_table["Username"].astype(str) != u_to_revoke]
+                            if save_sheet_df("app_users", clean_u[USER_COLUMNS]):
+                                st.success(f"User '{u_to_revoke}' permanently removed.")
+                                st.rerun()
