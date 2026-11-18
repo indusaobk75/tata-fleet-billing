@@ -44,8 +44,8 @@ COMPANY_HEADER = {
 SHEET_NAME = st.secrets.get("spreadsheet_name", st.secrets.get("test_spreadsheet_name", "Tata_Steel_Fleet_DB"))
 
 USER_COLUMNS = [
-    "Username", "Password", "Full_Name", "Role", "Allowed_Tabs", "Status",
-    "Contact_No", "Emergency_Contact", "Photo_Base64"
+    "Username", "Password", "Full_Name", "Role", "Allowed_Tabs", "Allowed_Division",
+    "Status", "Contact_No", "Emergency_Contact", "Photo_Base64"
 ]
 
 
@@ -292,8 +292,9 @@ st.markdown("""
 def init_session():
     defaults = {
         "user_authenticated": False, "current_user": None, "current_name": None,
-        "current_role": None, "allowed_tabs": [], "active_workspace": "Attendance",
-        "active_subtab": "Daily Muster Roll (Field Attendance)", "selected_worker_card_id": None
+        "current_role": None, "allowed_tabs": [], "allowed_division": "All Divisions",
+        "active_workspace": "Attendance", "active_subtab": "Daily Muster Roll (Field Attendance)",
+        "selected_worker_card_id": None
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -322,7 +323,7 @@ def login_screen():
                     st.session_state.update({
                         "user_authenticated": True, "current_user": DEFAULT_ADMIN_USER,
                         "current_name": DEFAULT_ADMIN_NAME, "current_role": "ADMIN",
-                        "allowed_tabs": list(TAB_REGISTRY.keys())
+                        "allowed_tabs": list(TAB_REGISTRY.keys()), "allowed_division": "All Divisions"
                     })
                     st.rerun()
 
@@ -334,10 +335,16 @@ def login_screen():
                         if str(u_row.get("Status", "ACTIVE")).strip().upper() == "ACTIVE" and password == str(u_row.get("Password", "")).strip():
                             u_role = str(u_row.get("Role", "USER")).strip().upper()
                             permitted = list(TAB_REGISTRY.keys()) if u_role == "ADMIN" else [t.strip() for t in str(u_row.get("Allowed_Tabs", "")).split(",") if t.strip() in TAB_REGISTRY]
+                            raw_div_perm = str(u_row.get("Allowed_Division", "All Divisions")).strip()
+                            if u_role == "ADMIN" or raw_div_perm not in ["Fleet Operations", "Civil Construction"]:
+                                div_perm = "All Divisions"
+                            else:
+                                div_perm = raw_div_perm
+
                             st.session_state.update({
                                 "user_authenticated": True, "current_user": str(u_row["Username"]),
                                 "current_name": str(u_row.get("Full_Name", username)).strip() or username,
-                                "current_role": u_role, "allowed_tabs": permitted
+                                "current_role": u_role, "allowed_tabs": permitted, "allowed_division": div_perm
                             })
                             if permitted:
                                 st.session_state.active_subtab = permitted[0]
@@ -393,13 +400,14 @@ with st.sidebar:
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 initials = "".join([p[0] for p in str(user_display_name).split()[:2] if p]).upper() or "US"
 badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
+div_badge = f" • {st.session_state.allowed_division}" if st.session_state.allowed_division != "All Divisions" else ""
 
 h1, h2, h3 = st.columns([2.8, 1.5, 0.8], gap="small")
 with h1:
     ws_map = {"Attendance": "Worker Attendance", "Billing": "Tata Steel Billing", "Fuel": "Site Fuel Record", "Admin": "Administration"}
     st.markdown(f"<div style='display: flex; align-items: center; gap: 8px; height: 34px;'><span style='font-size: 0.84rem; color: #64748b;'>{ws_map.get(st.session_state.active_workspace, '')}</span><span style='color: #cbd5e1;'>/</span><span style='font-size: 0.86rem; color: #0f172a; font-weight: 600;'>{st.session_state.active_subtab}</span></div>", unsafe_allow_html=True)
 with h2:
-    st.markdown(f"<div style='display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 34px;'><div class='top-user-avatar'>{initials}</div><div style='line-height: 1.15;'><div style='font-weight: 600; font-size: 0.8rem; color: #0f172a;'>{user_display_name}</div><span class='status-badge {badge_class}'>{st.session_state.current_role}</span></div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 34px;'><div class='top-user-avatar'>{initials}</div><div style='line-height: 1.15;'><div style='font-weight: 600; font-size: 0.8rem; color: #0f172a;'>{user_display_name}</div><span class='status-badge {badge_class}'>{st.session_state.current_role}{div_badge}</span></div></div>", unsafe_allow_html=True)
 with h3:
     if st.button("Sign Out", use_container_width=True, key="hdr_out", type="secondary"):
         st.session_state.user_authenticated = False
@@ -416,7 +424,8 @@ if mod_type == "Attendance":
     render_attendance_module(
         current_view, load_sheet_df, save_sheet_df,
         st.session_state.current_user, user_display_name, st.session_state.current_role,
-        draw_indu_sao_letterhead, build_exact_indu_sao_oval_logo_stream
+        draw_indu_sao_letterhead, build_exact_indu_sao_oval_logo_stream,
+        allowed_division=st.session_state.allowed_division
     )
 elif mod_type == "Billing":
     render_billing_module(current_view, load_sheet_df, save_sheet_df)
@@ -430,7 +439,6 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
     col_u1, col_u2 = st.columns([1.15, 1.85], gap="large")
 
     with col_u1:
-        # 1. CHANGE MASTER ADMIN PASSWORD
         with st.container(border=True):
             st.markdown("###### 🔑 Change Master Admin Password")
             with st.form("change_admin_pass_form", clear_on_submit=True):
@@ -451,15 +459,14 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                             users_df = users_df[users_df["Username"].astype(str).str.strip().str.lower() != DEFAULT_ADMIN_USER.lower()]
                         adm_row = pd.DataFrame([{
                             "Username": DEFAULT_ADMIN_USER, "Password": new_adm_p1, "Full_Name": DEFAULT_ADMIN_NAME,
-                            "Role": "ADMIN", "Allowed_Tabs": "ALL", "Status": "ACTIVE",
-                            "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
+                            "Role": "ADMIN", "Allowed_Tabs": "ALL", "Allowed_Division": "All Divisions",
+                            "Status": "ACTIVE", "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
                         }])
                         if save_sheet_df("app_users", pd.concat([adm_row, users_df], ignore_index=True)[USER_COLUMNS]):
                             st.success("Master Admin Password updated! Use the new password on your next login.")
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-        # 2. PROVISION / UPDATE USER
         with st.container(border=True):
             st.markdown("###### Provision / Update User")
             with st.form("create_user_form", clear_on_submit=False):
@@ -467,9 +474,16 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                 new_password = st.text_input("Password", type="password").strip()
                 new_name = st.text_input("Full Name").strip()
                 new_contact = st.text_input("Contact Number").strip()
+
                 fc1, fc2 = st.columns(2)
                 new_role = fc1.selectbox("Role", ["USER", "ADMIN"])
                 new_status = fc2.selectbox("Status", ["ACTIVE", "INACTIVE"])
+
+                new_allowed_div = st.selectbox(
+                    "Allowed Workforce Division",
+                    ["All Divisions", "Fleet Operations", "Civil Construction"],
+                    help="Restricts this user to see and mark attendance ONLY for the chosen division."
+                )
 
                 selected_permissions = []
                 for grp_label, grp_id in [("Worker Attendance", "Attendance"), ("Tata Steel Billing", "Billing"), ("Site Fuel Record", "Fuel")]:
@@ -495,15 +509,17 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                             rows_to_add.append({
                                 "Username": DEFAULT_ADMIN_USER, "Password": get_effective_admin_password(users_df),
                                 "Full_Name": DEFAULT_ADMIN_NAME, "Role": "ADMIN", "Allowed_Tabs": "ALL",
-                                "Status": "ACTIVE", "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
+                                "Allowed_Division": "All Divisions", "Status": "ACTIVE",
+                                "Contact_No": "", "Emergency_Contact": "", "Photo_Base64": ""
                             })
                         rows_to_add.append({
                             "Username": new_username, "Password": new_password, "Full_Name": new_name, "Role": new_role,
                             "Allowed_Tabs": ",".join(selected_permissions) if new_role != "ADMIN" else "ALL",
+                            "Allowed_Division": "All Divisions" if new_role == "ADMIN" else new_allowed_div,
                             "Status": new_status, "Contact_No": new_contact, "Emergency_Contact": "", "Photo_Base64": ""
                         })
                         if save_sheet_df("app_users", pd.concat([users_df, pd.DataFrame(rows_to_add)], ignore_index=True)[USER_COLUMNS]):
-                            st.success(f"User '{new_username}' saved.")
+                            st.success(f"User '{new_username}' saved ({new_allowed_div}).")
                             st.rerun()
 
     with col_u2:
@@ -515,7 +531,8 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                 if disp_u.empty:
                     st.info("No additional supervisor/user accounts created yet.")
                 else:
-                    st.dataframe(disp_u[[c for c in ["Username", "Password", "Full_Name", "Role", "Status", "Allowed_Tabs"] if c in disp_u.columns]], use_container_width=True, hide_index=True)
+                    disp_u["Allowed_Division"] = disp_u["Allowed_Division"].replace("", "All Divisions")
+                    st.dataframe(disp_u[[c for c in ["Username", "Password", "Full_Name", "Role", "Allowed_Division", "Status", "Allowed_Tabs"] if c in disp_u.columns]], use_container_width=True, hide_index=True)
 
                     st.markdown("---")
                     st.markdown("###### 🗑️ Revoke / Permanently Remove User")
