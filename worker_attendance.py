@@ -181,6 +181,64 @@ def generate_next_worker_id(division, existing_df):
     return f"{prefix}-{max(matched_nums) + 1}"
 
 
+def build_bulk_employee_template_excel():
+    sample_rows = [
+        {
+            "Full_Name": "RAMESH KUMAR MAHTO",
+            "Govt_ID_Ref": "AADHAAR-4521",
+            "Division": "Fleet Operations",
+            "Designation": "Excavator Operator (Heavy)",
+            "Wage_Type": "DAILY_WAGE",
+            "Skill_Category": "Highly Skilled",
+            "Base_Rate": 915,
+            "Week_Off_Day": "Sunday",
+            "Contact_No": "9835100001",
+            "Bank_Account_No": "482010110001234",
+            "Bank_IFSC_Code": "BKID0004820",
+            "Bank_Branch_Details": "BOI CHAINPUR",
+            "Status": "ACTIVE"
+        },
+        {
+            "Full_Name": "SURESH PRASAD",
+            "Govt_ID_Ref": "AADHAAR-8890",
+            "Division": "Civil Construction",
+            "Designation": "Civil Construction Helper",
+            "Wage_Type": "DAILY_WAGE",
+            "Skill_Category": "Unskilled",
+            "Base_Rate": 565,
+            "Week_Off_Day": "Sunday",
+            "Contact_No": "9835100002",
+            "Bank_Account_No": "334455667788",
+            "Bank_IFSC_Code": "SBIN0001234",
+            "Bank_Branch_Details": "SBI WEST BOKARO",
+            "Status": "ACTIVE"
+        },
+        {
+            "Full_Name": "MANOJ SINGH",
+            "Govt_ID_Ref": "EMP-SUP-01",
+            "Division": "Fleet Operations",
+            "Designation": "Fleet Supervisor",
+            "Wage_Type": "MONTHLY_FIXED",
+            "Skill_Category": "Monthly Fixed",
+            "Base_Rate": 22000,
+            "Week_Off_Day": "Sunday",
+            "Contact_No": "9835100003",
+            "Bank_Account_No": "482010110005678",
+            "Bank_IFSC_Code": "BKID0004820",
+            "Bank_Branch_Details": "BOI CHAINPUR",
+            "Status": "ACTIVE"
+        }
+    ]
+    df_tpl = pd.DataFrame(sample_rows)
+    buf = io.BytesIO()
+    try:
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df_tpl.to_excel(writer, sheet_name="Employee_Enrolment", index=False)
+        return buf.getvalue(), "xlsx"
+    except Exception:
+        return df_tpl.to_csv(index=False).encode("utf-8"), "csv"
+
+
 def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     if not PYPDF_AVAILABLE:
         return pd.DataFrame()
@@ -783,6 +841,20 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
 
         else:
             with st.container(border=True):
+                st.markdown("###### 1. Download Sample Bulk Enrolment Template")
+                st.caption("Download this pre-formatted Excel/CSV template, fill in your employee list (Worker_ID will be auto-generated), and upload below.")
+                tpl_bytes, tpl_ext = build_bulk_employee_template_excel()
+                tpl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if tpl_ext == "xlsx" else "text/csv"
+                st.download_button(
+                    label=f"📥 Download Sample Employee Enrolment Template (.{tpl_ext})",
+                    data=tpl_bytes,
+                    file_name=f"M_s_INDU_SAO_Employee_Enrolment_Template.{tpl_ext}",
+                    mime=tpl_mime,
+                    type="secondary"
+                )
+
+                st.markdown("---")
+                st.markdown("###### 2. Upload Completed Employee Roster")
                 up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
                 if up_file:
                     b_df = pd.read_csv(up_file) if up_file.name.lower().endswith(".csv") else pd.ExcelFile(up_file).parse(0)
@@ -793,19 +865,22 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         w_df = load_fn("worker_master")
                         appended_rows = []
                         for _, b_row in b_df.iterrows():
+                            fname_chk = str(b_row.get("Full_Name", "")).strip()
+                            if not fname_chk or fname_chk.lower() == "nan":
+                                continue
                             div_val = str(b_row.get("Division", "Fleet Operations")).strip()
                             cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
                             new_gen_id = generate_next_worker_id(div_val, cur_merged)
                             raw_desig = str(b_row.get("Designation", "")).strip()
                             clean_desig = raw_desig if raw_desig and raw_desig.lower() != "nan" else "Unassigned"
                             w_type_val = str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper()
-                            b_rate_val = float(b_row.get("Base_Rate", 565.0) or 565.0)
+                            b_rate_val = float(pd.to_numeric(b_row.get("Base_Rate", 565.0), errors="coerce") or 565.0)
                             raw_skill = str(b_row.get("Skill_Category", "")).strip()
                             if not raw_skill or raw_skill.lower() == "nan":
                                 raw_skill = infer_skill_category_from_role_or_rate(clean_desig, b_rate_val, w_type_val)
 
                             appended_rows.append({
-                                "Worker_ID": new_gen_id, "Full_Name": str(b_row.get("Full_Name", "")).strip(),
+                                "Worker_ID": new_gen_id, "Full_Name": fname_chk,
                                 "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")).strip(), "Division": div_val,
                                 "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": raw_skill,
                                 "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
@@ -998,7 +1073,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                                 ed_name, ed_ref, ed_contact, ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, ed_acc, ed_ifsc, ed_branch
                             ]
                             if save_fn("worker_master", w_table[WORKER_MASTER_COLS]):
-                                st.success(f"Profile updated!")
+                                st.success("Profile updated!")
                                 st.rerun()
 
                 if is_admin:
