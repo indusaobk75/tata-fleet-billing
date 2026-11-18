@@ -300,7 +300,7 @@ def login_screen():
 
         with st.container(border=True):
             st.markdown("##### Sign in to Workspace")
-            username = st.text_input("Username", placeholder="e.g. admin").strip()
+            username = st.text_input("Username", placeholder="Enter your Username").strip()
             password = st.text_input("Password", type="password", placeholder="••••••••").strip()
             if st.button("Continue →", use_container_width=True, type="primary"):
                 u_lower = username.lower()
