@@ -20,7 +20,7 @@ from worker_attendance import (
 from tata_billing import render_billing_module
 from fuel_and_audit import (
     ATTENDANCE_AUDIT_COLS, FUEL_FLEET_COLS, FUEL_ISSUE_COLS,
-    FUEL_STOCK_COLS, render_fuel_module
+    FUEL_STOCK_COLS, FUEL_RECOVERY_COLS, render_fuel_module
 )
 
 st.set_page_config(
@@ -79,6 +79,7 @@ def load_sheet_df(worksheet_name):
         "fuel_fleet_master": FUEL_FLEET_COLS,
         "fuel_issue_log": FUEL_ISSUE_COLS,
         "fuel_stock_log": FUEL_STOCK_COLS,
+        "fuel_recovery_log": FUEL_RECOVERY_COLS,
         "attendance_audit_log": ATTENDANCE_AUDIT_COLS
     }
     expected_cols = schema_map.get(worksheet_name, [])
@@ -265,9 +266,9 @@ WORKSPACES_TREE = [
     {
         "id": "Fuel", "icon": "⛽", "title": "Site Fuel Record",
         "submenus": [
-            ("Daily Diesel Slip", "Daily Diesel Issue Slip"),
-            ("Fuel Benchmark Master", "Fleet Fuel Benchmark Master"),
-            ("Anti-Pilferage Audit", "Theft & Pilferage Audit")
+            ("Daily Fuel & Bowser Slip", "Daily Diesel Issue Slip"),
+            ("Vehicle Fuel Benchmark", "Fleet Fuel Benchmark Master"),
+            ("Variance Audit & Recovery", "Theft & Pilferage Audit")
         ]
     }
 ]
@@ -279,7 +280,7 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; }
     .stApp { background-color: #ffffff; }
-    .block-container { padding-top: 3.6rem !important; padding-bottom: 2.5rem !important; padding-left: 2.2rem !important; padding-right: 2.2rem !important; max-width: 100% !important; }
+    .block-container { padding-top: 3.2rem !important; padding-bottom: 2.5rem !important; padding-left: 2.0rem !important; padding-right: 2.0rem !important; max-width: 100% !important; }
     section[data-testid="stSidebar"][aria-expanded="true"] { background-color: #f8fafc !important; border-right: 1px solid #e2e8f0 !important; width: 275px !important; min-width: 275px !important; }
     section[data-testid="stSidebar"][aria-expanded="false"] { width: 0px !important; min-width: 0px !important; margin-left: -275px !important; }
     section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] { width: 100% !important; min-height: 38px !important; text-align: left !important; justify-content: flex-start !important; background-color: transparent !important; border: none !important; box-shadow: none !important; font-size: 0.88rem !important; font-weight: 700 !important; color: #0f172a !important; }
