@@ -178,6 +178,19 @@ def compress_photo_to_base64(uploaded_img):
         return ""
 
 
+def resolve_worker_photo_b64(emp_row, load_media_fn=None):
+    """Fetches photo from dedicated media_store (or falls back to legacy inline base64)."""
+    wid = str(emp_row.get("Worker_ID", "")).strip()
+    raw_val = str(emp_row.get("Photo_Base64", "")).strip()
+    if raw_val == "SAVED" and load_media_fn:
+        return load_media_fn(f"EMP_{wid}")
+    if len(raw_val) > 50:
+        return raw_val
+    if load_media_fn and wid:
+        return load_media_fn(f"EMP_{wid}")
+    return ""
+
+
 def get_active_wage_rates_df(load_fn):
     df = load_fn("wage_rate_master")
     if df.empty or "Skill_Category" not in df.columns:
@@ -314,7 +327,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
         if not name_col:
             return pd.DataFrame()
 
-        # Map day columns (e.g., "1", "01", "Day_1", "2026-11-01")
         day_col_map = {}
         for c in df.columns:
             c_clean = str(c).strip()
@@ -376,7 +388,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                 tokens = ln.split()
                 if len(tokens) < 5:
                     continue
-                # Extract trailing day status tokens (P, A, WO, HD, H, L, -)
                 status_tokens = []
                 name_tokens = []
                 in_marks = False
@@ -576,7 +587,6 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                 non_punch_take_home = max(0.0, adjustable_pool - adv_deducted)
                 total_net_payable = f17_net + non_punch_take_home
             else:
-                # Net-to-Net Differential Calculation on Agreed Base_Rate with EPF 25k / ESIC 21k Ceilings
                 total_paid_days = punch_days + non_punch_days
                 ot_pay = (wrate / 8.0) * ot_hrs
                 gross_total = round((total_paid_days * wrate) + ot_pay, 0)
@@ -709,7 +719,7 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     return bytes(pdf.output())
 
 
-def generate_atm_id_cards_pdf(workers_df, logo_fn):
+def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -759,7 +769,7 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn):
         pdf.set_fill_color(248, 250, 252)
         pdf.rect(x0 + 3.5, y0 + 16.0, 19.0, 23.0, style="DF")
 
-        photo_b64 = str(emp.get("Photo_Base64", "")).strip()
+        photo_b64 = resolve_worker_photo_b64(emp, load_media_fn)
         photo_drawn = False
         if photo_b64 and len(photo_b64) > 50:
             try:
@@ -934,7 +944,11 @@ def filter_workers_by_allowed_division(df, allowed_division):
 
 
 # ----------------- MAIN RENDER ENTRYPOINT FOR ATTENDANCE MODULE -----------------
-def render_attendance_module(current_view, load_fn, save_fn, current_user, user_display_name, current_role, letterhead_fn, logo_fn, allowed_division="All Divisions"):
+def render_attendance_module(
+    current_view, load_fn, save_fn, current_user, user_display_name, current_role,
+    letterhead_fn, logo_fn, allowed_division="All Divisions",
+    load_media_fn=None, save_media_fn=None
+):
     is_admin = (str(current_role).upper() == "ADMIN")
     eff_div_scope = "All Divisions" if is_admin else (allowed_division or "All Divisions")
     is_div_restricted = (eff_div_scope in ["Fleet Operations", "Civil Construction"])
@@ -1011,6 +1025,14 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                             st.error("Please specify custom role.")
                         else:
                             w_df = load_fn("worker_master")
+                            b64_photo = compress_photo_to_base64(w_photo_file)
+                            photo_flag = ""
+                            if b64_photo:
+                                if save_media_fn and save_media_fn(f"EMP_{next_wid}", b64_photo):
+                                    photo_flag = "SAVED"
+                                else:
+                                    photo_flag = b64_photo
+
                             new_row = {
                                 "Worker_ID": next_wid, "Full_Name": w_name, "Govt_ID_Ref": w_ref,
                                 "Division": w_div, "Designation": final_role, "Wage_Type": w_wage_type,
@@ -1018,7 +1040,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                                 "Contact_No": w_contact, "Bank_Account_No": b_acc, "Bank_IFSC_Code": b_ifsc,
                                 "Bank_Branch_Details": b_branch, "Status": w_status,
                                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
-                                "Photo_Base64": compress_photo_to_base64(w_photo_file)
+                                "Photo_Base64": photo_flag
                             }
                             updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                             if save_fn("worker_master", updated_w_df[WORKER_MASTER_COLS]):
@@ -1197,13 +1219,13 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             emp_branch = str(emp.get("Bank_Branch_Details", ""))
             emp_contact = str(emp.get("Contact_No", ""))
             emp_status = str(emp.get("Status", "ACTIVE")).upper()
-            emp_photo_b64 = str(emp.get("Photo_Base64", "")).strip()
+            emp_photo_b64 = resolve_worker_photo_b64(emp, load_media_fn)
 
             with top_nav2:
                 if FPDF_AVAILABLE:
                     st.download_button(
                         label=f"🪪 Download ATM ID Card PDF ({target_wid})",
-                        data=generate_atm_id_cards_pdf(w_match, logo_fn),
+                        data=generate_atm_id_cards_pdf(w_match, logo_fn, load_media_fn),
                         file_name=f"ID_Card_{target_wid}.pdf", mime="application/pdf", type="primary"
                     )
 
@@ -1218,7 +1240,10 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                     if new_photo_up and st.button("Save Photo", key=f"save_ph_{target_wid}", type="primary", use_container_width=True):
                         b64_new = compress_photo_to_base64(new_photo_up)
                         if b64_new:
-                            w_table_full.loc[w_table_full["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = b64_new
+                            p_flag = b64_new
+                            if save_media_fn and save_media_fn(f"EMP_{target_wid}", b64_new):
+                                p_flag = "SAVED"
+                            w_table_full.loc[w_table_full["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = p_flag
                             if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Photo updated!")
                                 st.rerun()
@@ -1408,13 +1433,17 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                     cards_subset_df = disp_table[disp_table["Worker_ID"].astype(str).isin(target_wids_for_cards)]
 
                     if FPDF_AVAILABLE and not cards_subset_df.empty:
-                        cards_pdf_bytes = generate_atm_id_cards_pdf(cards_subset_df, logo_fn)
-                        pages_cnt = (len(cards_subset_df) + 7) // 8
-                        st.download_button(
-                            label=f"📥 Download ID Cards PDF ({len(cards_subset_df)} Cards • {pages_cnt} Page)",
-                            data=cards_pdf_bytes, file_name=f"M_s_INDU_SAO_ID_Cards_{datetime.date.today().strftime('%Y%m%d')}.pdf",
-                            mime="application/pdf", type="primary", use_container_width=True
-                        )
+                        if st.button(f"⚡ Prepare ID Cards PDF ({len(cards_subset_df)} Cards)", type="secondary", use_container_width=True):
+                            st.session_state["prepared_id_cards_pdf"] = generate_atm_id_cards_pdf(cards_subset_df, logo_fn, load_media_fn)
+                            st.session_state["prepared_id_cards_cnt"] = len(cards_subset_df)
+                        if st.session_state.get("prepared_id_cards_pdf"):
+                            pages_cnt = (st.session_state.get("prepared_id_cards_cnt", 1) + 7) // 8
+                            st.download_button(
+                                label=f"📥 Download ID Cards PDF ({st.session_state.get('prepared_id_cards_cnt')} Cards • {pages_cnt} Page)",
+                                data=st.session_state["prepared_id_cards_pdf"],
+                                file_name=f"M_s_INDU_SAO_ID_Cards_{datetime.date.today().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf", type="primary", use_container_width=True
+                            )
 
             disp_table_view = disp_table.copy()
             disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅" if str(x).strip() else "—")
@@ -1944,7 +1973,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
         f16_month_df = f16_df[f16_df["Wages_Period"].apply(period_matches)].copy() if (not f16_df.empty and "Wages_Period" in f16_df.columns) else pd.DataFrame(columns=TATA_FORM_XVI_COLS)
         is_f16_uploaded_for_month = (not f16_month_df.empty)
 
-        # STEP 1: MANDATORY FORM XVI IMPORT & BIOMETRIC RECONCILIATION
         with st.expander(f"📋 Step 1: Import Tata Steel FORM XVI (Biometric Muster Roll) — {'✅ Synced' if is_f16_uploaded_for_month else '⚠️ Required First'}", expanded=(not is_f16_uploaded_for_month)):
             st.caption("Mandatory Step 1: Synchronizes biometric punch dates, auto-corrects accidental 'Non-Punch' entries to 'Punch' to prevent double payment, and flags ghost punch discrepancies.")
             xvi_file = st.file_uploader("Upload Tata Steel Form XVI (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"], key="f16_uploader")
@@ -1983,7 +2011,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                                 "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             })
 
-                            # Auto-correct Non-Punch -> Punch on dates confirmed in Form XVI
                             if matched_wid and p_dates and not full_m_all.empty:
                                 mask_fix = (
                                     (full_m_all["Worker_ID"].astype(str) == matched_wid) &
@@ -2006,7 +2033,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                             st.success(f"Form XVI synchronized for {wage_period_str}! Auto-corrected {auto_corrected_cnt} 'Non-Punch' entries to 'Punch'.")
                             st.rerun()
 
-        # BIOMETRIC AUDIT & GHOST PUNCH DISCREPANCY TABLE (SHOWN ONCE FORM XVI IS SYNCED)
         if is_f16_uploaded_for_month:
             with st.expander("🚨 Form XVI Biometric Audit & Ghost Punch Discrepancy Report", expanded=False):
                 audit_rows = []
@@ -2062,7 +2088,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 else:
                     st.info("No biometric punch discrepancies detected for this period.")
 
-        # STEP 2: STRICTLY LOCKED UNTIL FORM XVI IS UPLOADED FOR THE MONTH
         if not is_f16_uploaded_for_month:
             st.warning(f"⚠️ **Action Required:** Please upload and sync **Tata Steel Form XVI (Biometric Muster Roll)** for **{wage_period_str}** in Step 1 above before importing Form XVII.")
         else:
@@ -2141,7 +2166,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                                 st.success(f"Committed {len(new_records)} records!")
                                 st.rerun()
 
-        # PAYROLL RECONCILIATION & SEPARATE PAYOUT BATCHES
         payroll_results = compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num)
         recon_rows = []
         f17_boi_batch, f17_neft_batch = [], []
@@ -2173,7 +2197,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 "Adv. Ded. (₹)": p["Advance_Deducted"], "Carry Fwd Adv (₹)": p["Closing_Carry_Forward"]
             })
 
-            # Batch 1: Strict Form XVII (Tata Steel Compliance Upload)
             if f17_net > 0 and p["Bank_Account_No"]:
                 item_17 = {
                     "NAME": p["Worker_Name"], "AMOUNT": f17_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
@@ -2184,7 +2207,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 else:
                     f17_neft_batch.append(item_17)
 
-            # Batch 2: Balance Top-Up / Non-Punch / Fixed Staff Internal Bank Transfer
             if np_net > 0 and p["Bank_Account_No"]:
                 item_np = {
                     "NAME": p["Worker_Name"], "AMOUNT": np_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
@@ -2214,7 +2236,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         file_name=f"M_s_INDU_SAO_Salary_Slips_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                     )
 
-        # SEPARATE BANK COVERING LETTERS: SET 1 (FORM XVII COMPLIANCE) & SET 2 (INTERNAL NON-PUNCH / TOP-UP)
         st.markdown("###### 🏦 Bank Covering Letters — Set 1: Tata Steel Form XVII Compliance (Punch Payouts Only)")
         p_c1, p_c2 = st.columns(2)
         with p_c1:
