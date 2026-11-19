@@ -277,12 +277,10 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
 
                                 if usage_delta > 0 and bench > 0:
                                     if unit_short == "Hrs":
-                                        # Litres per Hour (Higher L/Hr = More Fuel Consumed)
                                         actual_eff = round(litres_val / usage_delta, 2)
                                         expected_litres = round(usage_delta * bench, 2)
                                         variance_litres = round(litres_val - expected_litres, 2)
                                     else:
-                                        # KM per Litre (Lower KM/L = More Fuel Consumed)
                                         actual_eff = round(usage_delta / litres_val, 2)
                                         expected_litres = round(usage_delta / bench, 2)
                                         variance_litres = round(litres_val - expected_litres, 2)
@@ -317,7 +315,6 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                                 }
                                 upd_issues = pd.concat([issue_df, pd.DataFrame([new_issue])], ignore_index=True)
                                 if save_fn("fuel_issue_log", upd_issues[FUEL_ISSUE_COLS]):
-                                    # Update Vehicle's Current Meter in Fleet Master
                                     fleet_df.loc[fleet_df["Vehicle_ID"].astype(str) == vid, "Current_Meter"] = float(curr_meter)
                                     save_fn("fuel_fleet_master", fleet_df[FUEL_FLEET_COLS])
                                     st.success(f"Fuel entry saved for {vid} ({litres_val:,.1f} L • Driver: {drv_name}).")
@@ -367,7 +364,7 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                     st.dataframe(stock_df.iloc[::-1][["Date", "Litres_Added", "Logged_By", "Remarks"]], use_container_width=True, hide_index=True)
 
     # =========================================================================
-    # VIEW 2: VEHICLE / MACHINE FUEL BENCHMARK MASTER (NO FIXED DRIVER)
+    # VIEW 2: VEHICLE / MACHINE FUEL BENCHMARK MASTER (WITH CUSTOM CATEGORY)
     # =========================================================================
     elif current_view == "Fleet Fuel Benchmark Master":
         st.markdown("#### Vehicle & Machine Fuel Benchmark Master")
@@ -377,43 +374,54 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
         with c_v1:
             with st.container(border=True):
                 st.markdown("###### ➕ Add / Update Vehicle or Machine")
-                with st.form("add_fuel_vehicle_form", clear_on_submit=True):
-                    v_id = st.text_input("Vehicle / Machine No. (e.g. Excavator 215L, JH-02-AB-1234)").strip().upper()
-                    v_type = st.selectbox(
-                        "Equipment / Vehicle Category",
-                        ["Excavator", "Vibratory Roller", "Hyva Tipper", "Wheel Loader", "JCB Backhoe", "Dozer", "Hydra Crane", "Service Pickup / Bolero", "Other"]
-                    )
-                    def_src = st.selectbox("Primary Fueling Source", ["Issue from Own Bowser", "Direct from Fuel Pump"])
-                    m_type = st.selectbox("Meter Unit", ["HMR (Hours)", "ODOMETER (KM)"])
-                    bench_val = st.number_input(
-                        "Expected Benchmark (L/Hr for HMR, or KM/L for Odometer)",
-                        min_value=0.5, value=14.0, step=0.5
-                    )
-                    open_meter = st.number_input("Current / Opening Meter Reading", min_value=0.0, value=0.0, step=1.0)
-                    v_stat = st.selectbox("Status", ["ACTIVE", "INACTIVE"])
-                    v_rem = st.text_input("Remarks (Optional)").strip()
+                v_id = st.text_input("Vehicle / Machine No. (e.g. Excavator 215L, JH-02-AB-1234)", key="fv_id_in").strip().upper()
+                v_type_choice = st.selectbox(
+                    "Equipment / Vehicle Category",
+                    [
+                        "Excavator", "Vibratory Roller", "Hyva Tipper", "Wheel Loader",
+                        "JCB Backhoe", "Dozer", "Hydra Crane", "Motor Grader",
+                        "Water Tanker", "Service Pickup / Bolero", "Other (Custom Entry)"
+                    ],
+                    key="fv_type_sel"
+                )
+                custom_v_type = ""
+                if v_type_choice == "Other (Custom Entry)":
+                    custom_v_type = st.text_input("Specify Custom Vehicle / Machine Category", placeholder="e.g. Rock Breaker / Diesel Generator", key="fv_custom_type").strip()
 
-                    if st.form_submit_button("💾 Save Vehicle Benchmark", type="primary", use_container_width=True):
-                        if not v_id:
-                            st.error("Vehicle / Machine No. is required.")
-                        else:
-                            cur_f = load_fn("fuel_fleet_master")
-                            if not cur_f.empty and "Vehicle_ID" in cur_f.columns:
-                                cur_f = cur_f[cur_f["Vehicle_ID"].astype(str).str.upper() != v_id]
-                            new_v = {
-                                "Vehicle_ID": v_id,
-                                "Vehicle_Type": v_type,
-                                "Fuel_Source_Default": def_src,
-                                "Meter_Type": m_type,
-                                "Expected_Benchmark": float(bench_val),
-                                "Current_Meter": float(open_meter),
-                                "Status": v_stat,
-                                "Remarks": v_rem
-                            }
-                            upd_f = pd.concat([cur_f, pd.DataFrame([new_v])], ignore_index=True)
-                            if save_fn("fuel_fleet_master", upd_f[FUEL_FLEET_COLS]):
-                                st.success(f"Saved {v_id} ({bench_val} {'L/Hr' if 'HMR' in m_type else 'KM/L'}).")
-                                st.rerun()
+                def_src = st.selectbox("Primary Fueling Source", ["Issue from Own Bowser", "Direct from Fuel Pump"], key="fv_src_sel")
+                m_type = st.selectbox("Meter Unit", ["HMR (Hours)", "ODOMETER (KM)"], key="fv_mtype_sel")
+                bench_val = st.number_input(
+                    "Expected Benchmark (L/Hr for HMR, or KM/L for Odometer)",
+                    min_value=0.5, value=14.0, step=0.5, key="fv_bench_in"
+                )
+                open_meter = st.number_input("Current / Opening Meter Reading", min_value=0.0, value=0.0, step=1.0, key="fv_open_m_in")
+                v_stat = st.selectbox("Status", ["ACTIVE", "INACTIVE"], key="fv_stat_sel")
+                v_rem = st.text_input("Remarks (Optional)", key="fv_rem_in").strip()
+
+                if st.button("💾 Save Vehicle Benchmark", type="primary", use_container_width=True):
+                    final_v_type = custom_v_type if v_type_choice == "Other (Custom Entry)" else v_type_choice
+                    if not v_id:
+                        st.error("Vehicle / Machine No. is required.")
+                    elif v_type_choice == "Other (Custom Entry)" and not custom_v_type:
+                        st.error("Please type the custom Vehicle / Machine Category.")
+                    else:
+                        cur_f = load_fn("fuel_fleet_master")
+                        if not cur_f.empty and "Vehicle_ID" in cur_f.columns:
+                            cur_f = cur_f[cur_f["Vehicle_ID"].astype(str).str.upper() != v_id]
+                        new_v = {
+                            "Vehicle_ID": v_id,
+                            "Vehicle_Type": final_v_type,
+                            "Fuel_Source_Default": def_src,
+                            "Meter_Type": m_type,
+                            "Expected_Benchmark": float(bench_val),
+                            "Current_Meter": float(open_meter),
+                            "Status": v_stat,
+                            "Remarks": v_rem
+                        }
+                        upd_f = pd.concat([cur_f, pd.DataFrame([new_v])], ignore_index=True)
+                        if save_fn("fuel_fleet_master", upd_f[FUEL_FLEET_COLS]):
+                            st.success(f"Saved {v_id} ({final_v_type} • {bench_val} {'L/Hr' if 'HMR' in m_type else 'KM/L'}).")
+                            st.rerun()
 
         with c_v2:
             with st.container(border=True):
@@ -595,7 +603,6 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                             st.warning("Approved deduction amount must be greater than ₹0.")
                         else:
                             now_dt = datetime.datetime.now()
-                            # Post to worker_advances so payroll engine automatically deducts it
                             adv_df = load_fn("worker_advances")
                             new_adv_row = {
                                 "Txn_ID": f"FUEL-REC-{int(time.time())}",
@@ -611,7 +618,6 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                             upd_adv = pd.concat([adv_df, pd.DataFrame([new_adv_row])], ignore_index=True)
                             adv_saved = save_fn("worker_advances", upd_adv[ADVANCE_SYNC_COLS])
 
-                            # Record in fuel_recovery_log for audit trail
                             new_rec_row = {
                                 "Recovery_ID": f"FREC-{int(time.time())}",
                                 "Period_YM": target_ym,
