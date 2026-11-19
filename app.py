@@ -49,8 +49,10 @@ USER_COLUMNS = [
     "Status", "Contact_No", "Emergency_Contact", "Photo_Base64"
 ]
 
+MEDIA_STORE_COLS = ["Ref_ID", "Photo_Base64"]
 
-# ----------------- 1. GOOGLE SHEETS ENGINE -----------------
+
+# ----------------- 1. GOOGLE SHEETS ENGINE (FAST CACHE + MEDIA STORE) -----------------
 @st.cache_resource
 def get_gspread_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -64,7 +66,7 @@ def get_gspread_client():
     return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def load_sheet_df(worksheet_name):
     schema_map = {
         "worker_master": WORKER_MASTER_COLS,
@@ -80,7 +82,8 @@ def load_sheet_df(worksheet_name):
         "fuel_issue_log": FUEL_ISSUE_COLS,
         "fuel_stock_log": FUEL_STOCK_COLS,
         "fuel_recovery_log": FUEL_RECOVERY_COLS,
-        "attendance_audit_log": ATTENDANCE_AUDIT_COLS
+        "attendance_audit_log": ATTENDANCE_AUDIT_COLS,
+        "media_store": MEDIA_STORE_COLS
     }
     expected_cols = schema_map.get(worksheet_name, [])
 
@@ -123,9 +126,9 @@ def save_sheet_df(worksheet_name, df):
                 ws = sh.worksheet(worksheet_name)
             except gspread.exceptions.WorksheetNotFound:
                 ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="25")
-            ws.clear()
+            ws.resize(rows=max(2, len(prepared_values)), cols=max(2, len(prepared_values[0])))
             ws.update(prepared_values, value_input_option="RAW")
-            st.cache_data.clear()
+            load_sheet_df.clear()
             return True
         except Exception as e:
             if "429" in str(e):
@@ -134,6 +137,37 @@ def save_sheet_df(worksheet_name, df):
             st.error(f"Error persisting to {worksheet_name}: {e}")
             return False
     return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_media_photo(ref_id):
+    """Fetches a single photo on-demand from media_store without bloating main operational tables."""
+    ref_clean = str(ref_id).strip()
+    if not ref_clean:
+        return ""
+    media_df = load_sheet_df("media_store")
+    if media_df.empty or "Ref_ID" not in media_df.columns:
+        return ""
+    hit = media_df[media_df["Ref_ID"].astype(str).str.strip() == ref_clean]
+    if not hit.empty:
+        return str(hit.iloc[-1].get("Photo_Base64", "")).strip()
+    return ""
+
+
+def save_media_photo(ref_id, b64_str):
+    """Stores or updates a photo in the dedicated media_store worksheet."""
+    ref_clean = str(ref_id).strip()
+    if not ref_clean or not b64_str:
+        return False
+    media_df = load_sheet_df("media_store")
+    if not media_df.empty and "Ref_ID" in media_df.columns:
+        media_df = media_df[media_df["Ref_ID"].astype(str).str.strip() != ref_clean]
+    new_m = pd.DataFrame([{"Ref_ID": ref_clean, "Photo_Base64": str(b64_str).strip()}])
+    upd_m = pd.concat([media_df, new_m], ignore_index=True)
+    ok = save_sheet_df("media_store", upd_m[MEDIA_STORE_COLS])
+    if ok:
+        load_media_photo.clear()
+    return ok
 
 
 def get_effective_admin_password(users_df):
@@ -432,14 +466,16 @@ if mod_type == "Attendance":
         current_view, load_sheet_df, save_sheet_df,
         st.session_state.current_user, user_display_name, st.session_state.current_role,
         draw_indu_sao_letterhead, build_exact_indu_sao_oval_logo_stream,
-        allowed_division=st.session_state.allowed_division
+        allowed_division=st.session_state.allowed_division,
+        load_media_fn=load_media_photo, save_media_fn=save_media_photo
     )
 elif mod_type == "Billing":
     render_billing_module(current_view, load_sheet_df, save_sheet_df)
 elif mod_type == "Fuel":
     render_fuel_module(
         current_view, load_sheet_df, save_sheet_df,
-        st.session_state.current_user, st.session_state.current_role, draw_indu_sao_letterhead
+        st.session_state.current_user, st.session_state.current_role, draw_indu_sao_letterhead,
+        load_media_fn=load_media_photo, save_media_fn=save_media_photo
     )
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
     st.markdown("#### User Accounts, Permissions & Admin Security")
