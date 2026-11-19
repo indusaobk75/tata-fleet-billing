@@ -31,6 +31,9 @@ except ImportError:
 SKILL_CATEGORIES = ["Unskilled", "Semi-Skilled", "Skilled", "Highly Skilled"]
 WEEK_DAYS_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "No Fixed Week-Off"]
 
+EPF_WAGE_CEILING = 25000.0
+ESIC_WAGE_CEILING = 21000.0
+
 WAGE_MASTER_COLS = [
     "Skill_Category", "Basic_Pay", "VDA_Allowance", "Total_Daily_Rate", "Effective_From", "Remarks"
 ]
@@ -77,6 +80,10 @@ MUSTER_ROLL_COLS = [
 ADVANCE_LOG_COLS = [
     "Txn_ID", "Date", "Worker_ID", "Worker_Name", "Division", "Amount",
     "Payment_Mode", "Supervisor", "Remarks"
+]
+
+TATA_FORM_XVI_COLS = [
+    "Wages_Period", "Worker_ID", "Worker_Name", "Punch_Days_Count", "Punch_Dates_List", "Uploaded_At"
 ]
 
 TATA_COMPLIANCE_COLS = [
@@ -275,6 +282,131 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         return df_tpl.to_csv(index=False).encode("utf-8"), "csv"
 
 
+# ----------------- FORM XVI & FORM XVII PARSERS -----------------
+def parse_tata_form_xvi_file(uploaded_file, target_ym):
+    """Parses Tata Steel Form XVI (Biometric Muster Roll) from Excel, CSV, or PDF."""
+    y_i = int(target_ym.split("-")[0])
+    m_i = int(target_ym.split("-")[1])
+    max_days = calendar.monthrange(y_i, m_i)[1]
+    fname = uploaded_file.name.lower()
+
+    parsed_records = []
+
+    if fname.endswith(".csv") or fname.endswith(".xlsx"):
+        if fname.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            xl = pd.ExcelFile(uploaded_file)
+            df = xl.parse(xl.sheet_names[0])
+
+        df.columns = [str(c).strip() for c in df.columns]
+        name_col = None
+        for cand in ["Worker_Name", "Employee Name", "Employee_Name", "Name of Workman", "Name_of_Workman", "Name", "NAME"]:
+            if cand in df.columns:
+                name_col = cand
+                break
+        if not name_col:
+            for c in df.columns:
+                if "name" in c.lower():
+                    name_col = c
+                    break
+
+        if not name_col:
+            return pd.DataFrame()
+
+        # Map day columns (e.g., "1", "01", "Day_1", "2026-11-01")
+        day_col_map = {}
+        for c in df.columns:
+            c_clean = str(c).strip()
+            if c_clean.isdigit() and 1 <= int(c_clean) <= max_days:
+                day_col_map[int(c_clean)] = c
+            elif re.match(r"^(day|d)[_\-\s]*0?(\d{1,2})$", c_clean, re.IGNORECASE):
+                d_num = int(re.sub(r"\D", "", c_clean))
+                if 1 <= d_num <= max_days:
+                    day_col_map[d_num] = c
+            elif c_clean.startswith(target_ym + "-") and len(c_clean) >= 10:
+                try:
+                    d_num = int(c_clean.split("-")[2][:2])
+                    if 1 <= d_num <= max_days:
+                        day_col_map[d_num] = c
+                except Exception:
+                    pass
+
+        for _, row in df.iterrows():
+            wname = str(row.get(name_col, "")).strip()
+            if not wname or wname.lower() == "nan" or "TOTAL" in wname.upper():
+                continue
+
+            punch_dates = []
+            if day_col_map:
+                for d_num in sorted(day_col_map.keys()):
+                    val = str(row.get(day_col_map[d_num], "")).strip().upper()
+                    if val in ["P", "PRESENT", "1", "1.0", "HD", "HALF", "P/2", "IN"]:
+                        punch_dates.append(f"{target_ym}-{d_num:02d}")
+            elif "Punch_Dates_List" in df.columns:
+                raw_list = str(row.get("Punch_Dates_List", "")).strip()
+                punch_dates = [x.strip() for x in raw_list.split(",") if x.strip()]
+
+            p_cnt = len(punch_dates)
+            if p_cnt == 0:
+                for tot_c in ["Punch_Days_Count", "Total_Days", "Present_Days", "Punch Days", "Days"]:
+                    if tot_c in df.columns:
+                        p_cnt = float(pd.to_numeric(row.get(tot_c, 0), errors="coerce") or 0)
+                        break
+
+            if p_cnt > 0 or punch_dates:
+                parsed_records.append({
+                    "Worker_Name": wname.upper(),
+                    "Punch_Days_Count": float(p_cnt),
+                    "Punch_Dates_List": ",".join(punch_dates)
+                })
+
+    elif fname.endswith(".pdf") and PYPDF_AVAILABLE:
+        reader = pypdf.PdfReader(uploaded_file)
+        ignore_kw = [
+            "FORM XVI", "MUSTER ROLL", "Name and address", "WAGES PERIOD",
+            "West Bokaro", "INDU SAO", "Serial No", "Father", "Sex", "Designation", "Total"
+        ]
+        for page in reader.pages:
+            txt = page.extract_text() or ""
+            for line in txt.split("\n"):
+                ln = line.strip()
+                if not ln or any(k.lower() in ln.lower() for k in ignore_kw):
+                    continue
+                tokens = ln.split()
+                if len(tokens) < 5:
+                    continue
+                # Extract trailing day status tokens (P, A, WO, HD, H, L, -)
+                status_tokens = []
+                name_tokens = []
+                in_marks = False
+                for tok in tokens:
+                    t_up = tok.upper()
+                    if t_up in ["P", "A", "WO", "HD", "H", "L", "OFF", "-"] and len(name_tokens) >= 1:
+                        in_marks = True
+                        status_tokens.append(t_up)
+                    elif not in_marks:
+                        if not tok.isdigit():
+                            name_tokens.append(tok)
+                    else:
+                        if tok.isdigit() and len(status_tokens) >= 15:
+                            break
+                if len(status_tokens) >= 15 and name_tokens:
+                    wname = re.sub(r"^[0-9\.\s]+", "", " ".join(name_tokens)).strip().upper()
+                    punch_dates = []
+                    for idx_m, mk in enumerate(status_tokens[:max_days], start=1):
+                        if mk in ["P", "HD"]:
+                            punch_dates.append(f"{target_ym}-{idx_m:02d}")
+                    if wname and (punch_dates or len(status_tokens) > 0):
+                        parsed_records.append({
+                            "Worker_Name": wname,
+                            "Punch_Days_Count": float(len(punch_dates)),
+                            "Punch_Dates_List": ",".join(punch_dates)
+                        })
+
+    return pd.DataFrame(parsed_records)
+
+
 def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     if not PYPDF_AVAILABLE:
         return pd.DataFrame()
@@ -334,6 +466,16 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
 
 
 # ----------------- PAYROLL & ADVANCE CARRY-FORWARD ENGINE -----------------
+def calculate_statutory_pf_esic(gross_wages):
+    """Applies updated EPF ₹25,000 wage ceiling (12%) and ESIC ₹21,000 wage ceiling (0.75%)."""
+    if gross_wages <= 0:
+        return 0.0, 0.0
+    pf_eligible_wage = min(float(gross_wages), EPF_WAGE_CEILING)
+    pf_amt = round(pf_eligible_wage * 0.12, 0)
+    esic_amt = round(float(gross_wages) * 0.0075, 0) if float(gross_wages) <= ESIC_WAGE_CEILING else 0.0
+    return pf_amt, esic_amt
+
+
 def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num):
     target_ym = f"{sel_year}-{month_num:02d}"
     all_periods = set([target_ym])
@@ -417,6 +559,8 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                     f17_days = float(pd.to_numeric(tm["Approved_Days"], errors="coerce").fillna(0.0).sum())
                     f17_net = float(pd.to_numeric(tm["Net_Amount_Paid"], errors="coerce").fillna(0.0).sum())
 
+            is_f17_higher = False
+
             if wwtype == "MONTHLY_FIXED":
                 working_days_in_month = count_working_days_for_worker(y_i, m_i, w_wo)
                 per_day_fixed = wrate / float(working_days_in_month)
@@ -424,30 +568,31 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                 gross_total = round(per_day_fixed * total_paid_days, 0)
                 pf_ded = 0.0
                 esic_ded = 0.0
+                if f17_net > gross_total and f17_net > 0:
+                    is_f17_higher = True
                 adjustable_pool = max(0.0, gross_total - f17_net)
                 adv_deducted = min(total_adv_due, adjustable_pool)
                 closing_adv = max(0.0, total_adv_due - adv_deducted)
                 non_punch_take_home = max(0.0, adjustable_pool - adv_deducted)
                 total_net_payable = f17_net + non_punch_take_home
             else:
+                # Net-to-Net Differential Calculation on Agreed Base_Rate with EPF 25k / ESIC 21k Ceilings
                 total_paid_days = punch_days + non_punch_days
                 ot_pay = (wrate / 8.0) * ot_hrs
-                if f17_net > 0:
-                    np_gross = round((non_punch_days * wrate) + ot_pay, 0)
-                    pf_ded = round(np_gross * 0.12, 0)
-                    esic_ded = round(np_gross * 0.0075, 0)
-                    np_net_before_adv = max(0.0, np_gross - pf_ded - esic_ded)
-                    f17_approx_gross = round(f17_net / 0.8725, 0)
-                    gross_total = f17_approx_gross + np_gross
-                else:
-                    gross_total = round((total_paid_days * wrate) + ot_pay, 0)
-                    pf_ded = round(gross_total * 0.12, 0)
-                    esic_ded = round(gross_total * 0.0075, 0)
-                    np_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
+                gross_total = round((total_paid_days * wrate) + ot_pay, 0)
+                pf_ded, esic_ded = calculate_statutory_pf_esic(gross_total)
+                agreed_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
 
-                adv_deducted = min(total_adv_due, np_net_before_adv)
+                if f17_net > 0:
+                    if f17_net > agreed_net_before_adv and non_punch_days == 0:
+                        is_f17_higher = True
+                    balance_topup_pool = max(0.0, agreed_net_before_adv - f17_net)
+                else:
+                    balance_topup_pool = agreed_net_before_adv
+
+                adv_deducted = min(total_adv_due, balance_topup_pool)
                 closing_adv = max(0.0, total_adv_due - adv_deducted)
-                non_punch_take_home = max(0.0, np_net_before_adv - adv_deducted)
+                non_punch_take_home = max(0.0, balance_topup_pool - adv_deducted)
                 total_net_payable = f17_net + non_punch_take_home
 
             carry_fwd_map[wid] = closing_adv
@@ -462,6 +607,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                     "Punch_Days": punch_days, "Non_Punch_Days": non_punch_days,
                     "Paid_Leave_Days": paid_leave_days, "Total_Days": total_paid_days,
                     "OT_Hours": ot_hrs, "Form_XVII_Days": f17_days, "Form_XVII_Net": f17_net,
+                    "Is_F17_Higher": is_f17_higher,
                     "Gross_Wages": gross_total, "PF_Deduction": pf_ded, "ESIC_Deduction": esic_ded,
                     "Opening_Advance": opening_adv, "Month_New_Advance": new_adv,
                     "Total_Advance_Due": total_adv_due, "Advance_Deducted": adv_deducted,
@@ -472,7 +618,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
 
 
 # ----------------- PDF GENERATORS (BANK LETTER, 8-UP ID CARDS, 3-UP SALARY SLIPS) -----------------
-def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date, letterhead_fn):
+def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date, letterhead_fn, letter_subtitle="SUB: Transfer of payment from our account to below A/C"):
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
@@ -491,7 +637,7 @@ def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no,
     pdf.ln(3)
     pdf.set_font("Helvetica", "BU", 10)
     pdf.cell(170, 5.5, "BANK DETAILS", align="C", ln=True)
-    pdf.cell(170, 5.5, "SUB: Transfer of payment from our account to below A/C", align="C", ln=True)
+    pdf.cell(170, 5.5, letter_subtitle, align="C", ln=True)
 
     pdf.ln(4)
     total_amount = sum([float(r.get("AMOUNT", 0.0) or 0.0) for r in records_list])
@@ -754,7 +900,7 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn):
         pdf.set_text_color(30, 41, 59)
         pdf.set_xy(x0 + 3.0, y0 + 40.5)
         f17_str = f"Form XVII Bank Payout: Rs.{s['Form_XVII_Net']:,.0f} ({s['Form_XVII_Days']:.1f} d)" if s['Form_XVII_Net'] > 0 else "Form XVII Bank Payout: Rs.0"
-        np_str = f"Balance Non-Punch/Fixed Net: Rs.{s['Non_Punch_Net_Pay']:,.0f}"
+        np_str = f"Balance Top-Up / Non-Punch Net: Rs.{s['Non_Punch_Net_Pay']:,.0f}"
         cf_str = f"Closing Adv. Bal (Next Month): Rs.{s['Closing_Carry_Forward']:,.0f}"
         pdf.cell(180, 4.0, f"{f17_str}   |   {np_str}   |   {cf_str}")
 
@@ -837,9 +983,9 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                     with c_w3:
                         if w_wage_type == "DAILY_WAGE":
                             auto_rate_val = float(rate_lookup.get(w_skill_cat, 565.0))
-                            w_rate = st.number_input("Daily Wage Rate (₹)", min_value=100.0, value=auto_rate_val, step=10.0, key=f"enrol_rate_{w_skill_cat}")
+                            w_rate = st.number_input("Agreed Daily Wage Rate (₹)", min_value=100.0, value=auto_rate_val, step=10.0, key=f"enrol_rate_{w_skill_cat}")
                         else:
-                            w_rate = st.number_input("Monthly Salary (₹)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
+                            w_rate = st.number_input("Agreed Monthly Salary (₹)", min_value=1000.0, value=18000.0, step=500.0, key="enrol_rate_monthly")
 
                     c_wo1, c_wo2 = st.columns(2)
                     with c_wo1:
@@ -1080,7 +1226,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 with p_c1:
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
                     st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Fixed Week-Off:** `{emp_wo}`")
-                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Rate:** **₹{emp_rate:,.0f}**  |  **Status:** `{emp_status}`")
+                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Agreed Rate:** **₹{emp_rate:,.0f}**  |  **Status:** `{emp_status}`")
 
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
@@ -1104,7 +1250,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         ed_wtype = st.selectbox("Wage Model", wt_opts, index=wt_opts.index(emp_wage_type) if emp_wage_type in wt_opts else 0)
                         sk_opts = SKILL_CATEGORIES + ["Monthly Fixed"]
                         ed_skill = st.selectbox("Skill Category", sk_opts, index=sk_opts.index(emp_skill) if emp_skill in sk_opts else 0)
-                        ed_rate = st.number_input("Base Rate (₹)", min_value=0.0, value=emp_rate, step=10.0)
+                        ed_rate = st.number_input("Agreed Base Rate (₹)", min_value=0.0, value=emp_rate, step=10.0)
 
                     eb_c1, eb_c2, eb_c3, eb_c4 = st.columns([1.2, 1.0, 1.2, 0.9])
                     with eb_c1:
@@ -1166,7 +1312,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             k4.metric("Overtime (OT)", f"{tot_ot:.1f} hrs")
             k5.metric("Pending Advance Bal.", f"₹{emp_cf_bal:,.0f}")
 
-            # PPE ISSUED HISTORY FOR THIS WORKER
             if not ppe_all.empty and "Worker_ID" in ppe_all.columns:
                 emp_ppe = ppe_all[ppe_all["Worker_ID"].astype(str) == target_wid].copy()
                 if not emp_ppe.empty:
@@ -1277,7 +1422,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Week_Off_Day", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
 
-    # 4. DAILY FIELD MUSTER ROLL (SUPERVISOR DUPLICATE LOCK + 90-DAY AUDIT LOG + WEEK-OFF LOCK + DIVISION LOCK)
+    # 4. DAILY FIELD MUSTER ROLL
     elif current_view == "Daily Muster Roll (Field Attendance)":
         st.markdown("#### Daily Field Muster Roll")
         st.caption("Supervisor Duplicate Lock, Employee Week-Off Lock, Paid Leave (L), and 90-Day Audit Trail")
@@ -1547,7 +1692,7 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             file_name=f"M_s_INDU_SAO_Attendance_Matrix_{ym_str}.csv", mime="text/csv", type="primary"
         )
 
-    # 6. PPE & SAFETY GEAR ISSUE (TIMELINE VALIDITY + EARLY REPLACEMENT RECOVERY)
+    # 6. PPE & SAFETY GEAR ISSUE
     elif current_view == "🦺 PPE & Safety Gear Issue":
         st.markdown("#### PPE & Safety Gear Issue Register")
         st.caption("Track safety gear issuance with validity timelines, automatic eligibility alerts, and early-replacement wage recovery")
@@ -1584,7 +1729,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 with p_c2:
                     iss_qty = st.number_input("Quantity", min_value=1, max_value=10, value=1, step=1, key="ppe_qty")
 
-                # Check Eligibility History
                 is_eligible_free = True
                 next_due_dt = iss_date + datetime.timedelta(days=val_days)
                 days_remaining = 0
@@ -1663,7 +1807,6 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         upd_ppe = pd.concat([ppe_log_df, pd.DataFrame([new_ppe_row])], ignore_index=True)
                         saved_ok = save_fn("ppe_issue_log", upd_ppe[PPE_ISSUE_COLS])
 
-                        # If Paid Recovery, automatically post to Worker Advances Ledger for payroll deduction
                         if saved_ok and rec_amount > 0:
                             adv_cur = load_fn("worker_advances")
                             new_adv_ded = {
@@ -1774,12 +1917,13 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                 if not disp_adv.empty and "Txn_ID" in disp_adv.columns:
                     st.dataframe(disp_adv[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
 
-    # 8. MONTHLY WAGES, FORM XVII, 3-UP SALARY SLIPS & BANK LETTERS
+    # 8. MONTHLY WAGES, MANDATORY FORM XVI FIRST LOCK, FORM XVII, 3-UP SALARY SLIPS & SEPARATE BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
-        st.markdown("#### Monthly Wages, Form XVII Audit, Salary Slips & Bank Letters")
+        st.markdown("#### Monthly Wages, Biometric Audit, Salary Slips & Bank Letters")
         w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
         muster_df = load_fn("muster_roll")
         adv_df = load_fn("worker_advances")
+        f16_df = load_fn("tata_form_xvi")
         tata_df = load_fn("tata_form_xvii")
 
         f_c1, f_c2 = st.columns([1, 1])
@@ -1797,89 +1941,227 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             s = str(val).strip().lower()
             return (target_ym in s) or (wage_period_str.lower() in s) or (target_short in s)
 
-        with st.expander("📥 Import Tata Steel FORM XVII (Register of Wages)", expanded=tata_df.empty):
-            xvii_file = st.file_uploader("Upload Form XVII (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"])
-            if xvii_file:
-                x_df = pd.DataFrame()
-                if xvii_file.name.lower().endswith(".pdf"):
-                    if PYPDF_AVAILABLE:
-                        x_df = parse_tata_form_xvii_pdf(xvii_file)
-                elif xvii_file.name.lower().endswith(".csv"):
-                    x_df = pd.read_csv(xvii_file)
-                    x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
+        f16_month_df = f16_df[f16_df["Wages_Period"].apply(period_matches)].copy() if (not f16_df.empty and "Wages_Period" in f16_df.columns) else pd.DataFrame(columns=TATA_FORM_XVI_COLS)
+        is_f16_uploaded_for_month = (not f16_month_df.empty)
+
+        # STEP 1: MANDATORY FORM XVI IMPORT & BIOMETRIC RECONCILIATION
+        with st.expander(f"📋 Step 1: Import Tata Steel FORM XVI (Biometric Muster Roll) — {'✅ Synced' if is_f16_uploaded_for_month else '⚠️ Required First'}", expanded=(not is_f16_uploaded_for_month)):
+            st.caption("Mandatory Step 1: Synchronizes biometric punch dates, auto-corrects accidental 'Non-Punch' entries to 'Punch' to prevent double payment, and flags ghost punch discrepancies.")
+            xvi_file = st.file_uploader("Upload Tata Steel Form XVI (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"], key="f16_uploader")
+            if xvi_file:
+                parsed_16 = parse_tata_form_xvi_file(xvi_file, target_ym)
+                if parsed_16.empty:
+                    st.error("Unable to parse worker punch records from this Form XVI file. Ensure Worker Name and day columns (1–31) are present.")
                 else:
-                    xl = pd.ExcelFile(xvii_file)
-                    target_sheet = xl.sheet_names[0]
-                    for s_name in xl.sheet_names:
-                        temp_df = xl.parse(s_name, nrows=2)
-                        clean_cols = [str(c).strip().replace(" ", "_") for c in temp_df.columns]
-                        if "Net_Amount_Paid" in clean_cols or "Net_Amount" in clean_cols:
-                            target_sheet = s_name
-                            break
-                    x_df = xl.parse(target_sheet)
-                    x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
+                    st.success(f"Extracted {len(parsed_16)} worker biometric records from Form XVI.")
+                    st.dataframe(parsed_16.head(8), use_container_width=True, hide_index=True)
 
-                if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
-                    net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
-                    name_col_guess = "Worker_Name" if "Worker_Name" in x_df.columns else ("Name_of_Workman" if "Name_of_Workman" in x_df.columns else ("Name" if "Name" in x_df.columns else None))
-                    if name_col_guess:
-                        x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)]
-
-                    net_sum = pd.to_numeric(x_df[net_col], errors="coerce").fillna(0).sum()
-                    st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{net_sum:,.0f}")
-                    st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
-
-                    import_mode = st.radio("Import Mode", ["Replace Month Data", "Append / Merge with Existing Month"], horizontal=True)
-                    if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
+                    if st.button("🔄 Sync Form XVI & Auto-Correct Muster Roll", type="primary", use_container_width=True):
                         full_w_all = load_fn("worker_master")
-                        new_records = []
-                        for _, xr in x_df.iterrows():
-                            w_name_raw = str(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "").strip()
-                            if not w_name_raw or w_name_raw.lower() == "nan" or "TOTAL" in w_name_raw.upper():
-                                continue
-                            appr_days = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
-                            net_paid = float(pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0)
-                            if net_paid <= 0:
-                                continue
+                        full_m_all = load_fn("muster_roll")
+                        if not full_m_all.empty and "Duty_Location" in full_m_all.columns:
+                            full_m_all["Duty_Location"] = full_m_all["Duty_Location"].apply(normalize_duty_type)
+
+                        f16_rows_to_save = []
+                        auto_corrected_cnt = 0
+
+                        for _, r16 in parsed_16.iterrows():
+                            wn_up = str(r16["Worker_Name"]).strip().upper()
+                            p_dates = [d.strip() for d in str(r16["Punch_Dates_List"]).split(",") if d.strip()]
                             matched_wid = ""
                             if not full_w_all.empty and "Full_Name" in full_w_all.columns:
-                                match_w = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
-                                if not match_w.empty:
-                                    matched_wid = str(match_w.iloc[0]["Worker_ID"])
-                            new_records.append({
-                                "Wages_Period": target_ym, "Worker_ID": matched_wid, "Worker_Name": w_name_raw.upper(),
-                                "Approved_Days": appr_days, "Net_Amount_Paid": net_paid,
+                                wm_hit = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == wn_up]
+                                if not wm_hit.empty:
+                                    matched_wid = str(wm_hit.iloc[0]["Worker_ID"])
+
+                            f16_rows_to_save.append({
+                                "Wages_Period": target_ym,
+                                "Worker_ID": matched_wid,
+                                "Worker_Name": wn_up,
+                                "Punch_Days_Count": float(r16["Punch_Days_Count"]),
+                                "Punch_Dates_List": ",".join(p_dates),
                                 "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             })
 
-                        new_df = pd.DataFrame(new_records)
-                        if import_mode.startswith("Replace"):
-                            if not tata_df.empty and "Wages_Period" in tata_df.columns:
-                                tata_df = tata_df[~tata_df["Wages_Period"].apply(period_matches)]
-                            final_tata = pd.concat([tata_df, new_df], ignore_index=True)
-                        else:
-                            existing_m = tata_df[tata_df["Wages_Period"].apply(period_matches)].copy() if not tata_df.empty and "Wages_Period" in tata_df.columns else pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
-                            other_m = tata_df[~tata_df["Wages_Period"].apply(period_matches)].copy() if not tata_df.empty and "Wages_Period" in tata_df.columns else tata_df.copy()
-                            combined_m = pd.concat([existing_m, new_df], ignore_index=True)
-                            combined_m["Approved_Days"] = pd.to_numeric(combined_m["Approved_Days"], errors="coerce").fillna(0.0)
-                            combined_m["Net_Amount_Paid"] = pd.to_numeric(combined_m["Net_Amount_Paid"], errors="coerce").fillna(0.0)
-                            merged_month_df = combined_m.groupby("Worker_Name", as_index=False).agg({
-                                "Wages_Period": "first", "Worker_ID": "first", "Approved_Days": "sum", "Net_Amount_Paid": "sum", "Uploaded_At": "last"
-                            })
-                            final_tata = pd.concat([other_m, merged_month_df[TATA_COMPLIANCE_COLS]], ignore_index=True)
+                            # Auto-correct Non-Punch -> Punch on dates confirmed in Form XVI
+                            if matched_wid and p_dates and not full_m_all.empty:
+                                mask_fix = (
+                                    (full_m_all["Worker_ID"].astype(str) == matched_wid) &
+                                    (full_m_all["Date"].astype(str).isin(p_dates)) &
+                                    (full_m_all["Duty_Location"] == "Non-Punch")
+                                )
+                                fix_n = int(mask_fix.sum())
+                                if fix_n > 0:
+                                    full_m_all.loc[mask_fix, "Duty_Location"] = "Punch"
+                                    full_m_all.loc[mask_fix, "Remarks"] = "Auto-Synced to Punch via Form XVI"
+                                    auto_corrected_cnt += fix_n
 
-                        if save_fn("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
-                            st.success(f"Committed {len(new_records)} records!")
+                        if auto_corrected_cnt > 0:
+                            save_fn("muster_roll", full_m_all[MUSTER_ROLL_COLS])
+
+                        other_f16 = f16_df[~f16_df["Wages_Period"].apply(period_matches)].copy() if (not f16_df.empty and "Wages_Period" in f16_df.columns) else pd.DataFrame(columns=TATA_FORM_XVI_COLS)
+                        final_f16 = pd.concat([other_f16, pd.DataFrame(f16_rows_to_save)], ignore_index=True)
+
+                        if save_fn("tata_form_xvi", final_f16[TATA_FORM_XVI_COLS]):
+                            st.success(f"Form XVI synchronized for {wage_period_str}! Auto-corrected {auto_corrected_cnt} 'Non-Punch' entries to 'Punch'.")
                             st.rerun()
 
+        # BIOMETRIC AUDIT & GHOST PUNCH DISCREPANCY TABLE (SHOWN ONCE FORM XVI IS SYNCED)
+        if is_f16_uploaded_for_month:
+            with st.expander("🚨 Form XVI Biometric Audit & Ghost Punch Discrepancy Report", expanded=False):
+                audit_rows = []
+                m_ym = muster_df[muster_df["Date"].astype(str).str.startswith(target_ym)].copy() if (not muster_df.empty and "Date" in muster_df.columns) else pd.DataFrame()
+                if not m_ym.empty:
+                    m_ym["Duty_Location"] = m_ym["Duty_Location"].apply(normalize_duty_type)
+
+                for _, wr in w_master.iterrows():
+                    wid = str(wr["Worker_ID"])
+                    wn = str(wr["Full_Name"]).strip().upper()
+                    f16_hit = f16_month_df[(f16_month_df["Worker_ID"].astype(str) == wid) | (f16_month_df["Worker_Name"].astype(str).str.strip().str.upper() == wn)]
+                    f16_dates = set()
+                    f16_tot_days = 0.0
+                    if not f16_hit.empty:
+                        f16_tot_days = float(pd.to_numeric(f16_hit["Punch_Days_Count"], errors="coerce").fillna(0.0).sum())
+                        for dl in f16_hit["Punch_Dates_List"].astype(str):
+                            for d_item in dl.split(","):
+                                if d_item.strip():
+                                    f16_dates.add(d_item.strip())
+
+                    sup_punch_dates = set()
+                    sup_punch_days = 0.0
+                    if not m_ym.empty:
+                        wm_p = m_ym[(m_ym["Worker_ID"].astype(str) == wid) & (m_ym["Duty_Location"] == "Punch") & (m_ym["Attendance"].isin(["P", "HD"]))]
+                        sup_punch_dates = set(wm_p["Date"].astype(str).tolist())
+                        sup_punch_days = len(wm_p[wm_p["Attendance"] == "P"]) + (len(wm_p[wm_p["Attendance"] == "HD"]) * 0.5)
+
+                    if f16_tot_days == 0 and sup_punch_days == 0:
+                        continue
+
+                    ghost_dates = sorted(list(sup_punch_dates - f16_dates)) if f16_dates else []
+                    missing_field_dates = sorted(list(f16_dates - sup_punch_dates)) if f16_dates else []
+
+                    if f16_tot_days == sup_punch_days and not ghost_dates:
+                        aud_status = "🟢 Verified Match"
+                    elif sup_punch_days > f16_tot_days:
+                        aud_status = f"🔴 Ghost Punch Alert (+{sup_punch_days - f16_tot_days:.1f} d unverified)"
+                    else:
+                        aud_status = f"🟡 Missing in Field Log ({f16_tot_days - sup_punch_days:+.1f} d)"
+
+                    audit_rows.append({
+                        "Worker ID": wid,
+                        "Employee Name": wn,
+                        "Form XVI Punch": f16_tot_days,
+                        "Field Punch": sup_punch_days,
+                        "Audit Status": aud_status,
+                        "Ghost Punch Dates (Absent in Form XVI)": ", ".join([d[-2:] for d in ghost_dates]) if ghost_dates else "—",
+                        "Missing Field Dates (Present in Form XVI)": ", ".join([d[-2:] for d in missing_field_dates]) if missing_field_dates else "—"
+                    })
+
+                if audit_rows:
+                    st.dataframe(pd.DataFrame(audit_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No biometric punch discrepancies detected for this period.")
+
+        # STEP 2: STRICTLY LOCKED UNTIL FORM XVI IS UPLOADED FOR THE MONTH
+        if not is_f16_uploaded_for_month:
+            st.warning(f"⚠️ **Action Required:** Please upload and sync **Tata Steel Form XVI (Biometric Muster Roll)** for **{wage_period_str}** in Step 1 above before importing Form XVII.")
+        else:
+            with st.expander("📥 Step 2: Import Tata Steel FORM XVII (Register of Wages)", expanded=tata_df.empty):
+                xvii_file = st.file_uploader("Upload Form XVII (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"], key="f17_uploader")
+                if xvii_file:
+                    x_df = pd.DataFrame()
+                    if xvii_file.name.lower().endswith(".pdf"):
+                        if PYPDF_AVAILABLE:
+                            x_df = parse_tata_form_xvii_pdf(xvii_file)
+                    elif xvii_file.name.lower().endswith(".csv"):
+                        x_df = pd.read_csv(xvii_file)
+                        x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
+                    else:
+                        xl = pd.ExcelFile(xvii_file)
+                        target_sheet = xl.sheet_names[0]
+                        for s_name in xl.sheet_names:
+                            temp_df = xl.parse(s_name, nrows=2)
+                            clean_cols = [str(c).strip().replace(" ", "_") for c in temp_df.columns]
+                            if "Net_Amount_Paid" in clean_cols or "Net_Amount" in clean_cols:
+                                target_sheet = s_name
+                                break
+                        x_df = xl.parse(target_sheet)
+                        x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
+
+                    if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
+                        net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
+                        name_col_guess = "Worker_Name" if "Worker_Name" in x_df.columns else ("Name_of_Workman" if "Name_of_Workman" in x_df.columns else ("Name" if "Name" in x_df.columns else None))
+                        if name_col_guess:
+                            x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)]
+
+                        net_sum = pd.to_numeric(x_df[net_col], errors="coerce").fillna(0).sum()
+                        st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{net_sum:,.0f}")
+                        st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
+
+                        import_mode = st.radio("Import Mode", ["Replace Month Data", "Append / Merge with Existing Month"], horizontal=True)
+                        if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
+                            full_w_all = load_fn("worker_master")
+                            new_records = []
+                            for _, xr in x_df.iterrows():
+                                w_name_raw = str(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "").strip()
+                                if not w_name_raw or w_name_raw.lower() == "nan" or "TOTAL" in w_name_raw.upper():
+                                    continue
+                                appr_days = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
+                                net_paid = float(pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0)
+                                if net_paid <= 0:
+                                    continue
+                                matched_wid = ""
+                                if not full_w_all.empty and "Full_Name" in full_w_all.columns:
+                                    match_w = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
+                                    if not match_w.empty:
+                                        matched_wid = str(match_w.iloc[0]["Worker_ID"])
+                                new_records.append({
+                                    "Wages_Period": target_ym, "Worker_ID": matched_wid, "Worker_Name": w_name_raw.upper(),
+                                    "Approved_Days": appr_days, "Net_Amount_Paid": net_paid,
+                                    "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+
+                            new_df = pd.DataFrame(new_records)
+                            if import_mode.startswith("Replace"):
+                                if not tata_df.empty and "Wages_Period" in tata_df.columns:
+                                    tata_df = tata_df[~tata_df["Wages_Period"].apply(period_matches)]
+                                final_tata = pd.concat([tata_df, new_df], ignore_index=True)
+                            else:
+                                existing_m = tata_df[tata_df["Wages_Period"].apply(period_matches)].copy() if not tata_df.empty and "Wages_Period" in tata_df.columns else pd.DataFrame(columns=TATA_COMPLIANCE_COLS)
+                                other_m = tata_df[~tata_df["Wages_Period"].apply(period_matches)].copy() if not tata_df.empty and "Wages_Period" in tata_df.columns else tata_df.copy()
+                                combined_m = pd.concat([existing_m, new_df], ignore_index=True)
+                                combined_m["Approved_Days"] = pd.to_numeric(combined_m["Approved_Days"], errors="coerce").fillna(0.0)
+                                combined_m["Net_Amount_Paid"] = pd.to_numeric(combined_m["Net_Amount_Paid"], errors="coerce").fillna(0.0)
+                                merged_month_df = combined_m.groupby("Worker_Name", as_index=False).agg({
+                                    "Wages_Period": "first", "Worker_ID": "first", "Approved_Days": "sum", "Net_Amount_Paid": "sum", "Uploaded_At": "last"
+                                })
+                                final_tata = pd.concat([other_m, merged_month_df[TATA_COMPLIANCE_COLS]], ignore_index=True)
+
+                            if save_fn("tata_form_xvii", final_tata[TATA_COMPLIANCE_COLS]):
+                                st.success(f"Committed {len(new_records)} records!")
+                                st.rerun()
+
+        # PAYROLL RECONCILIATION & SEPARATE PAYOUT BATCHES
         payroll_results = compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num)
-        recon_rows, boi_batch, neft_batch, salary_slip_records = [], [], [], []
+        recon_rows = []
+        f17_boi_batch, f17_neft_batch = [], []
+        np_boi_batch, np_neft_batch = [], []
+        salary_slip_records = []
 
         for wid, p in payroll_results.items():
             if p["Status"] != "ACTIVE" and p["Total_Days"] == 0 and p["Form_XVII_Net"] == 0 and p["Closing_Carry_Forward"] == 0:
                 continue
             punch_days, f17_days, f17_net = p["Punch_Days"], p["Form_XVII_Days"], p["Form_XVII_Net"]
-            status_badge = "🟢 Matched" if (f17_days == punch_days and f17_days > 0) else ("🔴 No Punch (Field Only)" if f17_days == 0 and punch_days > 0 else f"🟡 Variance ({punch_days - f17_days:+.1f} d)")
+            np_net = p["Non_Punch_Net_Pay"]
+
+            if p["Is_F17_Higher"]:
+                status_badge = "🔵 Form XVII Higher (Update Master Rate)"
+            elif f17_days == punch_days and f17_days > 0:
+                status_badge = "🟢 Matched"
+            elif f17_days == 0 and punch_days > 0:
+                status_badge = "🔴 No Punch (Field Only)"
+            else:
+                status_badge = f"🟡 Variance ({punch_days - f17_days:+.1f} d)"
 
             if p["Total_Days"] > 0 or f17_net > 0 or p["Total_Advance_Due"] > 0:
                 salary_slip_records.append(p)
@@ -1887,25 +2169,37 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
             recon_rows.append({
                 "Worker ID": wid, "Name": p["Worker_Name"], "Punch": punch_days, "Non-Punch": p["Non_Punch_Days"],
                 "Leave (L)": p["Paid_Leave_Days"], "Form XVII": f17_days, "Status": status_badge,
-                "Form XVII Bank (₹)": f17_net, "Non-Punch/Fixed Net (₹)": p["Non_Punch_Net_Pay"],
+                "Form XVII Bank (₹)": f17_net, "Balance Top-Up / Non-Punch Net (₹)": np_net,
                 "Adv. Ded. (₹)": p["Advance_Deducted"], "Carry Fwd Adv (₹)": p["Closing_Carry_Forward"]
             })
 
+            # Batch 1: Strict Form XVII (Tata Steel Compliance Upload)
             if f17_net > 0 and p["Bank_Account_No"]:
-                item = {
+                item_17 = {
                     "NAME": p["Worker_Name"], "AMOUNT": f17_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
                     "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
                 }
                 if p["Bank_IFSC_Code"].startswith("BKID"):
-                    boi_batch.append(item)
+                    f17_boi_batch.append(item_17)
                 else:
-                    neft_batch.append(item)
+                    f17_neft_batch.append(item_17)
+
+            # Batch 2: Balance Top-Up / Non-Punch / Fixed Staff Internal Bank Transfer
+            if np_net > 0 and p["Bank_Account_No"]:
+                item_np = {
+                    "NAME": p["Worker_Name"], "AMOUNT": np_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
+                    "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
+                }
+                if p["Bank_IFSC_Code"].startswith("BKID"):
+                    np_boi_batch.append(item_np)
+                else:
+                    np_neft_batch.append(item_np)
 
         if recon_rows:
             st.dataframe(pd.DataFrame(recon_rows), use_container_width=True, hide_index=True)
 
         with st.container(border=True):
-            st.markdown("###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF, ESIC, Form XVII & Carry-Forward Advance)")
+            st.markdown("###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF ₹25k Cap, ESIC ₹21k Cap, Form XVII & Carry-Forward Advance)")
             if salary_slip_records and FPDF_AVAILABLE:
                 slip_options = {f"{r['Worker_ID']} — {r['Worker_Name']} (Net: ₹{r['Net_Payable']:,.0f})": r["Worker_ID"] for r in salary_slip_records}
                 sc_1, sc_2 = st.columns([2.1, 1.1])
@@ -1920,28 +2214,57 @@ def render_attendance_module(current_view, load_fn, save_fn, current_user, user_
                         file_name=f"M_s_INDU_SAO_Salary_Slips_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                     )
 
-        st.markdown("###### Automated Bank Covering Letters (Strict Form XVII Bank Payouts)")
+        # SEPARATE BANK COVERING LETTERS: SET 1 (FORM XVII COMPLIANCE) & SET 2 (INTERNAL NON-PUNCH / TOP-UP)
+        st.markdown("###### 🏦 Bank Covering Letters — Set 1: Tata Steel Form XVII Compliance (Punch Payouts Only)")
         p_c1, p_c2 = st.columns(2)
         with p_c1:
-            chq_no = st.text_input("Cheque Number", value="238883", key="bank_chq_no").strip()
+            chq_no_17 = st.text_input("Cheque Number (Form XVII Compliance)", value="238883", key="bank_chq_no_17").strip()
         with p_c2:
-            chq_date = st.text_input("Cheque Date (DD.MM.YYYY)", value=datetime.date.today().strftime("%d.%m.%Y"), key="bank_chq_dt").strip()
+            chq_date_17 = st.text_input("Cheque Date (DD.MM.YYYY)", value=datetime.date.today().strftime("%d.%m.%Y"), key="bank_chq_dt_17").strip()
 
-        tot_boi = sum([r["AMOUNT"] for r in boi_batch])
-        tot_neft = sum([r["AMOUNT"] for r in neft_batch])
+        tot_f17_boi = sum([r["AMOUNT"] for r in f17_boi_batch])
+        tot_f17_neft = sum([r["AMOUNT"] for r in f17_neft_batch])
 
         dl_c1, dl_c2 = st.columns(2)
         with dl_c1:
-            if boi_batch and FPDF_AVAILABLE:
+            if f17_boi_batch and FPDF_AVAILABLE:
                 st.download_button(
-                    label=f"📥 Download BOI Covering Letter PDF ({len(boi_batch)} Workers • ₹{tot_boi:,.0f})",
-                    data=generate_bank_authority_letter_pdf("BOI", boi_batch, chq_no, chq_date, letterhead_fn),
-                    file_name=f"BOI_Transfer_Letter_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
+                    label=f"📥 Download Form XVII BOI Letter ({len(f17_boi_batch)} Workers • ₹{tot_f17_boi:,.0f})",
+                    data=generate_bank_authority_letter_pdf("BOI", f17_boi_batch, chq_no_17, chq_date_17, letterhead_fn, f"SUB: Transfer of Form XVII Wages ({wage_period_str}) to below A/C"),
+                    file_name=f"FormXVII_BOI_Transfer_Letter_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                 )
         with dl_c2:
-            if neft_batch and FPDF_AVAILABLE:
+            if f17_neft_batch and FPDF_AVAILABLE:
                 st.download_button(
-                    label=f"📥 Download NEFT Covering Letter PDF ({len(neft_batch)} Workers • ₹{tot_neft:,.0f})",
-                    data=generate_bank_authority_letter_pdf("NEFT", neft_batch, chq_no, chq_date, letterhead_fn),
-                    file_name=f"NEFT_Transfer_Letter_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
+                    label=f"📥 Download Form XVII NEFT Letter ({len(f17_neft_batch)} Workers • ₹{tot_f17_neft:,.0f})",
+                    data=generate_bank_authority_letter_pdf("NEFT", f17_neft_batch, chq_no_17, chq_date_17, letterhead_fn, f"SUB: NEFT Transfer of Form XVII Wages ({wage_period_str}) to below A/C"),
+                    file_name=f"FormXVII_NEFT_Transfer_Letter_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                 )
+
+        if np_boi_batch or np_neft_batch:
+            st.markdown("---")
+            st.markdown("###### 🏦 Bank Covering Letters — Set 2: Internal Non-Punch, Fixed & Differential Top-Up Payouts")
+            np_c1, np_c2 = st.columns(2)
+            with np_c1:
+                chq_no_np = st.text_input("Cheque Number (Internal Balance Payout)", value="238884", key="bank_chq_no_np").strip()
+            with np_c2:
+                chq_date_np = st.text_input("Cheque Date (DD.MM.YYYY)", value=datetime.date.today().strftime("%d.%m.%Y"), key="bank_chq_dt_np").strip()
+
+            tot_np_boi = sum([r["AMOUNT"] for r in np_boi_batch])
+            tot_np_neft = sum([r["AMOUNT"] for r in np_neft_batch])
+
+            ndl_c1, ndl_c2 = st.columns(2)
+            with ndl_c1:
+                if np_boi_batch and FPDF_AVAILABLE:
+                    st.download_button(
+                        label=f"📥 Download Non-Punch / Top-Up BOI Letter ({len(np_boi_batch)} Workers • ₹{tot_np_boi:,.0f})",
+                        data=generate_bank_authority_letter_pdf("BOI", np_boi_batch, chq_no_np, chq_date_np, letterhead_fn, f"SUB: Transfer of Balance / Non-Punch Wages ({wage_period_str}) to below A/C"),
+                        file_name=f"NonPunch_TopUp_BOI_Letter_{wage_period_str}.pdf", mime="application/pdf", type="secondary", use_container_width=True
+                    )
+            with ndl_c2:
+                if np_neft_batch and FPDF_AVAILABLE:
+                    st.download_button(
+                        label=f"📥 Download Non-Punch / Top-Up NEFT Letter ({len(np_neft_batch)} Workers • ₹{tot_np_neft:,.0f})",
+                        data=generate_bank_authority_letter_pdf("NEFT", np_neft_batch, chq_no_np, chq_date_np, letterhead_fn, f"SUB: NEFT Transfer of Balance / Non-Punch Wages ({wage_period_str}) to below A/C"),
+                        file_name=f"NonPunch_TopUp_NEFT_Letter_{wage_period_str}.pdf", mime="application/pdf", type="secondary", use_container_width=True
+                    )
