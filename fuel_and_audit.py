@@ -72,6 +72,19 @@ def compress_slip_photo_to_base64(uploaded_img):
         return ""
 
 
+def resolve_slip_photo_b64(record_row, ref_prefix, id_col, load_media_fn=None):
+    """Fetches slip/meter photo on-demand from media_store (with backward-compatible fallback)."""
+    rec_id = str(record_row.get(id_col, "")).strip()
+    raw_val = str(record_row.get("Slip_Photo_Base64", "")).strip()
+    if raw_val == "SAVED" and load_media_fn and rec_id:
+        return load_media_fn(f"{ref_prefix}_{rec_id}")
+    if len(raw_val) > 50:
+        return raw_val
+    if load_media_fn and rec_id:
+        return load_media_fn(f"{ref_prefix}_{rec_id}")
+    return ""
+
+
 def log_attendance_activity(load_fn, save_fn, att_date_str, user_label, action_type, summary_txt):
     """Logs attendance submission/edit and auto-purges entries older than 90 days."""
     try:
@@ -113,7 +126,10 @@ def compute_bowser_stock_summary(stock_df, issue_df):
 
 
 # ----------------- MAIN RENDER ENTRYPOINT FOR FUEL & AUDIT MODULE -----------------
-def render_fuel_module(current_view, load_fn, save_fn, current_user, current_role, letterhead_fn):
+def render_fuel_module(
+    current_view, load_fn, save_fn, current_user, current_role, letterhead_fn,
+    load_media_fn=None, save_media_fn=None
+):
     is_admin = (str(current_role).upper() == "ADMIN")
     fleet_df = load_fn("fuel_fleet_master")
     issue_df = load_fn("fuel_issue_log")
@@ -152,7 +168,6 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
 
         st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
 
-        # Prepare Active Fleet Vehicles & Active Fleet Operators/Drivers from Worker Master
         active_vehicles = fleet_df[fleet_df["Status"].astype(str).str.upper() == "ACTIVE"].copy() if (not fleet_df.empty and "Status" in fleet_df.columns) else pd.DataFrame()
         fleet_drivers = pd.DataFrame()
         if not worker_df.empty and "Division" in worker_df.columns and "Status" in worker_df.columns:
@@ -188,12 +203,20 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                         if not refill_photo:
                             st.error("Please upload the Tanker / Refill Slip photo for cross-verification.")
                         else:
+                            stock_id = f"STK-{int(time.time())}"
                             b64_img = compress_slip_photo_to_base64(refill_photo)
+                            photo_flag = ""
+                            if b64_img:
+                                if save_media_fn and save_media_fn(f"FUEL_{stock_id}", b64_img):
+                                    photo_flag = "SAVED"
+                                else:
+                                    photo_flag = b64_img
+
                             new_stock = {
-                                "Stock_ID": f"STK-{int(time.time())}",
+                                "Stock_ID": stock_id,
                                 "Date": f_date_str,
                                 "Litres_Added": float(refill_litres),
-                                "Slip_Photo_Base64": b64_img,
+                                "Slip_Photo_Base64": photo_flag,
                                 "Logged_By": current_user,
                                 "Remarks": refill_rem
                             }
@@ -230,7 +253,6 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                         sel_drv_lbl = st.selectbox("Driver / Operator on Duty (Fleet Master)", list(drv_map.keys()), key="fuel_drv_sel")
                         drv_id, drv_name = drv_map[sel_drv_lbl]
 
-                        # Live Attendance Cross-Check for Selected Driver on Selected Date
                         att_warning = ""
                         if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
                             m_hit = muster_df[(muster_df["Date"].astype(str) == f_date_str) & (muster_df["Worker_ID"].astype(str) == drv_id)]
@@ -292,9 +314,17 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                                 elif prev_meter == 0:
                                     status_flag = "⚪ Opening Reading"
 
+                                txn_id = f"FL-{int(time.time())}"
                                 b64_slip = compress_slip_photo_to_base64(slip_photo)
+                                slip_flag = ""
+                                if b64_slip:
+                                    if save_media_fn and save_media_fn(f"FUEL_{txn_id}", b64_slip):
+                                        slip_flag = "SAVED"
+                                    else:
+                                        slip_flag = b64_slip
+
                                 new_issue = {
-                                    "Txn_ID": f"FL-{int(time.time())}",
+                                    "Txn_ID": txn_id,
                                     "Date": f_date_str,
                                     "Shift": f_shift,
                                     "Transaction_Type": tx_type,
@@ -309,7 +339,7 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                                     "Expected_Benchmark": float(bench),
                                     "Variance_Litres": float(variance_litres),
                                     "Status_Flag": status_flag,
-                                    "Slip_Photo_Base64": b64_slip,
+                                    "Slip_Photo_Base64": slip_flag,
                                     "Logged_By": current_user,
                                     "Remarks": f"{f_rem} {att_warning}".strip()
                                 }
@@ -320,7 +350,7 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                                     st.success(f"Fuel entry saved for {vid} ({litres_val:,.1f} L • Driver: {drv_name}).")
                                     st.rerun()
 
-        # RIGHT COLUMN: RECENT LOGS + SLIP PHOTO CROSS-VERIFICATION VIEWER
+        # RIGHT COLUMN: RECENT LOGS + ON-DEMAND SLIP PHOTO CROSS-VERIFICATION VIEWER
         with c_log:
             with st.container(border=True):
                 st.markdown("###### 📋 Recent Fuel Entries & Slip Photo Cross-Verification")
@@ -334,7 +364,7 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
 
                     st.markdown("---")
                     st.markdown("###### 🔍 Inspect Uploaded Slip / Meter Photo")
-                    photo_entries = disp_iss[disp_iss["Slip_Photo_Base64"].astype(str).str.len() > 50]
+                    photo_entries = disp_iss[disp_iss["Slip_Photo_Base64"].astype(str).str.strip() != ""]
                     if photo_entries.empty:
                         st.caption("No uploaded slip photos available yet.")
                     else:
@@ -346,8 +376,11 @@ def render_fuel_module(current_view, load_fn, save_fn, current_user, current_rol
                         chosen_rec = p_opts[sel_p_lbl]
                         pv_c1, pv_c2 = st.columns([1.1, 1.3])
                         with pv_c1:
-                            b64_data = str(chosen_rec["Slip_Photo_Base64"]).strip()
-                            st.markdown(f'<img src="data:image/jpeg;base64,{b64_data}" style="max-width: 100%; max-height: 300px; border-radius: 8px; border: 1px solid #cbd5e1;" />', unsafe_allow_html=True)
+                            b64_data = resolve_slip_photo_b64(chosen_rec, "FUEL", "Txn_ID", load_media_fn)
+                            if b64_data and len(b64_data) > 50:
+                                st.markdown(f'<img src="data:image/jpeg;base64,{b64_data}" style="max-width: 100%; max-height: 300px; border-radius: 8px; border: 1px solid #cbd5e1;" />', unsafe_allow_html=True)
+                            else:
+                                st.info("Photo preview unavailable.")
                         with pv_c2:
                             st.markdown(f"**Txn ID:** `{chosen_rec['Txn_ID']}`")
                             st.markdown(f"**Source:** {chosen_rec['Transaction_Type']}")
