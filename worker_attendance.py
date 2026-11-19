@@ -80,9 +80,9 @@ PPE_ISSUE_COLS = [
 ]
 
 WORKER_MASTER_COLS = [
-    "Worker_ID", "Full_Name", "Govt_ID_Ref", "Division", "Designation", "Wage_Type",
-    "Skill_Category", "Base_Rate", "Week_Off_Day", "Contact_No", "Bank_Account_No",
-    "Bank_IFSC_Code", "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
+    "Worker_ID", "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Division", "Designation",
+    "Wage_Type", "Skill_Category", "Base_Rate", "Week_Off_Day", "Contact_No",
+    "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
 ]
 
 MUSTER_ROLL_COLS = [
@@ -96,12 +96,13 @@ ADVANCE_LOG_COLS = [
 ]
 
 TATA_FORM_XVI_COLS = [
-    "Wages_Period", "Worker_ID", "Worker_Name", "Punch_Days_Count", "Punch_Dates_List", "Uploaded_At"
+    "Wages_Period", "Worker_ID", "Worker_Name", "Father_Husband_Name",
+    "Punch_Days_Count", "Punch_Dates_List", "Uploaded_At"
 ]
 
 TATA_COMPLIANCE_COLS = [
-    "Wages_Period", "Worker_ID", "Worker_Name", "Approved_Days",
-    "Net_Amount_Paid", "Uploaded_At"
+    "Wages_Period", "Worker_ID", "Worker_Name", "Register_Sl_No",
+    "Approved_Days", "Net_Amount_Paid", "Uploaded_At"
 ]
 
 FLEET_ROLES = [
@@ -134,6 +135,10 @@ def normalize_week_off(val):
     if s in WEEK_DAYS_OPTIONS:
         return s
     return "Sunday"
+
+
+def normalize_name_key(val):
+    return re.sub(r"\s+", " ", str(val or "").strip().upper())
 
 
 def count_working_days_for_worker(year_val, month_val, week_off_day):
@@ -278,6 +283,7 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
     sample_rows = [
         {
             "Full_Name": "RAMESH KUMAR MAHTO",
+            "Father_Husband_Name": "BIRBAL MAHTO",
             "Govt_ID_Ref": "AADHAAR-4521",
             "Division": "Fleet Operations",
             "Designation": "Excavator Operator (Heavy)",
@@ -292,7 +298,8 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
             "Status": "ACTIVE"
         },
         {
-            "Full_Name": "SURESH PRASAD",
+            "Full_Name": "SONI DEVI",
+            "Father_Husband_Name": "UGAN MAHTO",
             "Govt_ID_Ref": "AADHAAR-8890",
             "Division": "Civil Construction",
             "Designation": "Civil Construction Helper",
@@ -308,6 +315,7 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         },
         {
             "Full_Name": "MANOJ SINGH",
+            "Father_Husband_Name": "RAMCHANDRA SINGH",
             "Govt_ID_Ref": "EMP-SUP-01",
             "Division": "Fleet Operations",
             "Designation": "Fleet Supervisor",
@@ -334,9 +342,13 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         return df_tpl.to_csv(index=False).encode("utf-8"), "csv"
 
 
-# ----------------- FORM XVI & FORM XVII PARSERS -----------------
+# ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
 def parse_tata_form_xvi_file(uploaded_file, target_ym):
-    """Parses Tata Steel Form XVI (Biometric Muster Roll) from Excel, CSV, or PDF."""
+    """
+    Parses Tata Steel Form XVI (Biometric Muster Roll) from PDF, CSV, or XLSX.
+    Extracts Worker_Name, Father_Husband_Name, Punch_Days_Count, and Punch_Dates_List.
+    Automatically skips zero-attendance rows.
+    """
     y_i = int(target_ym.split("-")[0])
     m_i = int(target_ym.split("-")[1])
     max_days = calendar.monthrange(y_i, m_i)[1]
@@ -345,33 +357,39 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
     parsed_records = []
 
     if fname.endswith(".csv") or fname.endswith(".xlsx"):
-        if fname.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            xl = pd.ExcelFile(uploaded_file)
-            df = xl.parse(xl.sheet_names[0])
-
+        df = pd.read_csv(uploaded_file) if fname.endswith(".csv") else pd.ExcelFile(uploaded_file).parse(0)
         df.columns = [str(c).strip() for c in df.columns]
+
         name_col = None
-        for cand in ["Worker_Name", "Employee Name", "Employee_Name", "Name of Workman", "Name_of_Workman", "Name", "NAME"]:
+        for cand in ["Worker_Name", "Name of Worker", "Employee Name", "Employee_Name", "Name_of_Workman", "Name", "NAME"]:
             if cand in df.columns:
                 name_col = cand
                 break
         if not name_col:
             for c in df.columns:
-                if "name" in c.lower():
+                if "name" in c.lower() and "father" not in c.lower() and "husband" not in c.lower():
                     name_col = c
                     break
-
         if not name_col:
             return pd.DataFrame()
+
+        father_col = None
+        for fc in ["Father_Husband_Name", "Father's/Husband's Name", "Father Name", "Father_Name"]:
+            if fc in df.columns:
+                father_col = fc
+                break
+        if not father_col:
+            for c in df.columns:
+                if "father" in c.lower() or "husband" in c.lower():
+                    father_col = c
+                    break
 
         day_col_map = {}
         for c in df.columns:
             c_clean = str(c).strip()
             if c_clean.isdigit() and 1 <= int(c_clean) <= max_days:
                 day_col_map[int(c_clean)] = c
-            elif re.match(r"^(day|d)[_\-\s]*0?(\d{1,2})$", c_clean, re.IGNORECASE):
+            elif re.match(r"^(day|d|0)[_\-\s]*0?(\d{1,2})$", c_clean, re.IGNORECASE):
                 d_num = int(re.sub(r"\D", "", c_clean))
                 if 1 <= d_num <= max_days:
                     day_col_map[d_num] = c
@@ -384,80 +402,154 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                     pass
 
         for _, row in df.iterrows():
-            wname = str(row.get(name_col, "")).strip()
-            if not wname or wname.lower() == "nan" or "TOTAL" in wname.upper():
+            wname = normalize_name_key(row.get(name_col, ""))
+            if not wname or wname == "NAN" or "TOTAL" in wname:
                 continue
+            fname_val = normalize_name_key(row.get(father_col, "")) if father_col else ""
+            if fname_val == "NAN":
+                fname_val = ""
 
             punch_dates = []
             if day_col_map:
                 for d_num in sorted(day_col_map.keys()):
                     val = str(row.get(day_col_map[d_num], "")).strip().upper()
-                    if val in ["P", "PRESENT", "1", "1.0", "HD", "HALF", "P/2", "IN"]:
+                    if val in ["P", "PRESENT", "1", "1.0", "HD", "HALF", "P/2", "IN", "NH", "NHP"]:
                         punch_dates.append(f"{target_ym}-{d_num:02d}")
             elif "Punch_Dates_List" in df.columns:
                 raw_list = str(row.get("Punch_Dates_List", "")).strip()
                 punch_dates = [x.strip() for x in raw_list.split(",") if x.strip()]
 
-            p_cnt = len(punch_dates)
-            if p_cnt == 0:
-                for tot_c in ["Punch_Days_Count", "Total_Days", "Present_Days", "Punch Days", "Days"]:
-                    if tot_c in df.columns:
-                        p_cnt = float(pd.to_numeric(row.get(tot_c, 0), errors="coerce") or 0)
+            p_cnt = float(len(punch_dates))
+            for tot_c in ["Total Attendance", "Punch_Days_Count", "Total_Days", "Present_Days", "Punch Days", "Days"]:
+                if tot_c in df.columns:
+                    v_num = pd.to_numeric(row.get(tot_c, 0), errors="coerce")
+                    if pd.notna(v_num) and float(v_num) >= 0:
+                        p_cnt = float(v_num)
                         break
 
-            if p_cnt > 0 or punch_dates:
-                parsed_records.append({
-                    "Worker_Name": wname.upper(),
-                    "Punch_Days_Count": float(p_cnt),
-                    "Punch_Dates_List": ",".join(punch_dates)
-                })
+            # Skip zero-attendance workers
+            if p_cnt <= 0:
+                continue
+
+            parsed_records.append({
+                "Worker_Name": wname,
+                "Father_Husband_Name": fname_val,
+                "Punch_Days_Count": p_cnt,
+                "Punch_Dates_List": ",".join(punch_dates)
+            })
 
     elif fname.endswith(".pdf") and PYPDF_AVAILABLE:
         reader = pypdf.PdfReader(uploaded_file)
+        full_lines = []
         ignore_kw = [
             "FORM XVI", "MUSTER ROLL", "Name and address", "WAGES PERIOD",
-            "West Bokaro", "INDU SAO", "Serial No", "Father", "Sex", "Designation", "Total"
+            "West Bokaro", "INDU SAO", "Serial No", "Father", "Husband",
+            "Name of", "Worker", "DATES", "Total", "Remark", "Attendan",
+            "Nature and location", "Principal Employer", "Establishment", "For the Month"
         ]
         for page in reader.pages:
             txt = page.extract_text() or ""
-            for line in txt.split("\n"):
-                ln = line.strip()
-                if not ln or any(k.lower() in ln.lower() for k in ignore_kw):
+            for raw_ln in txt.split("\n"):
+                ln = raw_ln.strip()
+                if not ln:
                     continue
-                tokens = ln.split()
-                if len(tokens) < 5:
+                if any(k.lower() in ln.lower() for k in ignore_kw):
                     continue
-                status_tokens = []
-                name_tokens = []
-                in_marks = False
-                for tok in tokens:
-                    t_up = tok.upper()
-                    if t_up in ["P", "A", "WO", "HD", "H", "L", "OFF", "-"] and len(name_tokens) >= 1:
-                        in_marks = True
-                        status_tokens.append(t_up)
-                    elif not in_marks:
-                        if not tok.isdigit():
-                            name_tokens.append(tok)
-                    else:
-                        if tok.isdigit() and len(status_tokens) >= 15:
-                            break
-                if len(status_tokens) >= 15 and name_tokens:
-                    wname = re.sub(r"^[0-9\.\s]+", "", " ".join(name_tokens)).strip().upper()
-                    punch_dates = []
-                    for idx_m, mk in enumerate(status_tokens[:max_days], start=1):
-                        if mk in ["P", "HD"]:
-                            punch_dates.append(f"{target_ym}-{idx_m:02d}")
-                    if wname and (punch_dates or len(status_tokens) > 0):
-                        parsed_records.append({
-                            "Worker_Name": wname,
-                            "Punch_Days_Count": float(len(punch_dates)),
-                            "Punch_Dates_List": ",".join(punch_dates)
-                        })
+                if re.match(r"^(01|1\s+2\s+3\s+4|16\s+15|17\s+18|19\s+20)", ln):
+                    continue
+                full_lines.append(ln)
+
+        # Group lines into worker entries starting with Serial No + Name ... Male/Female
+        entries = []
+        cur_buf = []
+        for ln in full_lines:
+            if re.match(r"^\d{1,3}\s+[A-Za-z]", ln) and cur_buf:
+                entries.append(" ".join(cur_buf))
+                cur_buf = [ln]
+            else:
+                cur_buf.append(ln)
+        if cur_buf:
+            entries.append(" ".join(cur_buf))
+
+        for ent in entries:
+            ent_clean = re.sub(r"\s+", " ", ent).strip()
+            g_match = re.search(r"\b(Male|Female)\b", ent_clean, re.IGNORECASE)
+            if not g_match:
+                continue
+
+            prefix_part = ent_clean[:g_match.start()].strip()
+            suffix_part = ent_clean[g_match.end():].strip()
+
+            # Remove leading serial number
+            prefix_no_sl = re.sub(r"^\d{1,3}\s+", "", prefix_part).strip()
+            name_words = [w for w in prefix_no_sl.split() if not w.isdigit()]
+            if len(name_words) < 2:
+                continue
+
+            # Split Worker Name and Father/Husband Name cleanly
+            if len(name_words) == 2:
+                w_name = name_words[0].upper()
+                f_name = name_words[1].upper()
+            elif len(name_words) == 3:
+                w_name = " ".join(name_words[:2]).upper()
+                f_name = name_words[2].upper()
+            else:
+                # Most names are 2-3 words; father's name is last 2 words
+                w_name = " ".join(name_words[:-2]).upper()
+                f_name = " ".join(name_words[-2:]).upper()
+
+            # Extract daily tokens and Total Attendance from suffix
+            toks = suffix_part.split()
+            day_marks = []
+            tot_att_val = None
+
+            for idx_t, tk in enumerate(toks):
+                tk_up = tk.upper().rstrip(",.")
+                if tk_up in ["P", "NH", "NHP"]:
+                    day_marks.append("P")
+                elif tk_up in ["HD", "P/2"]:
+                    day_marks.append("HD")
+                elif tk_up in ["AB", "A", "0", "O", "40", "42", "20", "2", "Ο", "-"]:
+                    day_marks.append("A")
+                elif tk_up.isdigit() and 0 <= int(tk_up) <= 31 and len(day_marks) >= 15:
+                    tot_att_val = float(tk_up)
+                    break
+
+            # Also check remark summary like "P:-15" or "NH:-1" if Total Attendance wasn't caught
+            p_rem = re.search(r"P\s*:\s*-?\s*(\d+)", suffix_part, re.IGNORECASE)
+            nh_rem = re.search(r"NHP?\s*:\s*-?\s*(\d+)", suffix_part, re.IGNORECASE)
+            if p_rem:
+                calc_from_rem = float(p_rem.group(1)) + (float(nh_rem.group(1)) if nh_rem else 0.0)
+                if tot_att_val is None or tot_att_val == 0:
+                    tot_att_val = calc_from_rem
+
+            if tot_att_val is None:
+                tot_att_val = float(len([m for m in day_marks if m == "P"]) + 0.5 * len([m for m in day_marks if m == "HD"]))
+
+            # Skip zero-attendance workers
+            if tot_att_val <= 0:
+                continue
+
+            punch_dates = []
+            for d_idx, mk in enumerate(day_marks[:max_days], start=1):
+                if mk in ["P", "HD"]:
+                    punch_dates.append(f"{target_ym}-{d_idx:02d}")
+
+            parsed_records.append({
+                "Worker_Name": normalize_name_key(w_name),
+                "Father_Husband_Name": normalize_name_key(f_name),
+                "Punch_Days_Count": float(tot_att_val),
+                "Punch_Dates_List": ",".join(punch_dates)
+            })
 
     return pd.DataFrame(parsed_records)
 
 
 def parse_tata_form_xvii_pdf(uploaded_pdf_file):
+    """
+    Parses Tata Steel Form XVII (Register of Wages) PDF accurately:
+    Extracts Worker_Name, Register_Sl_No, Approved_Days, and Net_Amount_Paid.
+    """
     if not PYPDF_AVAILABLE:
         return pd.DataFrame()
     reader = pypdf.PdfReader(uploaded_pdf_file)
@@ -465,7 +557,9 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     header_keywords = [
         "FORM XVII", "REGISTER OF WAGES", "Name and address", "WAGES PERIOD",
         "Certified that the amount", "Signatory of the Certifying", "Total:-",
-        "CIVIL WORK", "West Bokaro", "INDU SAO", "Serial No.", "Designation"
+        "CIVIL WORK", "West Bokaro", "INDU SAO", "Serial No.", "Designation",
+        "Basic Wages", "Dearness", "Overtime", "Other Cash", "Net Amount",
+        "Signature", "Initial of", "Units of"
     ]
     all_lines = []
     for page in reader.pages:
@@ -474,40 +568,46 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
             continue
         page_lines = [l.strip() for l in txt.split("\n") if l.strip()]
         for l in page_lines:
-            if any(k in l for k in header_keywords) or re.search(r"^\d+(\s+\d+){5,}", l):
+            if any(k.lower() in l.lower() for k in header_keywords):
+                continue
+            if re.search(r"^1\s+2\s+3\s+4\s+5", l):
                 continue
             all_lines.append(l)
 
     buffer = ""
     for line in all_lines:
         buffer = (buffer + " " + line).strip()
-        if re.search(r"\d+\+\d+[\=\-]\d+", buffer):
+        # Rate formula pattern like "350+215-565", "494+300=794", "494+300 794", "579+354-933"
+        rate_match = re.search(r"\b\d{3}\+\d{3}[\=\-\s]\d{3}\b", buffer)
+        if rate_match:
             parts = buffer.split()
-            if len(parts) >= 8 and parts[-1].isdigit():
+            if len(parts) >= 7 and parts[-1].isdigit():
                 formula_idx = -1
                 for p_i, p in enumerate(parts):
-                    if re.search(r"\d+\+\d+[\=\-]\d+", p):
+                    if re.search(r"\d{3}\+\d{3}", p):
                         formula_idx = p_i
                         break
-                if formula_idx > 2:
+                if formula_idx >= 3:
                     days_worked = float(parts[formula_idx - 1])
                     net_amount = float(parts[-1])
-                    sl = parts[0] if parts[0].isdigit() else ""
-                    rest = parts[1:] if sl else parts
-                    pre_days = rest[: formula_idx - (1 if sl else 0) - 1]
-                    serial = ""
-                    s_idx = -1
-                    for idx, t in enumerate(pre_days):
-                        if t.isdigit() and len(t) <= 3:
-                            serial = t
-                            s_idx = idx
-                            break
-                    name = " ".join(pre_days[:s_idx]) if s_idx != -1 else " ".join(pre_days)
-                    clean_name = re.sub(r"^[0-9\.\s]+", "", name).strip()
-                    if clean_name:
+
+                    # Tokens before days_worked: [Optional Sl_No] + [Name Words] + [Register_Sl_No]
+                    pre_tokens = parts[:formula_idx - 1]
+                    if pre_tokens and pre_tokens[0].isdigit():
+                        pre_tokens = pre_tokens[1:]
+
+                    reg_sl_no = ""
+                    if pre_tokens and pre_tokens[-1].isdigit():
+                        reg_sl_no = pre_tokens[-1]
+                        name_tokens = pre_tokens[:-1]
+                    else:
+                        name_tokens = [t for t in pre_tokens if not t.isdigit()]
+
+                    clean_name = normalize_name_key(" ".join(name_tokens))
+                    if clean_name and net_amount > 0:
                         records.append({
-                            "Worker_Name": clean_name.upper(),
-                            "Serial_No": serial,
+                            "Worker_Name": clean_name,
+                            "Register_Sl_No": reg_sl_no,
                             "Approved_Days": days_worked,
                             "Net_Amount_Paid": net_amount
                         })
@@ -567,6 +667,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
         for _, w in w_master.iterrows():
             wid = str(w["Worker_ID"])
             wname = str(w["Full_Name"])
+            wfather = str(w.get("Father_Husband_Name", "")).strip()
             wdiv = str(w.get("Division", ""))
             wrole = str(w.get("Designation", ""))
             wskill = str(w.get("Skill_Category", ""))
@@ -609,8 +710,21 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
 
             f17_days = 0.0
             f17_net = 0.0
-            if not tata_p_df.empty and "Worker_Name" in tata_p_df.columns:
-                tm = tata_p_df[tata_p_df["Worker_Name"].astype(str).str.strip().str.upper() == wname.strip().upper()]
+            if not tata_p_df.empty:
+                # Match by exact Worker_ID first (resolves duplicate names cleanly); fallback to unique Worker_Name
+                tm_by_id = tata_p_df[tata_p_df["Worker_ID"].astype(str).str.strip() == wid]
+                if not tm_by_id.empty:
+                    tm = tm_by_id
+                else:
+                    same_name_count = len(w_master[w_master["Full_Name"].apply(normalize_name_key) == normalize_name_key(wname)])
+                    if same_name_count <= 1:
+                        tm = tata_p_df[
+                            (tata_p_df["Worker_ID"].astype(str).str.strip() == "") &
+                            (tata_p_df["Worker_Name"].apply(normalize_name_key) == normalize_name_key(wname))
+                        ]
+                    else:
+                        tm = pd.DataFrame()
+
                 if not tm.empty:
                     f17_days = float(pd.to_numeric(tm["Approved_Days"], errors="coerce").fillna(0.0).sum())
                     f17_net = float(pd.to_numeric(tm["Net_Amount_Paid"], errors="coerce").fillna(0.0).sum())
@@ -654,9 +768,9 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
 
             if ym == target_ym:
                 results_for_target[wid] = {
-                    "Worker_ID": wid, "Worker_Name": wname, "Division": wdiv,
-                    "Designation": wrole, "Skill_Category": wskill, "Wage_Type": wwtype,
-                    "Base_Rate": wrate, "Week_Off_Day": w_wo,
+                    "Worker_ID": wid, "Worker_Name": wname, "Father_Husband_Name": wfather,
+                    "Division": wdiv, "Designation": wrole, "Skill_Category": wskill,
+                    "Wage_Type": wwtype, "Base_Rate": wrate, "Week_Off_Day": w_wo,
                     "Status": str(w.get("Status", "ACTIVE")).upper(),
                     "Bank_Account_No": b_acc, "Bank_IFSC_Code": b_ifsc, "Bank_Branch_Details": b_branch,
                     "Punch_Days": punch_days, "Non_Punch_Days": non_punch_days,
@@ -831,27 +945,31 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
             pdf.cell(19.0, 3.5, "PHOTO", align="C")
 
         wname = str(emp.get("Full_Name", "")).upper()[:24]
+        wfather = str(emp.get("Father_Husband_Name", "")).strip().upper()[:22]
         wrole = str(emp.get("Designation", ""))[:26]
         wdiv = str(emp.get("Division", ""))
         wphone = str(emp.get("Contact_No", "")) or "N/A"
         wref = str(emp.get("Govt_ID_Ref", "")) or wid
 
         pdf.set_text_color(15, 23, 42)
-        pdf.set_font("Helvetica", "B", 9.5)
-        pdf.set_xy(x0 + 24.5, y0 + 22.2)
-        pdf.cell(59, 4.5, wname)
+        pdf.set_font("Helvetica", "B", 9.2)
+        pdf.set_xy(x0 + 24.5, y0 + 21.8)
+        pdf.cell(59, 4.2, wname)
 
-        pdf.set_font("Helvetica", "B", 7.2)
+        pdf.set_font("Helvetica", "B", 7.0)
         pdf.set_text_color(55, 48, 163)
-        pdf.set_xy(x0 + 24.5, y0 + 27.0)
-        pdf.cell(59, 3.8, wrole)
+        pdf.set_xy(x0 + 24.5, y0 + 26.2)
+        pdf.cell(59, 3.6, wrole)
 
         pdf.set_text_color(51, 65, 85)
-        pdf.set_font("Helvetica", "", 6.8)
-        pdf.set_xy(x0 + 24.5, y0 + 31.2)
-        pdf.cell(59, 3.5, f"Div: {wdiv}")
-        pdf.set_xy(x0 + 24.5, y0 + 34.8)
-        pdf.cell(59, 3.5, f"Ref: {wref}  |  Mob: {wphone}")
+        pdf.set_font("Helvetica", "", 6.4)
+        pdf.set_xy(x0 + 24.5, y0 + 30.0)
+        if wfather:
+            pdf.cell(59, 3.3, f"S/o W/o: {wfather}")
+        else:
+            pdf.cell(59, 3.3, f"Div: {wdiv}")
+        pdf.set_xy(x0 + 24.5, y0 + 33.5)
+        pdf.cell(59, 3.3, f"Ref: {wref} | Mob: {wphone}")
 
         pdf.set_fill_color(241, 245, 249)
         pdf.rect(x0, y0 + 44.5, card_w, 9.5, style="F")
@@ -919,8 +1037,9 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
         pdf.set_text_color(15, 23, 42)
         pdf.set_font("Helvetica", "B", 7.6)
         pdf.set_xy(x0 + 3.0, y0 + 15.2)
-        pdf.cell(94, 4.3, f"Name: {s['Worker_Name']} ({s['Worker_ID']})")
-        pdf.cell(86, 4.3, f"{s['Designation']} [{s['Skill_Category']}]", align="R")
+        f_txt = f" (S/o W/o {s['Father_Husband_Name']})" if str(s.get("Father_Husband_Name", "")).strip() else ""
+        pdf.cell(102, 4.3, f"Name: {s['Worker_Name']}{f_txt} [{s['Worker_ID']}]")
+        pdf.cell(78, 4.3, f"{s['Designation']} [{s['Skill_Category']}]", align="R")
 
         pdf.set_font("Helvetica", "", 7.2)
         pdf.set_xy(x0 + 3.0, y0 + 19.6)
@@ -1005,7 +1124,7 @@ def render_attendance_module(
     # 1. EMPLOYEE ENROLMENT
     if current_view == "➕ Employee Enrolment":
         st.markdown("#### Employee Enrolment")
-        st.caption("Onboard workforce members with statutory skill category, fixed Week-Off day, photo, and bank particulars")
+        st.caption("Onboard workforce members with Father/Husband Name, statutory skill category, fixed Week-Off day, photo, and bank particulars")
 
         wage_rates_df = get_active_wage_rates_df(load_fn)
         rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
@@ -1024,7 +1143,8 @@ def render_attendance_module(
                     c_np1, c_np2 = st.columns([1.6, 1.0])
                     with c_np1:
                         w_name = st.text_input("Full Official Name", key="enrol_name").strip()
-                        w_ref = st.text_input("Identity Verification Reference", key="enrol_ref").strip()
+                        w_father = st.text_input("Father's / Husband's Name", placeholder="Required to distinguish duplicate names", key="enrol_father").strip()
+                        w_ref = st.text_input("Identity Verification Reference (Aadhaar / ID)", key="enrol_ref").strip()
                     with c_np2:
                         w_photo_file = st.file_uploader("Passport Photo (Optional)", type=["jpg", "jpeg", "png"], key="enrol_photo")
                         if w_photo_file:
@@ -1083,7 +1203,8 @@ def render_attendance_module(
                                     photo_flag = b64_photo
 
                             new_row = {
-                                "Worker_ID": next_wid, "Full_Name": w_name, "Govt_ID_Ref": w_ref,
+                                "Worker_ID": next_wid, "Full_Name": w_name,
+                                "Father_Husband_Name": w_father, "Govt_ID_Ref": w_ref,
                                 "Division": w_div, "Designation": final_role, "Wage_Type": w_wage_type,
                                 "Skill_Category": w_skill_cat, "Base_Rate": w_rate, "Week_Off_Day": w_week_off,
                                 "Contact_No": w_contact, "Bank_Account_No": b_acc, "Bank_IFSC_Code": b_ifsc,
@@ -1102,7 +1223,7 @@ def render_attendance_module(
                     for _, rr in wage_rates_df.iterrows():
                         st.caption(f"• **{rr['Skill_Category']}:** ₹{float(rr['Total_Daily_Rate']):,.0f}/day")
                     st.markdown("---")
-                    st.caption("On an employee's assigned Week-Off day, daily attendance automatically locks to **WO**.")
+                    st.caption("Adding **Father's / Husband's Name** lets the system automatically distinguish workers with identical names during Tata Steel Form XVI & Form XVII imports.")
 
         else:
             with st.container(border=True):
@@ -1143,8 +1264,13 @@ def render_attendance_module(
                             if not raw_skill or raw_skill.lower() == "nan":
                                 raw_skill = infer_skill_category_from_role_or_rate(clean_desig, b_rate_val, w_type_val)
 
+                            f_husb = str(b_row.get("Father_Husband_Name", "")).strip()
+                            if f_husb.lower() == "nan":
+                                f_husb = ""
+
                             appended_rows.append({
                                 "Worker_ID": new_gen_id, "Full_Name": fname_chk,
+                                "Father_Husband_Name": f_husb,
                                 "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")).strip(), "Division": div_val,
                                 "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": raw_skill,
                                 "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
@@ -1236,54 +1362,21 @@ def render_attendance_module(
 
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
-        # DYNAMIC EPF & ESIC CEILING SETTINGS CARD
         with st.container(border=True):
             st.markdown("###### 🏛️ Statutory EPF & ESIC Wage Ceiling & Contribution Settings")
             st.caption("Update government EPF / ESIC wage ceilings or percentage rates anytime without modifying code. Changes automatically apply to Payroll & Salary Slips.")
 
             sc1, sc2, sc3, sc4, sc5 = st.columns([1.15, 1.0, 1.15, 1.0, 1.0])
             with sc1:
-                new_epf_cap = st.number_input(
-                    "EPF Wage Ceiling (₹)",
-                    min_value=0.0,
-                    value=float(stat_cfg["EPF_WAGE_CEILING"]),
-                    step=1000.0,
-                    disabled=not is_admin,
-                    help="Max monthly gross wages on which EPF is capped (e.g. ₹25,000)"
-                )
+                new_epf_cap = st.number_input("EPF Wage Ceiling (₹)", min_value=0.0, value=float(stat_cfg["EPF_WAGE_CEILING"]), step=1000.0, disabled=not is_admin)
             with sc2:
-                new_epf_pct = st.number_input(
-                    "EPF Employee Share (%)",
-                    min_value=0.0,
-                    max_value=25.0,
-                    value=float(stat_cfg["EPF_RATE_PCT"]),
-                    step=0.25,
-                    disabled=not is_admin
-                )
+                new_epf_pct = st.number_input("EPF Employee Share (%)", min_value=0.0, max_value=25.0, value=float(stat_cfg["EPF_RATE_PCT"]), step=0.25, disabled=not is_admin)
             with sc3:
-                new_esic_cap = st.number_input(
-                    "ESIC Wage Ceiling (₹)",
-                    min_value=0.0,
-                    value=float(stat_cfg["ESIC_WAGE_CEILING"]),
-                    step=1000.0,
-                    disabled=not is_admin,
-                    help="Employees earning above this gross wage are exempt from ESIC (e.g. ₹21,000)"
-                )
+                new_esic_cap = st.number_input("ESIC Wage Ceiling (₹)", min_value=0.0, value=float(stat_cfg["ESIC_WAGE_CEILING"]), step=1000.0, disabled=not is_admin)
             with sc4:
-                new_esic_pct = st.number_input(
-                    "ESIC Employee Share (%)",
-                    min_value=0.0,
-                    max_value=10.0,
-                    value=float(stat_cfg["ESIC_RATE_PCT"]),
-                    step=0.05,
-                    disabled=not is_admin
-                )
+                new_esic_pct = st.number_input("ESIC Employee Share (%)", min_value=0.0, max_value=10.0, value=float(stat_cfg["ESIC_RATE_PCT"]), step=0.05, disabled=not is_admin)
             with sc5:
-                eff_dt_str = st.text_input(
-                    "Effective From",
-                    value=str(stat_cfg.get("Effective_From", "2026-04-01")),
-                    disabled=not is_admin
-                ).strip()
+                eff_dt_str = st.text_input("Effective From", value=str(stat_cfg.get("Effective_From", "2026-04-01")), disabled=not is_admin).strip()
 
             if is_admin:
                 if st.button("💾 Save EPF & ESIC Ceiling Rules", type="primary"):
@@ -1322,6 +1415,7 @@ def render_attendance_module(
 
             emp = w_match.iloc[0]
             emp_name = str(emp.get("Full_Name", ""))
+            emp_father = str(emp.get("Father_Husband_Name", "")).strip()
             emp_ref = str(emp.get("Govt_ID_Ref", ""))
             emp_div = str(emp.get("Division", "Fleet Operations"))
             emp_role = str(emp.get("Designation", ""))
@@ -1364,9 +1458,10 @@ def render_attendance_module(
                                 st.rerun()
 
                 with p_c1:
+                    f_disp = f" • S/o W/o: **{emp_father}**" if emp_father else ""
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
-                    st.markdown(f"**Division:** {emp_div}  |  **Role:** {emp_role}  |  **Fixed Week-Off:** `{emp_wo}`")
-                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Agreed Rate:** **₹{emp_rate:,.0f}**  |  **Status:** `{emp_status}`")
+                    st.markdown(f"**Division:** {emp_div}{f_disp}  |  **Role:** {emp_role}")
+                    st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Rate:** **₹{emp_rate:,.0f}**  |  **Off:** `{emp_wo}`  |  **Status:** `{emp_status}`")
 
                 with p_c2:
                     st.markdown("###### 🏦 Bank Account Mapping")
@@ -1378,7 +1473,8 @@ def render_attendance_module(
                     ed_c1, ed_c2, ed_c3 = st.columns(3)
                     with ed_c1:
                         ed_name = st.text_input("Full Official Name", value=emp_name).strip()
-                        ed_ref = st.text_input("Identity Verification Ref", value=emp_ref).strip()
+                        ed_father = st.text_input("Father's / Husband's Name", value=emp_father).strip()
+                        ed_ref = st.text_input("Identity Verification Ref (Aadhaar)", value=emp_ref).strip()
                         ed_contact = st.text_input("Contact Mobile No", value=emp_contact).strip()
                     with ed_c2:
                         div_opts = [eff_div_scope] if is_div_restricted else ["Fleet Operations", "Civil Construction"]
@@ -1406,8 +1502,8 @@ def render_attendance_module(
                     if st.form_submit_button("💾 Save Updated Employee Profile", type="primary", use_container_width=True):
                         if ed_name:
                             mask_w = w_table_full["Worker_ID"].astype(str) == target_wid
-                            w_table_full.loc[mask_w, ["Full_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
-                                ed_name, ed_ref, ed_contact, ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, ed_acc, ed_ifsc, ed_branch
+                            w_table_full.loc[mask_w, ["Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
+                                ed_name, ed_father, ed_ref, ed_contact, ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, ed_acc, ed_ifsc, ed_branch
                             ]
                             if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Profile updated!")
@@ -1509,7 +1605,7 @@ def render_attendance_module(
             with flt_c3:
                 f_status = st.selectbox("Status", ["All", "ACTIVE", "INACTIVE"], index=1, key="reg_stat_f")
             with flt_c4:
-                f_search = st.text_input("Search Employee", placeholder="Filter by Name, ID, or Account...").strip().lower()
+                f_search = st.text_input("Search Employee", placeholder="Filter by Name, Father Name, ID, or Account...").strip().lower()
 
             disp_table = w_table.copy()
             if f_div != "All":
@@ -1521,6 +1617,7 @@ def render_attendance_module(
             if f_search:
                 disp_table = disp_table[
                     disp_table["Full_Name"].astype(str).str.lower().str.contains(f_search) |
+                    disp_table["Father_Husband_Name"].astype(str).str.lower().str.contains(f_search) |
                     disp_table["Worker_ID"].astype(str).str.lower().str.contains(f_search) |
                     disp_table["Bank_Account_No"].astype(str).str.lower().str.contains(f_search)
                 ]
@@ -1529,7 +1626,10 @@ def render_attendance_module(
             with act_c1:
                 with st.container(border=True):
                     st.markdown("###### 🔍 Open Profile (Edit / Delete / Photo / PPE)")
-                    emp_choices = {f"{r['Worker_ID']} — {r['Full_Name']} ({r['Designation']})": str(r["Worker_ID"]) for _, r in disp_table.iterrows()}
+                    emp_choices = {
+                        f"{r['Worker_ID']} — {r['Full_Name']}" + (f" (S/o W/o {r['Father_Husband_Name']})" if str(r.get("Father_Husband_Name", "")).strip() else f" ({r['Designation']})"): str(r["Worker_ID"])
+                        for _, r in disp_table.iterrows()
+                    }
                     if emp_choices:
                         sc1, sc2 = st.columns([2.2, 1.0])
                         with sc1:
@@ -1563,7 +1663,7 @@ def render_attendance_module(
             disp_table_view = disp_table.copy()
             disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅" if str(x).strip() else "—")
             disp_table_view["Week_Off_Day"] = disp_table_view["Week_Off_Day"].apply(normalize_week_off)
-            req_cols = ["Worker_ID", "Full_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Week_Off_Day", "Bank_Account_No", "Status"]
+            req_cols = ["Worker_ID", "Full_Name", "Father_Husband_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
 
     # 4. DAILY FIELD MUSTER ROLL
@@ -1650,7 +1750,10 @@ def render_attendance_module(
         if not supervisor_locked_out:
             with st.container(border=True):
                 st.markdown("###### ⚡ Selective Quick-Mark Tool")
-                worker_map = {f"{r['Worker_ID']} — {r['Full_Name']}": str(r["Worker_ID"]) for _, r in active_workers.iterrows()}
+                worker_map = {
+                    f"{r['Worker_ID']} — {r['Full_Name']}" + (f" (S/o W/o {r['Father_Husband_Name']})" if str(r.get("Father_Husband_Name", "")).strip() else ""): str(r["Worker_ID"])
+                    for _, r in active_workers.iterrows()
+                }
                 wo_lookup_map = {str(r["Worker_ID"]): (normalize_week_off(r.get("Week_Off_Day", "Sunday")) == selected_weekday_name) for _, r in active_workers.iterrows()}
 
                 sm_c1, sm_c2, sm_c3 = st.columns([2.0, 1.3, 1.0])
@@ -1688,6 +1791,7 @@ def render_attendance_module(
             col_target = grid_cols[idx % 2]
             wid = str(w_row["Worker_ID"])
             wname, wdiv = str(w_row["Full_Name"]), str(w_row["Division"])
+            wfather = str(w_row.get("Father_Husband_Name", "")).strip()
             wrole, wskill = str(w_row["Designation"]), str(w_row.get("Skill_Category", ""))
             w_wo_day = normalize_week_off(w_row.get("Week_Off_Day", "Sunday"))
             is_wo_locked = (w_wo_day == selected_weekday_name) and (not admin_unlock_wo)
@@ -1710,7 +1814,8 @@ def render_attendance_module(
             with col_target:
                 with st.container(border=True):
                     lock_tag = f"  •  <span style='color:#dc2626; font-size:0.74rem; font-weight:600;'>🔒 Weekly Off ({w_wo_day})</span>" if is_wo_locked else ""
-                    st.markdown(f"**{wname}** (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>{lock_tag}", unsafe_allow_html=True)
+                    f_sub = f" (S/o W/o {wfather})" if wfather else ""
+                    st.markdown(f"**{wname}**{f_sub} (`{wid}`) • <span style='font-size: 0.78rem; color: #4f46e5; font-weight: 500;'>{wdiv}</span>{lock_tag}", unsafe_allow_html=True)
                     st.caption(f"{wrole} ({wskill}) • Assigned Off: {w_wo_day}")
 
                     r_c1, r_c2, r_c3 = st.columns([1.1, 1.3, 1.0])
@@ -1803,15 +1908,16 @@ def render_attendance_module(
             w_logs = m_sub[m_sub["Worker_ID"].astype(str) == wid]
             w_name = str(w_logs.iloc[0].get("Worker_Name", ""))
             w_div_val = str(w_logs.iloc[0].get("Division", ""))
-            w_desig, w_skill_v = "", ""
+            w_desig, w_skill_v, w_fath_v = "", "", ""
             if not w_master.empty and "Worker_ID" in w_master.columns:
                 wm_hit = w_master[w_master["Worker_ID"].astype(str) == wid]
                 if not wm_hit.empty:
                     w_name = str(wm_hit.iloc[0].get("Full_Name", w_name))
+                    w_fath_v = str(wm_hit.iloc[0].get("Father_Husband_Name", ""))
                     w_desig = str(wm_hit.iloc[0].get("Designation", ""))
                     w_skill_v = str(wm_hit.iloc[0].get("Skill_Category", ""))
 
-            row_dict = {"Worker ID": wid, "Employee Name": w_name, "Category": w_skill_v, "Designation": w_desig, "Division": w_div_val}
+            row_dict = {"Worker ID": wid, "Employee Name": w_name, "Father/Husband": w_fath_v, "Category": w_skill_v, "Designation": w_desig, "Division": w_div_val}
             day_map = {int(str(lr["Date"]).split("-")[2]): str(lr["Attendance"]) for _, lr in w_logs.iterrows() if len(str(lr["Date"]).split("-")) == 3}
             for d_i in range(1, days_cnt + 1):
                 row_dict[f"{d_i:02d}"] = day_map.get(d_i, "")
@@ -2062,7 +2168,7 @@ def render_attendance_module(
                 if not disp_adv.empty and "Txn_ID" in disp_adv.columns:
                     st.dataframe(disp_adv[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
 
-    # 8. MONTHLY WAGES, MANDATORY FORM XVI FIRST LOCK, FORM XVII, 3-UP SALARY SLIPS & SEPARATE BANK LETTERS
+    # 8. MONTHLY WAGES, FORM XVI + DUPLICATE RESOLVER, FORM XVII + DUPLICATE RESOLVER, SLIPS & BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
         st.markdown("#### Monthly Wages, Biometric Audit, Salary Slips & Bank Letters")
         w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
@@ -2095,19 +2201,60 @@ def render_attendance_module(
         f16_month_df = f16_df[f16_df["Wages_Period"].apply(period_matches)].copy() if (not f16_df.empty and "Wages_Period" in f16_df.columns) else pd.DataFrame(columns=TATA_FORM_XVI_COLS)
         is_f16_uploaded_for_month = (not f16_month_df.empty)
 
+        # STEP 1: FORM XVI IMPORT WITH ZERO-ATTENDANCE FILTER + FATHER NAME MATCH + DUPLICATE RESOLVER
         with st.expander(f"📋 Step 1: Import Tata Steel FORM XVI (Biometric Muster Roll) — {'✅ Synced' if is_f16_uploaded_for_month else '⚠️ Required First'}", expanded=(not is_f16_uploaded_for_month)):
-            st.caption("Mandatory Step 1: Synchronizes biometric punch dates, auto-corrects accidental 'Non-Punch' entries to 'Punch' to prevent double payment, and flags ghost punch discrepancies.")
+            st.caption("Parses Form XVI PDF/Excel, skips 0-attendance workers, auto-matches Father/Husband Name, and prompts Duplicate Name Resolver if needed.")
             xvi_file = st.file_uploader("Upload Tata Steel Form XVI (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"], key="f16_uploader")
             if xvi_file:
                 parsed_16 = parse_tata_form_xvi_file(xvi_file, target_ym)
                 if parsed_16.empty:
-                    st.error("Unable to parse worker punch records from this Form XVI file. Ensure Worker Name and day columns (1–31) are present.")
+                    st.error("Unable to parse active worker punch records from this Form XVI file.")
                 else:
-                    st.success(f"Extracted {len(parsed_16)} worker biometric records from Form XVI.")
-                    st.dataframe(parsed_16.head(8), use_container_width=True, hide_index=True)
+                    full_w_all = load_fn("worker_master")
+                    st.success(f"Extracted {len(parsed_16)} active workers (zero-attendance workers skipped) • Total Days: {parsed_16['Punch_Days_Count'].sum():.0f}")
+
+                    # Identify any rows with duplicate names in Form XVI or Worker Master
+                    resolved_f16_wids = {}
+                    ambiguous_f16_rows = []
+
+                    for idx16, r16 in parsed_16.iterrows():
+                        wn_up = normalize_name_key(r16["Worker_Name"])
+                        fn_up = normalize_name_key(r16.get("Father_Husband_Name", ""))
+
+                        wm_hits = full_w_all[full_w_all["Full_Name"].apply(normalize_name_key) == wn_up] if (not full_w_all.empty and "Full_Name" in full_w_all.columns) else pd.DataFrame()
+                        same_in_pdf = len(parsed_16[parsed_16["Worker_Name"].apply(normalize_name_key) == wn_up])
+
+                        if len(wm_hits) == 1 and same_in_pdf == 1:
+                            resolved_f16_wids[idx16] = str(wm_hits.iloc[0]["Worker_ID"])
+                        elif len(wm_hits) > 1 and fn_up:
+                            # Try auto-matching via Father/Husband Name
+                            f_hits = wm_hits[wm_hits["Father_Husband_Name"].apply(normalize_name_key) == fn_up]
+                            if len(f_hits) == 1:
+                                resolved_f16_wids[idx16] = str(f_hits.iloc[0]["Worker_ID"])
+                            else:
+                                ambiguous_f16_rows.append((idx16, r16, wm_hits))
+                        elif len(wm_hits) > 1 or same_in_pdf > 1:
+                            ambiguous_f16_rows.append((idx16, r16, wm_hits if not wm_hits.empty else full_w_all))
+                        else:
+                            resolved_f16_wids[idx16] = ""
+
+                    if ambiguous_f16_rows:
+                        st.warning(f"⚠️ **Duplicate Name Resolver ({len(ambiguous_f16_rows)} Ambiguous Records):** Select the exact Worker ID for each same-name entry below before syncing:")
+                        for idx16, r16, cand_df in ambiguous_f16_rows:
+                            opt_map = {"-- Skip / Unmapped --": ""}
+                            for _, cw in cand_df.iterrows():
+                                f_lbl = f" | S/o W/o: {cw['Father_Husband_Name']}" if str(cw.get("Father_Husband_Name", "")).strip() else ""
+                                opt_map[f"{cw['Worker_ID']} — {cw['Full_Name']}{f_lbl} ({cw['Designation']})"] = str(cw["Worker_ID"])
+                            chosen_opt = st.selectbox(
+                                f"PDF Row: **{r16['Worker_Name']}** | Father/Husband in PDF: **{r16.get('Father_Husband_Name') or 'N/A'}** | Punch Days: **{r16['Punch_Days_Count']:.0f}**",
+                                list(opt_map.keys()),
+                                key=f"f16_dup_res_{idx16}"
+                            )
+                            resolved_f16_wids[idx16] = opt_map[chosen_opt]
+
+                    st.dataframe(parsed_16[["Worker_Name", "Father_Husband_Name", "Punch_Days_Count"]].head(10), use_container_width=True, hide_index=True)
 
                     if st.button("🔄 Sync Form XVI & Auto-Correct Muster Roll", type="primary", use_container_width=True):
-                        full_w_all = load_fn("worker_master")
                         full_m_all = load_fn("muster_roll")
                         if not full_m_all.empty and "Duty_Location" in full_m_all.columns:
                             full_m_all["Duty_Location"] = full_m_all["Duty_Location"].apply(normalize_duty_type)
@@ -2115,19 +2262,17 @@ def render_attendance_module(
                         f16_rows_to_save = []
                         auto_corrected_cnt = 0
 
-                        for _, r16 in parsed_16.iterrows():
-                            wn_up = str(r16["Worker_Name"]).strip().upper()
+                        for idx16, r16 in parsed_16.iterrows():
+                            wn_up = normalize_name_key(r16["Worker_Name"])
+                            fn_up = normalize_name_key(r16.get("Father_Husband_Name", ""))
                             p_dates = [d.strip() for d in str(r16["Punch_Dates_List"]).split(",") if d.strip()]
-                            matched_wid = ""
-                            if not full_w_all.empty and "Full_Name" in full_w_all.columns:
-                                wm_hit = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == wn_up]
-                                if not wm_hit.empty:
-                                    matched_wid = str(wm_hit.iloc[0]["Worker_ID"])
+                            matched_wid = resolved_f16_wids.get(idx16, "")
 
                             f16_rows_to_save.append({
                                 "Wages_Period": target_ym,
                                 "Worker_ID": matched_wid,
                                 "Worker_Name": wn_up,
+                                "Father_Husband_Name": fn_up,
                                 "Punch_Days_Count": float(r16["Punch_Days_Count"]),
                                 "Punch_Dates_List": ",".join(p_dates),
                                 "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2164,8 +2309,13 @@ def render_attendance_module(
 
                 for _, wr in w_master.iterrows():
                     wid = str(wr["Worker_ID"])
-                    wn = str(wr["Full_Name"]).strip().upper()
-                    f16_hit = f16_month_df[(f16_month_df["Worker_ID"].astype(str) == wid) | (f16_month_df["Worker_Name"].astype(str).str.strip().str.upper() == wn)]
+                    wn = normalize_name_key(wr["Full_Name"])
+                    f16_hit = f16_month_df[f16_month_df["Worker_ID"].astype(str).str.strip() == wid]
+                    if f16_hit.empty:
+                        same_cnt = len(w_master[w_master["Full_Name"].apply(normalize_name_key) == wn])
+                        if same_cnt <= 1:
+                            f16_hit = f16_month_df[f16_month_df["Worker_Name"].apply(normalize_name_key) == wn]
+
                     f16_dates = set()
                     f16_tot_days = 0.0
                     if not f16_hit.empty:
@@ -2210,6 +2360,7 @@ def render_attendance_module(
                 else:
                     st.info("No biometric punch discrepancies detected for this period.")
 
+        # STEP 2: FORM XVII IMPORT WITH CROSS-MATCH + DUPLICATE NAME RESOLVER
         if not is_f16_uploaded_for_month:
             st.warning(f"⚠️ **Action Required:** Please upload and sync **Tata Steel Form XVI (Biometric Muster Roll)** for **{wage_period_str}** in Step 1 above before importing Form XVII.")
         else:
@@ -2239,31 +2390,79 @@ def render_attendance_module(
                         net_col = "Net_Amount_Paid" if "Net_Amount_Paid" in x_df.columns else "Net_Amount"
                         name_col_guess = "Worker_Name" if "Worker_Name" in x_df.columns else ("Name_of_Workman" if "Name_of_Workman" in x_df.columns else ("Name" if "Name" in x_df.columns else None))
                         if name_col_guess:
-                            x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)]
+                            x_df = x_df[~x_df[name_col_guess].astype(str).str.upper().str.contains("TOTAL", na=False)].reset_index(drop=True)
 
                         net_sum = pd.to_numeric(x_df[net_col], errors="coerce").fillna(0).sum()
                         st.success(f"Extracted {len(x_df)} records • Net Payable: ₹{net_sum:,.0f}")
-                        st.dataframe(x_df.head(5), use_container_width=True, hide_index=True)
+
+                        full_w_all = load_fn("worker_master")
+                        resolved_f17_wids = {}
+                        ambiguous_f17_rows = []
+
+                        for idx17, xr in x_df.iterrows():
+                            w_name_raw = normalize_name_key(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "")
+                            if not w_name_raw or w_name_raw == "NAN":
+                                continue
+                            appr_d = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
+                            wm_hits = full_w_all[full_w_all["Full_Name"].apply(normalize_name_key) == w_name_raw] if (not full_w_all.empty and "Full_Name" in full_w_all.columns) else pd.DataFrame()
+                            same_in_17 = len(x_df[x_df[name_col_guess].apply(normalize_name_key) == w_name_raw]) if name_col_guess else 1
+
+                            if len(wm_hits) == 1 and same_in_17 == 1:
+                                resolved_f17_wids[idx17] = str(wm_hits.iloc[0]["Worker_ID"])
+                            elif len(wm_hits) > 1 or same_in_17 > 1:
+                                # Check if Form XVI already uniquely mapped by exact Punch Days
+                                f16_same = f16_month_df[
+                                    (f16_month_df["Worker_Name"].apply(normalize_name_key) == w_name_raw) &
+                                    (pd.to_numeric(f16_month_df["Punch_Days_Count"], errors="coerce") == appr_d) &
+                                    (f16_month_df["Worker_ID"].astype(str).str.strip() != "")
+                                ]
+                                default_guess_wid = str(f16_same.iloc[0]["Worker_ID"]) if len(f16_same) == 1 else ""
+                                ambiguous_f17_rows.append((idx17, xr, wm_hits if not wm_hits.empty else full_w_all, default_guess_wid))
+                            else:
+                                resolved_f17_wids[idx17] = ""
+
+                        if ambiguous_f17_rows:
+                            st.warning(f"⚠️ **Duplicate Name Resolver ({len(ambiguous_f17_rows)} Same-Name Entries):** Confirm exact Worker ID for each entry below:")
+                            for idx17, xr, cand_df, def_wid in ambiguous_f17_rows:
+                                opt_map = {"-- Unmapped --": ""}
+                                def_idx = 0
+                                for _, cw in cand_df.iterrows():
+                                    f_lbl = f" | S/o W/o: {cw['Father_Husband_Name']}" if str(cw.get("Father_Husband_Name", "")).strip() else ""
+                                    ac_lbl = f" | A/C: ...{str(cw.get('Bank_Account_No', ''))[-4:]}" if str(cw.get("Bank_Account_No", "")).strip() else ""
+                                    lbl_str = f"{cw['Worker_ID']} — {cw['Full_Name']}{f_lbl}{ac_lbl}"
+                                    opt_map[lbl_str] = str(cw["Worker_ID"])
+                                    if def_wid and str(cw["Worker_ID"]) == def_wid:
+                                        def_idx = len(opt_map) - 1
+
+                                reg_sl = str(xr.get("Register_Sl_No", "")).strip()
+                                d_val = float(pd.to_numeric(xr.get("Approved_Days", 0), errors="coerce") or 0)
+                                n_val = float(pd.to_numeric(xr.get(net_col, 0), errors="coerce") or 0)
+                                chosen_17 = st.selectbox(
+                                    f"Form XVII Row: **{xr.get(name_col_guess)}** | Reg. Sl. No: **`{reg_sl or 'N/A'}`** | Days: **{d_val:.0f}** | Net Pay: **₹{n_val:,.0f}**",
+                                    list(opt_map.keys()),
+                                    index=def_idx,
+                                    key=f"f17_dup_res_{idx17}"
+                                )
+                                resolved_f17_wids[idx17] = opt_map[chosen_17]
+
+                        st.dataframe(x_df.head(8), use_container_width=True, hide_index=True)
 
                         import_mode = st.radio("Import Mode", ["Replace Month Data", "Append / Merge with Existing Month"], horizontal=True)
                         if st.button("Commit Form XVII Compliance Data", type="primary", use_container_width=True):
-                            full_w_all = load_fn("worker_master")
                             new_records = []
-                            for _, xr in x_df.iterrows():
-                                w_name_raw = str(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "").strip()
-                                if not w_name_raw or w_name_raw.lower() == "nan" or "TOTAL" in w_name_raw.upper():
+                            for idx17, xr in x_df.iterrows():
+                                w_name_raw = normalize_name_key(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "")
+                                if not w_name_raw or w_name_raw == "NAN" or "TOTAL" in w_name_raw:
                                     continue
                                 appr_days = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
                                 net_paid = float(pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0)
                                 if net_paid <= 0:
                                     continue
-                                matched_wid = ""
-                                if not full_w_all.empty and "Full_Name" in full_w_all.columns:
-                                    match_w = full_w_all[full_w_all["Full_Name"].astype(str).str.strip().str.upper() == w_name_raw.upper()]
-                                    if not match_w.empty:
-                                        matched_wid = str(match_w.iloc[0]["Worker_ID"])
+                                matched_wid = resolved_f17_wids.get(idx17, "")
+                                reg_sl_v = str(xr.get("Register_Sl_No", "")).strip()
                                 new_records.append({
-                                    "Wages_Period": target_ym, "Worker_ID": matched_wid, "Worker_Name": w_name_raw.upper(),
+                                    "Wages_Period": target_ym, "Worker_ID": matched_wid,
+                                    "Worker_Name": w_name_raw, "Register_Sl_No": reg_sl_v,
                                     "Approved_Days": appr_days, "Net_Amount_Paid": net_paid,
                                     "Uploaded_At": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 })
@@ -2279,8 +2478,10 @@ def render_attendance_module(
                                 combined_m = pd.concat([existing_m, new_df], ignore_index=True)
                                 combined_m["Approved_Days"] = pd.to_numeric(combined_m["Approved_Days"], errors="coerce").fillna(0.0)
                                 combined_m["Net_Amount_Paid"] = pd.to_numeric(combined_m["Net_Amount_Paid"], errors="coerce").fillna(0.0)
-                                merged_month_df = combined_m.groupby("Worker_Name", as_index=False).agg({
-                                    "Wages_Period": "first", "Worker_ID": "first", "Approved_Days": "sum", "Net_Amount_Paid": "sum", "Uploaded_At": "last"
+                                combined_m["_grp_key"] = combined_m.apply(lambda r: str(r["Worker_ID"]).strip() if str(r["Worker_ID"]).strip() else str(r["Worker_Name"]).strip(), axis=1)
+                                merged_month_df = combined_m.groupby("_grp_key", as_index=False).agg({
+                                    "Wages_Period": "first", "Worker_ID": "first", "Worker_Name": "first",
+                                    "Register_Sl_No": "first", "Approved_Days": "sum", "Net_Amount_Paid": "sum", "Uploaded_At": "last"
                                 })
                                 final_tata = pd.concat([other_m, merged_month_df[TATA_COMPLIANCE_COLS]], ignore_index=True)
 
@@ -2313,7 +2514,8 @@ def render_attendance_module(
                 salary_slip_records.append(p)
 
             recon_rows.append({
-                "Worker ID": wid, "Name": p["Worker_Name"], "Punch": punch_days, "Non-Punch": p["Non_Punch_Days"],
+                "Worker ID": wid, "Name": p["Worker_Name"], "Father/Husband": p.get("Father_Husband_Name", ""),
+                "Punch": punch_days, "Non-Punch": p["Non_Punch_Days"],
                 "Leave (L)": p["Paid_Leave_Days"], "Form XVII": f17_days, "Status": status_badge,
                 "Form XVII Bank (₹)": f17_net, "Balance Top-Up / Non-Punch Net (₹)": np_net,
                 "Adv. Ded. (₹)": p["Advance_Deducted"], "Carry Fwd Adv (₹)": p["Closing_Carry_Forward"]
