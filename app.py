@@ -14,8 +14,8 @@ except ImportError:
 
 from worker_attendance import (
     WORKER_MASTER_COLS, MUSTER_ROLL_COLS, ADVANCE_LOG_COLS,
-    TATA_COMPLIANCE_COLS, WAGE_MASTER_COLS, PPE_POLICY_COLS,
-    PPE_ISSUE_COLS, render_attendance_module
+    TATA_FORM_XVI_COLS, TATA_COMPLIANCE_COLS, WAGE_MASTER_COLS,
+    PPE_POLICY_COLS, PPE_ISSUE_COLS, render_attendance_module
 )
 from tata_billing import render_billing_module
 from fuel_and_audit import (
@@ -70,6 +70,7 @@ def load_sheet_df(worksheet_name):
         "worker_master": WORKER_MASTER_COLS,
         "muster_roll": MUSTER_ROLL_COLS,
         "worker_advances": ADVANCE_LOG_COLS,
+        "tata_form_xvi": TATA_FORM_XVI_COLS,
         "tata_form_xvii": TATA_COMPLIANCE_COLS,
         "app_users": USER_COLUMNS,
         "wage_rate_master": WAGE_MASTER_COLS,
