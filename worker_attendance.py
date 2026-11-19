@@ -31,8 +31,21 @@ except ImportError:
 SKILL_CATEGORIES = ["Unskilled", "Semi-Skilled", "Skilled", "Highly Skilled"]
 WEEK_DAYS_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "No Fixed Week-Off"]
 
-EPF_WAGE_CEILING = 25000.0
-ESIC_WAGE_CEILING = 21000.0
+DEFAULT_EPF_WAGE_CEILING = 25000.0
+DEFAULT_EPF_RATE_PCT = 12.0
+DEFAULT_ESIC_WAGE_CEILING = 21000.0
+DEFAULT_ESIC_RATE_PCT = 0.75
+
+STATUTORY_CONFIG_COLS = [
+    "Config_Key", "Config_Value", "Effective_From", "Updated_By", "Remarks"
+]
+
+DEFAULT_STATUTORY_CONFIG = [
+    {"Config_Key": "EPF_WAGE_CEILING", "Config_Value": 25000.0, "Effective_From": "2026-04-01", "Updated_By": "System", "Remarks": "EPF Monthly Wage Ceiling (INR)"},
+    {"Config_Key": "EPF_RATE_PCT", "Config_Value": 12.0, "Effective_From": "2026-04-01", "Updated_By": "System", "Remarks": "Employee EPF Share (%)"},
+    {"Config_Key": "ESIC_WAGE_CEILING", "Config_Value": 21000.0, "Effective_From": "2026-04-01", "Updated_By": "System", "Remarks": "ESIC Gross Eligibility Ceiling (INR)"},
+    {"Config_Key": "ESIC_RATE_PCT", "Config_Value": 0.75, "Effective_From": "2026-04-01", "Updated_By": "System", "Remarks": "Employee ESIC Share (%)"}
+]
 
 WAGE_MASTER_COLS = [
     "Skill_Category", "Basic_Pay", "VDA_Allowance", "Total_Daily_Rate", "Effective_From", "Remarks"
@@ -189,6 +202,32 @@ def resolve_worker_photo_b64(emp_row, load_media_fn=None):
     if load_media_fn and wid:
         return load_media_fn(f"EMP_{wid}")
     return ""
+
+
+def get_active_statutory_config(load_fn):
+    """Loads dynamic EPF/ESIC wage ceilings & percentages from Google Sheets (with safe defaults)."""
+    cfg = {
+        "EPF_WAGE_CEILING": DEFAULT_EPF_WAGE_CEILING,
+        "EPF_RATE_PCT": DEFAULT_EPF_RATE_PCT,
+        "ESIC_WAGE_CEILING": DEFAULT_ESIC_WAGE_CEILING,
+        "ESIC_RATE_PCT": DEFAULT_ESIC_RATE_PCT,
+        "Effective_From": "2026-04-01"
+    }
+    try:
+        df = load_fn("statutory_config")
+        if df is not None and not df.empty and "Config_Key" in df.columns and "Config_Value" in df.columns:
+            for _, r in df.iterrows():
+                k = str(r.get("Config_Key", "")).strip()
+                if k in cfg and k != "Effective_From":
+                    val = pd.to_numeric(r.get("Config_Value"), errors="coerce")
+                    if pd.notna(val) and float(val) >= 0:
+                        cfg[k] = float(val)
+                eff = str(r.get("Effective_From", "")).strip()
+                if eff:
+                    cfg["Effective_From"] = eff
+    except Exception:
+        pass
+    return cfg
 
 
 def get_active_wage_rates_df(load_fn):
@@ -477,17 +516,23 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
 
 
 # ----------------- PAYROLL & ADVANCE CARRY-FORWARD ENGINE -----------------
-def calculate_statutory_pf_esic(gross_wages):
-    """Applies updated EPF ₹25,000 wage ceiling (12%) and ESIC ₹21,000 wage ceiling (0.75%)."""
+def calculate_statutory_pf_esic(gross_wages, stat_cfg=None):
+    """Applies dynamic EPF & ESIC wage ceilings and rates configured in Statutory Master."""
     if gross_wages <= 0:
         return 0.0, 0.0
-    pf_eligible_wage = min(float(gross_wages), EPF_WAGE_CEILING)
-    pf_amt = round(pf_eligible_wage * 0.12, 0)
-    esic_amt = round(float(gross_wages) * 0.0075, 0) if float(gross_wages) <= ESIC_WAGE_CEILING else 0.0
+    cfg = stat_cfg or {}
+    epf_cap = float(cfg.get("EPF_WAGE_CEILING", DEFAULT_EPF_WAGE_CEILING))
+    epf_pct = float(cfg.get("EPF_RATE_PCT", DEFAULT_EPF_RATE_PCT)) / 100.0
+    esic_cap = float(cfg.get("ESIC_WAGE_CEILING", DEFAULT_ESIC_WAGE_CEILING))
+    esic_pct = float(cfg.get("ESIC_RATE_PCT", DEFAULT_ESIC_RATE_PCT)) / 100.0
+
+    pf_eligible_wage = min(float(gross_wages), epf_cap) if epf_cap > 0 else float(gross_wages)
+    pf_amt = round(pf_eligible_wage * epf_pct, 0)
+    esic_amt = round(float(gross_wages) * esic_pct, 0) if (esic_cap <= 0 or float(gross_wages) <= esic_cap) else 0.0
     return pf_amt, esic_amt
 
 
-def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num):
+def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num, stat_cfg=None):
     target_ym = f"{sel_year}-{month_num:02d}"
     all_periods = set([target_ym])
     if not adv_df.empty and "Date" in adv_df.columns:
@@ -590,7 +635,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                 total_paid_days = punch_days + non_punch_days
                 ot_pay = (wrate / 8.0) * ot_hrs
                 gross_total = round((total_paid_days * wrate) + ot_pay, 0)
-                pf_ded, esic_ded = calculate_statutory_pf_esic(gross_total)
+                pf_ded, esic_ded = calculate_statutory_pf_esic(gross_total, stat_cfg)
                 agreed_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
 
                 if f17_net > 0:
@@ -825,9 +870,13 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
     return bytes(pdf.output())
 
 
-def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn):
+def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, stat_cfg=None):
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
+
+    cfg = stat_cfg or {}
+    epf_pct_disp = f"{float(cfg.get('EPF_RATE_PCT', DEFAULT_EPF_RATE_PCT)):g}%"
+    esic_pct_disp = f"{float(cfg.get('ESIC_RATE_PCT', DEFAULT_ESIC_RATE_PCT)):g}%"
 
     slip_w, slip_h = 186.0, 86.0
     margin_x, margin_y, gap_y = 12.0, 10.0, 9.0
@@ -887,7 +936,7 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn):
         pdf.set_font("Helvetica", "B", 7.0)
 
         w_cols = [22, 22, 28, 24, 24, 28, 38]
-        h_cols = ["Total Days", "OT Hrs", "Gross Wages", "PF (12%)", "ESIC (0.75%)", "Adv. Ded.", "NET PAYABLE"]
+        h_cols = ["Total Days", "OT Hrs", "Gross Wages", f"PF ({epf_pct_disp})", f"ESIC ({esic_pct_disp})", "Adv. Ded.", "NET PAYABLE"]
         pdf.set_xy(x0, t_y)
         for wc, hc in zip(w_cols, h_cols):
             pdf.cell(wc, 6.2, hc, border=1, align="C", fill=True)
@@ -1112,10 +1161,11 @@ def render_attendance_module(
                             st.success(f"{len(appended_rows)} records imported.")
                             st.rerun()
 
-    # 2. STATUTORY WAGE RATES
+    # 2. STATUTORY WAGE RATES & EDITABLE EPF/ESIC CEILING MASTER
     elif current_view == "⚖️ Statutory Wage Rates":
-        st.markdown("#### Statutory Minimum Wage Rate Master (Category-Wise)")
+        st.markdown("#### Statutory Minimum Wage & PF/ESIC Ceiling Master")
         wage_rates_df = get_active_wage_rates_df(load_fn)
+        stat_cfg = get_active_statutory_config(load_fn)
         w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
 
         c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
@@ -1126,6 +1176,7 @@ def render_attendance_module(
             kpi_cols[idx].metric(f"{cat}", f"₹{cur_r:,.0f} / day", f"{cnt} Active Workers")
 
         with st.container(border=True):
+            st.markdown("###### 📋 Category-Wise Daily Minimum Wage Rates")
             edited_rates_df = st.data_editor(
                 wage_rates_df[WAGE_MASTER_COLS], use_container_width=True, hide_index=True, disabled=["Skill_Category"], key="wage_rate_editor"
             )
@@ -1183,6 +1234,69 @@ def render_attendance_module(
                             st.success(f"Assigned {assigned} categories & default Week-Off days!")
                             st.rerun()
 
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+        # DYNAMIC EPF & ESIC CEILING SETTINGS CARD
+        with st.container(border=True):
+            st.markdown("###### 🏛️ Statutory EPF & ESIC Wage Ceiling & Contribution Settings")
+            st.caption("Update government EPF / ESIC wage ceilings or percentage rates anytime without modifying code. Changes automatically apply to Payroll & Salary Slips.")
+
+            sc1, sc2, sc3, sc4, sc5 = st.columns([1.15, 1.0, 1.15, 1.0, 1.0])
+            with sc1:
+                new_epf_cap = st.number_input(
+                    "EPF Wage Ceiling (₹)",
+                    min_value=0.0,
+                    value=float(stat_cfg["EPF_WAGE_CEILING"]),
+                    step=1000.0,
+                    disabled=not is_admin,
+                    help="Max monthly gross wages on which EPF is capped (e.g. ₹25,000)"
+                )
+            with sc2:
+                new_epf_pct = st.number_input(
+                    "EPF Employee Share (%)",
+                    min_value=0.0,
+                    max_value=25.0,
+                    value=float(stat_cfg["EPF_RATE_PCT"]),
+                    step=0.25,
+                    disabled=not is_admin
+                )
+            with sc3:
+                new_esic_cap = st.number_input(
+                    "ESIC Wage Ceiling (₹)",
+                    min_value=0.0,
+                    value=float(stat_cfg["ESIC_WAGE_CEILING"]),
+                    step=1000.0,
+                    disabled=not is_admin,
+                    help="Employees earning above this gross wage are exempt from ESIC (e.g. ₹21,000)"
+                )
+            with sc4:
+                new_esic_pct = st.number_input(
+                    "ESIC Employee Share (%)",
+                    min_value=0.0,
+                    max_value=10.0,
+                    value=float(stat_cfg["ESIC_RATE_PCT"]),
+                    step=0.05,
+                    disabled=not is_admin
+                )
+            with sc5:
+                eff_dt_str = st.text_input(
+                    "Effective From",
+                    value=str(stat_cfg.get("Effective_From", "2026-04-01")),
+                    disabled=not is_admin
+                ).strip()
+
+            if is_admin:
+                if st.button("💾 Save EPF & ESIC Ceiling Rules", type="primary"):
+                    cfg_rows = [
+                        {"Config_Key": "EPF_WAGE_CEILING", "Config_Value": float(new_epf_cap), "Effective_From": eff_dt_str, "Updated_By": current_user, "Remarks": "EPF Monthly Wage Ceiling (INR)"},
+                        {"Config_Key": "EPF_RATE_PCT", "Config_Value": float(new_epf_pct), "Effective_From": eff_dt_str, "Updated_By": current_user, "Remarks": "Employee EPF Share (%)"},
+                        {"Config_Key": "ESIC_WAGE_CEILING", "Config_Value": float(new_esic_cap), "Effective_From": eff_dt_str, "Updated_By": current_user, "Remarks": "ESIC Gross Eligibility Ceiling (INR)"},
+                        {"Config_Key": "ESIC_RATE_PCT", "Config_Value": float(new_esic_pct), "Effective_From": eff_dt_str, "Updated_By": current_user, "Remarks": "Employee ESIC Share (%)"}
+                    ]
+                    if save_fn("statutory_config", pd.DataFrame(cfg_rows)[STATUTORY_CONFIG_COLS]):
+                        st.success(f"Saved! EPF Cap: ₹{new_epf_cap:,.0f} ({new_epf_pct:g}%) | ESIC Cap: ₹{new_esic_cap:,.0f} ({new_esic_pct:g}%).")
+                        st.rerun()
+
     # 3. EMPLOYEE MASTER REGISTER & OPEN PROFILE
     elif current_view == "📋 Employee Master Register":
         w_table_full = load_fn("worker_master")
@@ -1191,6 +1305,7 @@ def render_attendance_module(
         adv_all = load_fn("worker_advances")
         tata_all = load_fn("tata_form_xvii")
         ppe_all = load_fn("ppe_issue_log")
+        stat_cfg = get_active_statutory_config(load_fn)
 
         if st.session_state.selected_worker_card_id:
             target_wid = st.session_state.selected_worker_card_id
@@ -1318,7 +1433,7 @@ def render_attendance_module(
                                 st.rerun()
 
             today_dt = datetime.date.today()
-            cur_payroll_map = compute_monthly_payroll_and_advances(w_table_full, muster_all, adv_all, tata_all, today_dt.year, today_dt.month)
+            cur_payroll_map = compute_monthly_payroll_and_advances(w_table_full, muster_all, adv_all, tata_all, today_dt.year, today_dt.month, stat_cfg)
             emp_cf_bal = cur_payroll_map.get(target_wid, {}).get("Closing_Carry_Forward", 0.0)
 
             emp_muster = muster_all[muster_all["Worker_ID"].astype(str) == target_wid].copy() if not muster_all.empty else pd.DataFrame()
@@ -1896,6 +2011,7 @@ def render_attendance_module(
         muster_df = load_fn("muster_roll")
         adv_history = load_fn("worker_advances")
         tata_df = load_fn("tata_form_xvii")
+        stat_cfg = get_active_statutory_config(load_fn)
 
         worker_options = {f"{r['Full_Name']} ({r['Worker_ID']})": (r['Worker_ID'], r['Full_Name'], r['Division']) for _, r in w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].iterrows()} if not w_master.empty and "Worker_ID" in w_master.columns else {}
 
@@ -1926,7 +2042,7 @@ def render_attendance_module(
             with st.container(border=True):
                 st.markdown("###### 📊 Worker-Wise Advance Balance & Carry-Forward Status")
                 today_dt = datetime.date.today()
-                payroll_now = compute_monthly_payroll_and_advances(w_master, muster_df, adv_history, tata_df, today_dt.year, today_dt.month)
+                payroll_now = compute_monthly_payroll_and_advances(w_master, muster_df, adv_history, tata_df, today_dt.year, today_dt.month, stat_cfg)
                 bal_rows = [
                     {
                         "Worker ID": wid, "Name": p["Worker_Name"], "Opening Adv. (₹)": p["Opening_Advance"],
@@ -1954,6 +2070,12 @@ def render_attendance_module(
         adv_df = load_fn("worker_advances")
         f16_df = load_fn("tata_form_xvi")
         tata_df = load_fn("tata_form_xvii")
+        stat_cfg = get_active_statutory_config(load_fn)
+
+        epf_cap_disp = f"₹{float(stat_cfg['EPF_WAGE_CEILING']):,.0f}"
+        epf_pct_disp = f"{float(stat_cfg['EPF_RATE_PCT']):g}%"
+        esic_cap_disp = f"₹{float(stat_cfg['ESIC_WAGE_CEILING']):,.0f}"
+        esic_pct_disp = f"{float(stat_cfg['ESIC_RATE_PCT']):g}%"
 
         f_c1, f_c2 = st.columns([1, 1])
         with f_c1:
@@ -2166,7 +2288,7 @@ def render_attendance_module(
                                 st.success(f"Committed {len(new_records)} records!")
                                 st.rerun()
 
-        payroll_results = compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num)
+        payroll_results = compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num, stat_cfg)
         recon_rows = []
         f17_boi_batch, f17_neft_batch = [], []
         np_boi_batch, np_neft_batch = [], []
@@ -2221,7 +2343,7 @@ def render_attendance_module(
             st.dataframe(pd.DataFrame(recon_rows), use_container_width=True, hide_index=True)
 
         with st.container(border=True):
-            st.markdown("###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF ₹25k Cap, ESIC ₹21k Cap, Form XVII & Carry-Forward Advance)")
+            st.markdown(f"###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF {epf_cap_disp} Cap @ {epf_pct_disp}, ESIC {esic_cap_disp} Cap @ {esic_pct_disp}, Form XVII & Carry-Forward Advance)")
             if salary_slip_records and FPDF_AVAILABLE:
                 slip_options = {f"{r['Worker_ID']} — {r['Worker_Name']} (Net: ₹{r['Net_Payable']:,.0f})": r["Worker_ID"] for r in salary_slip_records}
                 sc_1, sc_2 = st.columns([2.1, 1.1])
@@ -2232,7 +2354,7 @@ def render_attendance_module(
                     filtered_slips = [r for r in salary_slip_records if r["Worker_ID"] in chosen_slip_wids]
                     st.download_button(
                         label=f"📥 Download Salary Slips PDF ({len(filtered_slips)} Slips)",
-                        data=generate_compact_salary_slips_pdf(filtered_slips, wage_period_str, logo_fn),
+                        data=generate_compact_salary_slips_pdf(filtered_slips, wage_period_str, logo_fn, stat_cfg),
                         file_name=f"M_s_INDU_SAO_Salary_Slips_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                     )
 
