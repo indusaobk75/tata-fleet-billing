@@ -475,6 +475,85 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         return df_tpl.to_csv(index=False).encode("utf-8"), "csv"
 
 
+def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_restricted, allowed_div_list):
+    """
+    Validates a bulk Excel/CSV DataFrame and separates it into:
+    - valid_rows: list of clean dicts ready for worker_master (assigned sequential IS-#### IDs)
+    - error_rows: list of dicts with Row_No, Full_Name, Error_Reason + original columns
+    """
+    valid_rows = []
+    error_rows = []
+
+    for r_idx, b_row in b_df.iterrows():
+        fname_chk = clean_excel_cell(b_row.get("Full_Name", ""))
+        if not fname_chk:
+            continue
+
+        raw_div = b_row.get("Division", "")
+        div_val = normalize_division_name(raw_div)
+        if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
+            div_val = allowed_div_list[0]
+
+        cleaned_f, row_errs = validate_and_clean_employee_fields(
+            b_row.get("Contact_No", ""),
+            b_row.get("Govt_ID_Ref", ""),
+            b_row.get("Bank_Account_No", ""),
+            b_row.get("Bank_IFSC_Code", "")
+        )
+        if row_errs:
+            err_dict = {
+                "Excel_Row": r_idx + 2,
+                "Full_Name": fname_chk,
+                "Error_Reason": "; ".join(row_errs)
+            }
+            for col_k in b_df.columns:
+                if col_k not in err_dict:
+                    err_dict[col_k] = clean_excel_cell(b_row.get(col_k, ""))
+            error_rows.append(err_dict)
+            continue
+
+        cur_merged = pd.concat([existing_w_df, pd.DataFrame(valid_rows)], ignore_index=True)
+        new_gen_id = generate_next_worker_id("", cur_merged)
+        raw_desig = clean_excel_cell(b_row.get("Designation", ""))
+        clean_desig = raw_desig if raw_desig else "Unassigned"
+        w_type_val = clean_excel_cell(b_row.get("Wage_Type", "DAILY_WAGE")).upper() or "DAILY_WAGE"
+        if w_type_val not in ["DAILY_WAGE", "MONTHLY_FIXED"]:
+            w_type_val = "DAILY_WAGE"
+
+        raw_rate_num = pd.to_numeric(clean_excel_cell(b_row.get("Base_Rate", "")), errors="coerce")
+        b_rate_val = float(raw_rate_num) if (pd.notna(raw_rate_num) and float(raw_rate_num) > 0) else 0.0
+
+        clean_skill = normalize_skill_category(
+            b_row.get("Skill_Category", ""),
+            clean_desig,
+            b_rate_val,
+            w_type_val
+        )
+        if b_rate_val <= 0:
+            b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
+
+        f_husb = clean_excel_cell(b_row.get("Father_Husband_Name", ""))
+        stat_val = clean_excel_cell(b_row.get("Status", "ACTIVE")).upper() or "ACTIVE"
+        if stat_val not in ["ACTIVE", "INACTIVE"]:
+            stat_val = "ACTIVE"
+
+        valid_rows.append({
+            "Worker_ID": new_gen_id, "Full_Name": fname_chk,
+            "Father_Husband_Name": f_husb,
+            "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"], "Division": div_val,
+            "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": clean_skill,
+            "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
+            "Contact_No": cleaned_f["Contact_No"],
+            "Bank_Account_No": cleaned_f["Bank_Account_No"],
+            "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
+            "Bank_Branch_Details": clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper(),
+            "Status": stat_val,
+            "Created_Date": datetime.date.today().strftime("%Y-%m-%d"), "Photo_Base64": ""
+        })
+
+    return valid_rows, error_rows
+
+
 # ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
 def parse_tata_form_xvi_file(uploaded_file, target_ym):
     """
@@ -1399,79 +1478,48 @@ def render_attendance_module(
                     b_df.columns = [str(c).strip() for c in b_df.columns]
                     st.dataframe(b_df.head(5), use_container_width=True, hide_index=True)
 
-                    if st.button("Commit Bulk Roster", type="primary", use_container_width=True):
-                        w_df = load_fn("worker_master")
-                        appended_rows = []
-                        bulk_errors = []
+                    w_df_live = load_fn("worker_master")
+                    valid_rows, error_rows = parse_and_validate_bulk_roster_df(
+                        b_df, w_df_live, rate_lookup, is_div_restricted, allowed_div_list
+                    )
 
-                        for r_idx, b_row in b_df.iterrows():
-                            fname_chk = clean_excel_cell(b_row.get("Full_Name", ""))
-                            if not fname_chk:
-                                continue
+                    if not error_rows:
+                        if valid_rows:
+                            st.success(f"✅ All **{len(valid_rows)} rows** passed validation and are ready to import!")
+                            if st.button(f"🚀 Commit All {len(valid_rows)} Workers", type="primary", use_container_width=True):
+                                fin_w_df = pd.concat([w_df_live, pd.DataFrame(valid_rows)], ignore_index=True)
+                                if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
+                                    st.success(f"Successfully imported {len(valid_rows)} workers with permanent IS-series IDs!")
+                                    st.rerun()
+                        else:
+                            st.warning("No valid employee rows found in the uploaded file.")
+                    else:
+                        st.warning(f"⚠️ Found **{len(valid_rows)} valid rows** and **{len(error_rows)} rows with validation issues**.")
 
-                            raw_div = b_row.get("Division", "")
-                            div_val = normalize_division_name(raw_div)
-                            if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
-                                div_val = allowed_div_list[0]
+                        act_b1, act_b2 = st.columns([1.3, 1.0])
+                        with act_b1:
+                            if valid_rows:
+                                if st.button(f"✅ Import {len(valid_rows)} Valid Workers Now (Skip {len(error_rows)} Error Rows)", type="primary", use_container_width=True):
+                                    fin_w_df = pd.concat([w_df_live, pd.DataFrame(valid_rows)], ignore_index=True)
+                                    if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
+                                        st.success(f"Imported {len(valid_rows)} valid workers! ({len(error_rows)} error rows were skipped).")
+                                        st.rerun()
+                            else:
+                                st.error("0 valid rows available to import. Please fix the errors below.")
 
-                            cleaned_f, row_errs = validate_and_clean_employee_fields(
-                                b_row.get("Contact_No", ""),
-                                b_row.get("Govt_ID_Ref", ""),
-                                b_row.get("Bank_Account_No", ""),
-                                b_row.get("Bank_IFSC_Code", "")
+                        with act_b2:
+                            err_df_export = pd.DataFrame(error_rows)
+                            st.download_button(
+                                label=f"📥 Download {len(error_rows)} Skipped Error Rows (CSV)",
+                                data=err_df_export.to_csv(index=False).encode("utf-8"),
+                                file_name=f"Skipped_Error_Rows_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                                mime="text/csv",
+                                type="secondary",
+                                use_container_width=True
                             )
-                            if row_errs:
-                                bulk_errors.append(f"Row {r_idx + 2} ({fname_chk}): " + "; ".join(row_errs))
-                                continue
 
-                            cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                            new_gen_id = generate_next_worker_id("", cur_merged)
-                            raw_desig = clean_excel_cell(b_row.get("Designation", ""))
-                            clean_desig = raw_desig if raw_desig else "Unassigned"
-                            w_type_val = clean_excel_cell(b_row.get("Wage_Type", "DAILY_WAGE")).upper() or "DAILY_WAGE"
-                            if w_type_val not in ["DAILY_WAGE", "MONTHLY_FIXED"]:
-                                w_type_val = "DAILY_WAGE"
-
-                            raw_rate_num = pd.to_numeric(clean_excel_cell(b_row.get("Base_Rate", "")), errors="coerce")
-                            b_rate_val = float(raw_rate_num) if (pd.notna(raw_rate_num) and float(raw_rate_num) > 0) else 0.0
-
-                            clean_skill = normalize_skill_category(
-                                b_row.get("Skill_Category", ""),
-                                clean_desig,
-                                b_rate_val,
-                                w_type_val
-                            )
-                            if b_rate_val <= 0:
-                                b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
-
-                            f_husb = clean_excel_cell(b_row.get("Father_Husband_Name", ""))
-                            stat_val = clean_excel_cell(b_row.get("Status", "ACTIVE")).upper() or "ACTIVE"
-                            if stat_val not in ["ACTIVE", "INACTIVE"]:
-                                stat_val = "ACTIVE"
-
-                            appended_rows.append({
-                                "Worker_ID": new_gen_id, "Full_Name": fname_chk,
-                                "Father_Husband_Name": f_husb,
-                                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"], "Division": div_val,
-                                "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": clean_skill,
-                                "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
-                                "Contact_No": cleaned_f["Contact_No"],
-                                "Bank_Account_No": cleaned_f["Bank_Account_No"],
-                                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
-                                "Bank_Branch_Details": clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper(),
-                                "Status": stat_val,
-                                "Created_Date": datetime.date.today().strftime("%Y-%m-%d"), "Photo_Base64": ""
-                            })
-
-                        if bulk_errors:
-                            st.error("Please fix the following validation issues in your Excel/CSV file before importing:")
-                            for be in bulk_errors[:15]:
-                                st.warning(be)
-                        elif appended_rows:
-                            fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                            if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                st.success(f"{len(appended_rows)} records imported with permanent IS-series IDs!")
-                                st.rerun()
+                        with st.expander(f"🔍 View {len(error_rows)} Skipped / Error Rows Details", expanded=True):
+                            st.dataframe(pd.DataFrame(error_rows)[["Excel_Row", "Full_Name", "Error_Reason"]], use_container_width=True, hide_index=True)
 
     # 2. STATUTORY WAGE RATES & EDITABLE EPF/ESIC CEILING MASTER
     elif current_view == "⚖️ Statutory Wage Rates":
