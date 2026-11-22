@@ -137,42 +137,76 @@ COMPANY_CURRENT_AC = "482025110000105"
 
 
 # ----------------- VALIDATION, NORMALIZATION & ID HELPERS -----------------
+def clean_excel_cell(val):
+    """Safely converts Excel/CSV values to clean strings, stripping NaN/None and trailing '.0'."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val).strip()
+    if s.lower() in ["nan", "none", "null", "nat", "n/a", "-", "--"]:
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    return s
+
+
+def normalize_skill_category(raw_skill, role_str="", rate_val=0.0, wage_type="DAILY_WAGE"):
+    """Normalizes values like 'UN SKILLED', 'SEMI SKILLED', 'HIGHLY SKILLED' to exact system categories."""
+    if str(wage_type or "").strip().upper() == "MONTHLY_FIXED":
+        return "Monthly Fixed"
+    s = re.sub(r"[\s\-_]+", "", clean_excel_cell(raw_skill).upper())
+    if s in ["UNSKILLED", "US", "HELPER"]:
+        return "Unskilled"
+    if s in ["SEMISKILLED", "SS"]:
+        return "Semi-Skilled"
+    if s in ["SKILLED", "SK"]:
+        return "Skilled"
+    if s in ["HIGHLYSKILLED", "HS", "HIGHSKILLED"]:
+        return "Highly Skilled"
+    if s in ["MONTHLYFIXED", "FIXED", "MONTHLY"]:
+        return "Monthly Fixed"
+    return infer_skill_category_from_role_or_rate(role_str, rate_val, wage_type)
+
+
 def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, ifsc_raw):
     """
-    Auto-cleans spaces/dashes and validates:
+    Auto-cleans Excel NaN/.0/spaces/dashes and validates:
     - Mobile: 10 digits (strips +91 / leading 0)
     - Govt ID (12-digit ID): 12 digits (strips spaces/dashes)
     - Bank Account: 9 to 18 digits (strips spaces/dashes)
-    - IFSC Code: 11-char RBI standard (4 letters + '0' + 6 alphanumeric)
+    - IFSC Code: 11-char RBI standard (4 letters + '0' + 6 alphanumeric; auto-fixes 5th char 'O'->'0')
     Returns (cleaned_dict, error_list).
     """
     errors = []
 
     # 1. Mobile Number (10 digits)
-    mob_clean = re.sub(r"[\s\-\(\)]", "", str(contact_raw or "").strip())
-    if mob_clean.startswith("+91") and len(mob_clean) == 13:
-        mob_clean = mob_clean[3:]
-    elif mob_clean.startswith("91") and len(mob_clean) == 12:
+    mob_raw = clean_excel_cell(contact_raw)
+    mob_clean = re.sub(r"[\s\-\(\)\+]", "", mob_raw)
+    if mob_clean.startswith("91") and len(mob_clean) == 12:
         mob_clean = mob_clean[2:]
     elif mob_clean.startswith("0") and len(mob_clean) == 11:
         mob_clean = mob_clean[1:]
     if mob_clean and not re.fullmatch(r"\d{10}", mob_clean):
-        errors.append("Mobile Number must be exactly 10 digits.")
+        errors.append(f"Mobile '{mob_raw}' must be 10 digits.")
 
     # 2. Govt ID (12 digits when entered)
-    gid_clean = re.sub(r"[\s\-]", "", str(govt_id_raw or "").strip())
+    gid_raw = clean_excel_cell(govt_id_raw)
+    gid_clean = re.sub(r"[\s\-]", "", gid_raw)
     if gid_clean and not re.fullmatch(r"\d{12}", gid_clean):
-        errors.append("Identity ID Number must be exactly 12 digits (spaces are removed automatically).")
+        errors.append(f"Govt ID '{gid_raw}' must be 12 digits.")
 
     # 3. Bank Account Number (no spaces, 9-18 digits)
-    acc_clean = re.sub(r"[\s\-]", "", str(bank_acc_raw or "").strip())
+    acc_raw = clean_excel_cell(bank_acc_raw)
+    acc_clean = re.sub(r"[\s\-]", "", acc_raw)
     if acc_clean and not re.fullmatch(r"\d{9,18}", acc_clean):
-        errors.append("Bank Account Number must contain only digits (9 to 18 digits, no spaces/letters).")
+        errors.append(f"Bank A/C '{acc_raw}' must be 9-18 digits.")
 
     # 4. IFSC Code (11 chars: 4 letters + '0' + 6 alphanumeric)
-    ifsc_clean = re.sub(r"\s+", "", str(ifsc_raw or "").strip()).upper()
+    ifsc_raw_c = clean_excel_cell(ifsc_raw)
+    ifsc_clean = re.sub(r"\s+", "", ifsc_raw_c).upper()
+    if len(ifsc_clean) == 11 and ifsc_clean[4] == "O":
+        ifsc_clean = ifsc_clean[:4] + "0" + ifsc_clean[5:]
     if ifsc_clean and not re.fullmatch(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc_clean):
-        errors.append("IFSC Code must be 11 characters: first 4 letters, 5th character '0', and 6 branch characters (e.g. BKID0004820).")
+        errors.append(f"IFSC '{ifsc_raw_c}' must be 11 chars (4 letters + 0 + 6 branch chars, e.g. BKID0004820).")
 
     return {
         "Contact_No": mob_clean,
@@ -184,8 +218,8 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
 
 def normalize_division_name(raw_div):
     """Normalizes common department variations cleanly while supporting custom departments."""
-    s = re.sub(r"\s+", " ", str(raw_div or "").strip())
-    if not s or s.lower() == "nan":
+    s = re.sub(r"\s+", " ", clean_excel_cell(raw_div))
+    if not s:
         return "Civil Construction"
     sl = s.lower()
     if sl in ["fleet", "fleet operations", "transport", "machinery", "equipment"]:
@@ -194,7 +228,7 @@ def normalize_division_name(raw_div):
         return "Civil Construction"
     if sl in ["office", "office staff", "admin", "staff", "accounts"]:
         return "Office Staff"
-    if sl in ["cleaning", "cleaning department", "cleaning & housekeeping", "housekeeping", "sanitation"]:
+    if sl in ["cleaning", "cleaning department", "cleaning operation", "cleaning & housekeeping", "housekeeping", "sanitation"]:
         return "Cleaning & Housekeeping"
     if sl in ["workshop", "workshop & maintenance", "maintenance", "garage"]:
         return "Workshop & Maintenance"
@@ -221,10 +255,7 @@ def parse_allowed_divisions_list(allowed_division_str):
 
 
 def generate_next_worker_id(division, existing_df):
-    """
-    Generates permanent, division-neutral sequential IDs: IS-1001, IS-1002, IS-1003...
-    Preserves compatibility with legacy FLT- / CIV- IDs while ensuring new IDs never depend on division.
-    """
+    """Generates permanent, division-neutral sequential IDs: IS-1001, IS-1002, IS-1003..."""
     if existing_df is None or existing_df.empty or "Worker_ID" not in existing_df.columns:
         return "IS-1001"
     existing_ids = existing_df["Worker_ID"].astype(str).tolist()
@@ -250,14 +281,14 @@ def normalize_duty_type(val):
 
 
 def normalize_week_off(val):
-    s = str(val).strip()
+    s = clean_excel_cell(val)
     if s in WEEK_DAYS_OPTIONS:
         return s
     return "Sunday"
 
 
 def normalize_name_key(val):
-    return re.sub(r"\s+", " ", str(val or "").strip().upper())
+    return re.sub(r"\s+", " ", clean_excel_cell(val).upper())
 
 
 def count_working_days_for_worker(year_val, month_val, week_off_day):
@@ -459,7 +490,7 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
     parsed_records = []
 
     if fname.endswith(".csv") or fname.endswith(".xlsx"):
-        df = pd.read_csv(uploaded_file) if fname.endswith(".csv") else pd.ExcelFile(uploaded_file).parse(0)
+        df = pd.read_csv(uploaded_file, dtype=str) if fname.endswith(".csv") else pd.ExcelFile(uploaded_file).parse(0, dtype=str)
         df.columns = [str(c).strip() for c in df.columns]
 
         name_col = None
@@ -505,26 +536,24 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
 
         for _, row in df.iterrows():
             wname = normalize_name_key(row.get(name_col, ""))
-            if not wname or wname == "NAN" or "TOTAL" in wname:
+            if not wname or "TOTAL" in wname:
                 continue
             fname_val = normalize_name_key(row.get(father_col, "")) if father_col else ""
-            if fname_val == "NAN":
-                fname_val = ""
 
             punch_dates = []
             if day_col_map:
                 for d_num in sorted(day_col_map.keys()):
-                    val = str(row.get(day_col_map[d_num], "")).strip().upper()
+                    val = clean_excel_cell(row.get(day_col_map[d_num], "")).upper()
                     if val in ["P", "PRESENT", "1", "1.0", "HD", "HALF", "P/2", "IN", "NH", "NHP"]:
                         punch_dates.append(f"{target_ym}-{d_num:02d}")
             elif "Punch_Dates_List" in df.columns:
-                raw_list = str(row.get("Punch_Dates_List", "")).strip()
+                raw_list = clean_excel_cell(row.get("Punch_Dates_List", ""))
                 punch_dates = [x.strip() for x in raw_list.split(",") if x.strip()]
 
             p_cnt = float(len(punch_dates))
             for tot_c in ["Total Attendance", "Punch_Days_Count", "Total_Days", "Present_Days", "Punch Days", "Days"]:
                 if tot_c in df.columns:
-                    v_num = pd.to_numeric(row.get(tot_c, 0), errors="coerce")
+                    v_num = pd.to_numeric(clean_excel_cell(row.get(tot_c, 0)), errors="coerce")
                     if pd.notna(v_num) and float(v_num) >= 0:
                         p_cnt = float(v_num)
                         break
@@ -1366,7 +1395,7 @@ def render_attendance_module(
                 st.markdown("###### 2. Upload Completed Employee Roster")
                 up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
                 if up_file:
-                    b_df = pd.read_csv(up_file) if up_file.name.lower().endswith(".csv") else pd.ExcelFile(up_file).parse(0)
+                    b_df = pd.read_csv(up_file, dtype=str) if up_file.name.lower().endswith(".csv") else pd.ExcelFile(up_file).parse(0, dtype=str)
                     b_df.columns = [str(c).strip() for c in b_df.columns]
                     st.dataframe(b_df.head(5), use_container_width=True, hide_index=True)
 
@@ -1376,8 +1405,8 @@ def render_attendance_module(
                         bulk_errors = []
 
                         for r_idx, b_row in b_df.iterrows():
-                            fname_chk = str(b_row.get("Full_Name", "")).strip()
-                            if not fname_chk or fname_chk.lower() == "nan":
+                            fname_chk = clean_excel_cell(b_row.get("Full_Name", ""))
+                            if not fname_chk:
                                 continue
 
                             raw_div = b_row.get("Division", "")
@@ -1397,35 +1426,46 @@ def render_attendance_module(
 
                             cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
                             new_gen_id = generate_next_worker_id("", cur_merged)
-                            raw_desig = str(b_row.get("Designation", "")).strip()
-                            clean_desig = raw_desig if raw_desig and raw_desig.lower() != "nan" else "Unassigned"
-                            w_type_val = str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper()
-                            b_rate_val = float(pd.to_numeric(b_row.get("Base_Rate", 565.0), errors="coerce") or 565.0)
-                            raw_skill = str(b_row.get("Skill_Category", "")).strip()
-                            if not raw_skill or raw_skill.lower() == "nan":
-                                raw_skill = infer_skill_category_from_role_or_rate(clean_desig, b_rate_val, w_type_val)
+                            raw_desig = clean_excel_cell(b_row.get("Designation", ""))
+                            clean_desig = raw_desig if raw_desig else "Unassigned"
+                            w_type_val = clean_excel_cell(b_row.get("Wage_Type", "DAILY_WAGE")).upper() or "DAILY_WAGE"
+                            if w_type_val not in ["DAILY_WAGE", "MONTHLY_FIXED"]:
+                                w_type_val = "DAILY_WAGE"
 
-                            f_husb = str(b_row.get("Father_Husband_Name", "")).strip()
-                            if f_husb.lower() == "nan":
-                                f_husb = ""
+                            raw_rate_num = pd.to_numeric(clean_excel_cell(b_row.get("Base_Rate", "")), errors="coerce")
+                            b_rate_val = float(raw_rate_num) if (pd.notna(raw_rate_num) and float(raw_rate_num) > 0) else 0.0
+
+                            clean_skill = normalize_skill_category(
+                                b_row.get("Skill_Category", ""),
+                                clean_desig,
+                                b_rate_val,
+                                w_type_val
+                            )
+                            if b_rate_val <= 0:
+                                b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
+
+                            f_husb = clean_excel_cell(b_row.get("Father_Husband_Name", ""))
+                            stat_val = clean_excel_cell(b_row.get("Status", "ACTIVE")).upper() or "ACTIVE"
+                            if stat_val not in ["ACTIVE", "INACTIVE"]:
+                                stat_val = "ACTIVE"
 
                             appended_rows.append({
                                 "Worker_ID": new_gen_id, "Full_Name": fname_chk,
                                 "Father_Husband_Name": f_husb,
                                 "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"], "Division": div_val,
-                                "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": raw_skill,
+                                "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": clean_skill,
                                 "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
                                 "Contact_No": cleaned_f["Contact_No"],
                                 "Bank_Account_No": cleaned_f["Bank_Account_No"],
                                 "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
-                                "Bank_Branch_Details": str(b_row.get("Bank_Branch_Details", "")).strip().upper(),
-                                "Status": str(b_row.get("Status", "ACTIVE")).strip().upper(),
+                                "Bank_Branch_Details": clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper(),
+                                "Status": stat_val,
                                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"), "Photo_Base64": ""
                             })
 
                         if bulk_errors:
                             st.error("Please fix the following validation issues in your Excel/CSV file before importing:")
-                            for be in bulk_errors[:10]:
+                            for be in bulk_errors[:15]:
                                 st.warning(be)
                         elif appended_rows:
                             fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
@@ -1479,10 +1519,8 @@ def render_attendance_module(
                     if not full_w_master.empty and "Wage_Type" in full_w_master.columns:
                         for idx, wr in full_w_master.iterrows():
                             if str(wr.get("Wage_Type", "")).upper() == "DAILY_WAGE":
-                                w_cat = str(wr.get("Skill_Category", "")).strip()
-                                if not w_cat or w_cat not in new_rate_map:
-                                    w_cat = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), "DAILY_WAGE")
-                                    full_w_master.at[idx, "Skill_Category"] = w_cat
+                                w_cat = normalize_skill_category(wr.get("Skill_Category", ""), wr.get("Designation", ""), wr.get("Base_Rate", 0), "DAILY_WAGE")
+                                full_w_master.at[idx, "Skill_Category"] = w_cat
                                 if w_cat in new_rate_map:
                                     full_w_master.at[idx, "Base_Rate"] = new_rate_map[w_cat]
                                     updated_count += 1
@@ -1496,14 +1534,14 @@ def render_attendance_module(
                     if not full_w_master.empty:
                         assigned = 0
                         for idx, wr in full_w_master.iterrows():
-                            cur_cat = str(wr.get("Skill_Category", "")).strip()
-                            if not cur_cat or cur_cat.lower() == "nan":
-                                full_w_master.at[idx, "Skill_Category"] = infer_skill_category_from_role_or_rate(wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE"))
+                            norm_cat = normalize_skill_category(wr.get("Skill_Category", ""), wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE"))
+                            if str(wr.get("Skill_Category", "")).strip() != norm_cat:
+                                full_w_master.at[idx, "Skill_Category"] = norm_cat
                                 assigned += 1
                             if str(wr.get("Week_Off_Day", "")).strip() not in WEEK_DAYS_OPTIONS:
                                 full_w_master.at[idx, "Week_Off_Day"] = "Sunday"
                         if save_fn("worker_master", full_w_master[WORKER_MASTER_COLS]):
-                            st.success(f"Assigned {assigned} categories & default Week-Off days!")
+                            st.success(f"Normalized {assigned} skill categories & default Week-Off days!")
                             st.rerun()
 
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
@@ -1566,7 +1604,7 @@ def render_attendance_module(
             emp_div = str(emp.get("Division", "Civil Construction"))
             emp_role = str(emp.get("Designation", ""))
             emp_wage_type = str(emp.get("Wage_Type", "DAILY_WAGE"))
-            emp_skill = str(emp.get("Skill_Category", "")).strip() or infer_skill_category_from_role_or_rate(emp_role, emp.get("Base_Rate", 0), emp_wage_type)
+            emp_skill = normalize_skill_category(emp.get("Skill_Category", ""), emp_role, emp.get("Base_Rate", 0), emp_wage_type)
             emp_rate = float(pd.to_numeric(emp.get("Base_Rate", 0.0), errors="coerce") or 0.0)
             emp_wo = normalize_week_off(emp.get("Week_Off_Day", "Sunday"))
             emp_acc = str(emp.get("Bank_Account_No", ""))
@@ -2539,7 +2577,7 @@ def render_attendance_module(
                         if PYPDF_AVAILABLE:
                             x_df = parse_tata_form_xvii_pdf(xvii_file)
                     elif xvii_file.name.lower().endswith(".csv"):
-                        x_df = pd.read_csv(xvii_file)
+                        x_df = pd.read_csv(xvii_file, dtype=str)
                         x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
                     else:
                         xl = pd.ExcelFile(xvii_file)
@@ -2550,7 +2588,7 @@ def render_attendance_module(
                             if "Net_Amount_Paid" in clean_cols or "Net_Amount" in clean_cols:
                                 target_sheet = s_name
                                 break
-                        x_df = xl.parse(target_sheet)
+                        x_df = xl.parse(target_sheet, dtype=str)
                         x_df.columns = [str(c).strip().replace(" ", "_") for c in x_df.columns]
 
                     if not x_df.empty and ("Net_Amount_Paid" in x_df.columns or "Net_Amount" in x_df.columns):
@@ -2568,7 +2606,7 @@ def render_attendance_module(
 
                         for idx17, xr in x_df.iterrows():
                             w_name_raw = normalize_name_key(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "")
-                            if not w_name_raw or w_name_raw == "NAN":
+                            if not w_name_raw:
                                 continue
                             appr_d = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
                             wm_hits = full_w_all[full_w_all["Full_Name"].apply(normalize_name_key) == w_name_raw] if (not full_w_all.empty and "Full_Name" in full_w_all.columns) else pd.DataFrame()
@@ -2600,7 +2638,7 @@ def render_attendance_module(
                                     if def_wid and str(cw["Worker_ID"]) == def_wid:
                                         def_idx = len(opt_map) - 1
 
-                                reg_sl = str(xr.get("Register_Sl_No", "")).strip()
+                                reg_sl = clean_excel_cell(xr.get("Register_Sl_No", ""))
                                 d_val = float(pd.to_numeric(xr.get("Approved_Days", 0), errors="coerce") or 0)
                                 n_val = float(pd.to_numeric(xr.get(net_col, 0), errors="coerce") or 0)
                                 chosen_17 = st.selectbox(
@@ -2618,14 +2656,14 @@ def render_attendance_module(
                             new_records = []
                             for idx17, xr in x_df.iterrows():
                                 w_name_raw = normalize_name_key(xr.get("Worker_Name") or xr.get("Name_of_Workman") or xr.get("Name") or "")
-                                if not w_name_raw or w_name_raw == "NAN" or "TOTAL" in w_name_raw:
+                                if not w_name_raw or "TOTAL" in w_name_raw:
                                     continue
                                 appr_days = float(pd.to_numeric(xr.get("Approved_Days") or xr.get("No_of_days_worked") or 0.0, errors="coerce") or 0.0)
                                 net_paid = float(pd.to_numeric(xr.get("Net_Amount_Paid") or xr.get("Net_Amount") or 0.0, errors="coerce") or 0.0)
                                 if net_paid <= 0:
                                     continue
                                 matched_wid = resolved_f17_wids.get(idx17, "")
-                                reg_sl_v = str(xr.get("Register_Sl_No", "")).strip()
+                                reg_sl_v = clean_excel_cell(xr.get("Register_Sl_No", ""))
                                 new_records.append({
                                     "Wages_Period": target_ym, "Worker_ID": matched_wid,
                                     "Worker_Name": w_name_raw, "Register_Sl_No": reg_sl_v,
