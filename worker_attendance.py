@@ -213,6 +213,12 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
     }, errors
 
 
+def is_valid_bank_for_transfer(acc_str, ifsc_str):
+    acc_c = re.sub(r"[\s\-]", "", clean_excel_cell(acc_str))
+    ifsc_c = re.sub(r"\s+", "", clean_excel_cell(ifsc_str)).upper()
+    return bool(re.fullmatch(r"\d{9,18}", acc_c) and re.fullmatch(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc_c))
+
+
 def normalize_division_name(raw_div):
     """Normalizes common department variations cleanly while supporting custom departments."""
     s = re.sub(r"\s+", " ", clean_excel_cell(raw_div))
@@ -832,6 +838,16 @@ def calculate_statutory_pf_esic(punch_wages_only, stat_cfg=None):
     return pf_amt, esic_amt
 
 
+def classify_advance_category(payment_mode, remarks):
+    pm = str(payment_mode or "").strip().lower()
+    rm = str(remarks or "").strip().lower()
+    if "ppe" in pm or "ppe" in rm or "tool" in pm or "tool" in rm or "safety" in rm:
+        return "PPE/Tools"
+    if "fuel" in pm or "fuel" in rm or "diesel" in pm or "diesel" in rm or "petrol" in rm:
+        return "Fuel"
+    return "Cash/UPI"
+
+
 def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, sel_year, month_num, stat_cfg=None):
     target_ym = f"{sel_year}-{month_num:02d}"
     all_periods = set([target_ym])
@@ -881,11 +897,17 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
             opening_adv = carry_fwd_map.get(wid, 0.0)
 
             new_adv = 0.0
+            adv_cat_totals = {"Cash/UPI": 0.0, "PPE/Tools": 0.0, "Fuel": 0.0}
             if not adv_df.empty and "Date" in adv_df.columns and "Worker_ID" in adv_df.columns:
                 wa = adv_df[(adv_df["Worker_ID"].astype(str) == wid) &
                             (adv_df["Date"].astype(str) >= p_start) &
                             (adv_df["Date"].astype(str) <= p_end)]
-                new_adv = float(pd.to_numeric(wa["Amount"], errors="coerce").fillna(0.0).sum())
+                for _, a_rec in wa.iterrows():
+                    amt_v = float(pd.to_numeric(a_rec.get("Amount", 0.0), errors="coerce") or 0.0)
+                    if amt_v > 0:
+                        new_adv += amt_v
+                        cat_k = classify_advance_category(a_rec.get("Payment_Mode", ""), a_rec.get("Remarks", ""))
+                        adv_cat_totals[cat_k] = adv_cat_totals.get(cat_k, 0.0) + amt_v
 
             total_adv_due = opening_adv + new_adv
 
@@ -982,6 +1004,9 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                     "Is_F17_Higher": is_f17_higher,
                     "Gross_Wages": gross_total, "PF_Deduction": pf_ded, "ESIC_Deduction": esic_ded,
                     "Opening_Advance": opening_adv, "Month_New_Advance": new_adv,
+                    "Adv_Cash_UPI": adv_cat_totals["Cash/UPI"],
+                    "Adv_PPE_Tools": adv_cat_totals["PPE/Tools"],
+                    "Adv_Fuel": adv_cat_totals["Fuel"],
                     "Total_Advance_Due": total_adv_due, "Advance_Deducted": adv_deducted,
                     "Closing_Carry_Forward": closing_adv, "Non_Punch_Net_Pay": non_punch_take_home,
                     "Net_Payable": total_net_payable
@@ -989,7 +1014,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
     return results_for_target
 
 
-# ----------------- PDF GENERATORS (BANK LETTER, 8-UP ID CARDS, 3-UP SALARY SLIPS) -----------------
+# ----------------- PDF GENERATORS (BANK LETTER, 8-UP ID CARDS, BRIEF 3-UP SALARY SLIPS) -----------------
 def generate_bank_authority_letter_pdf(bank_batch_type, records_list, cheque_no, cheque_date, letterhead_fn, letter_subtitle="SUB: Transfer of payment from our account to below A/C"):
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
@@ -1192,6 +1217,7 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
 
 
 def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, stat_cfg=None):
+    """Generates brief, uncluttered 3-up A4 salary slips with category-wise advance breakup."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -1241,49 +1267,61 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
         pdf.set_font("Helvetica", "B", 7.6)
         pdf.set_xy(x0 + 3.0, y0 + 15.2)
         f_txt = f" (S/o W/o {s['Father_Husband_Name']})" if str(s.get("Father_Husband_Name", "")).strip() else ""
-        pdf.cell(102, 4.3, f"Name: {s['Worker_Name']}{f_txt} [{s['Worker_ID']}]")
-        pdf.cell(78, 4.3, f"{s['Designation']} [{s['Skill_Category']}]", align="R")
+        pdf.cell(108, 4.3, f"{s['Worker_Name']}{f_txt} [{s['Worker_ID']}]")
+        pdf.cell(72, 4.3, f"{s['Designation']} [{s['Skill_Category']}]", align="R")
 
         pdf.set_font("Helvetica", "", 7.2)
         pdf.set_xy(x0 + 3.0, y0 + 19.6)
         b_disp = s["Bank_Account_No"] if s["Bank_Account_No"] else "Cash"
         i_disp = s["Bank_IFSC_Code"] if s["Bank_IFSC_Code"] else "N/A"
-        pdf.cell(94, 4.0, f"Dept: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f} ({s['Wage_Type']})")
-        pdf.cell(86, 4.0, f"Bank A/C: {b_disp} ({i_disp})", align="R")
+        pdf.cell(94, 4.0, f"Dept: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f}")
+        pdf.cell(86, 4.0, f"A/C: {b_disp} ({i_disp})", align="R")
 
         t_y = y0 + 25.0
         pdf.set_fill_color(241, 245, 249)
         pdf.set_draw_color(100, 116, 139)
         pdf.set_line_width(0.25)
-        pdf.set_font("Helvetica", "B", 7.0)
+        pdf.set_font("Helvetica", "B", 6.8)
 
-        w_cols = [22, 22, 28, 24, 24, 28, 38]
-        h_cols = ["Total Days", "OT Hrs", "Gross Wages", f"PF ({epf_pct_disp})", f"ESIC ({esic_pct_disp})", "Adv. Ded.", "NET PAYABLE"]
+        w_cols = [18, 20, 16, 26, 22, 22, 24, 38]
+        h_cols = ["Punch", "Non-Punch", "OT Hrs", "Gross", f"PF ({epf_pct_disp})", f"ESIC ({esic_pct_disp})", "Adv. Ded.", "NET PAYABLE"]
         pdf.set_xy(x0, t_y)
         for wc, hc in zip(w_cols, h_cols):
             pdf.cell(wc, 6.2, hc, border=1, align="C", fill=True)
 
         pdf.set_xy(x0, t_y + 6.2)
-        pdf.set_font("Helvetica", "", 7.6)
-        pdf.cell(w_cols[0], 7.2, f"{s['Total_Days']:.1f} d", border=1, align="C")
-        pdf.cell(w_cols[1], 7.2, f"{s['OT_Hours']:.1f} h", border=1, align="C")
-        pdf.set_font("Helvetica", "B", 7.6)
-        pdf.cell(w_cols[2], 7.2, f"Rs.{s['Gross_Wages']:,.0f}", border=1, align="R")
-        pdf.set_font("Helvetica", "", 7.5)
-        pdf.cell(w_cols[3], 7.2, f"Rs.{s['PF_Deduction']:,.0f}", border=1, align="R")
-        pdf.cell(w_cols[4], 7.2, f"Rs.{s['ESIC_Deduction']:,.0f}", border=1, align="R")
-        pdf.cell(w_cols[5], 7.2, f"Rs.{s['Advance_Deducted']:,.0f}", border=1, align="R")
+        pdf.set_font("Helvetica", "", 7.4)
+        pdf.cell(w_cols[0], 7.2, f"{s['Punch_Days']:.1f} d", border=1, align="C")
+        pdf.cell(w_cols[1], 7.2, f"{s['Non_Punch_Days']:.1f} d", border=1, align="C")
+        pdf.cell(w_cols[2], 7.2, f"{s['OT_Hours']:.1f} h", border=1, align="C")
+        pdf.set_font("Helvetica", "B", 7.5)
+        pdf.cell(w_cols[3], 7.2, f"Rs.{s['Gross_Wages']:,.0f}", border=1, align="R")
+        pdf.set_font("Helvetica", "", 7.4)
+        pdf.cell(w_cols[4], 7.2, f"Rs.{s['PF_Deduction']:,.0f}", border=1, align="R")
+        pdf.cell(w_cols[5], 7.2, f"Rs.{s['ESIC_Deduction']:,.0f}", border=1, align="R")
+        pdf.cell(w_cols[6], 7.2, f"Rs.{s['Advance_Deducted']:,.0f}", border=1, align="R")
         pdf.set_fill_color(236, 253, 245)
         pdf.set_font("Helvetica", "B", 8.0)
-        pdf.cell(w_cols[6], 7.2, f"Rs.{s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
+        pdf.cell(w_cols[7], 7.2, f"Rs.{s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
 
-        pdf.set_font("Helvetica", "B", 6.8)
-        pdf.set_text_color(30, 41, 59)
-        pdf.set_xy(x0 + 3.0, y0 + 40.5)
-        f17_str = f"Form XVII Bank Payout: Rs.{s['Form_XVII_Net']:,.0f} ({s['Form_XVII_Days']:.1f} d)" if s['Form_XVII_Net'] > 0 else "Form XVII Bank Payout: Rs.0"
-        np_str = f"Balance Top-Up / Non-Punch Net: Rs.{s['Non_Punch_Net_Pay']:,.0f}"
-        cf_str = f"Closing Adv. Bal (Next Month): Rs.{s['Closing_Carry_Forward']:,.0f}"
-        pdf.cell(180, 4.0, f"{f17_str}   |   {np_str}   |   {cf_str}")
+        # Brief category-wise advance breakup (no verbose payout descriptions)
+        adv_parts = []
+        if float(s.get("Opening_Advance", 0)) > 0:
+            adv_parts.append(f"Prev. Bal: Rs.{s['Opening_Advance']:,.0f}")
+        if float(s.get("Adv_Cash_UPI", 0)) > 0:
+            adv_parts.append(f"Cash/UPI: Rs.{s['Adv_Cash_UPI']:,.0f}")
+        if float(s.get("Adv_PPE_Tools", 0)) > 0:
+            adv_parts.append(f"PPE/Tools: Rs.{s['Adv_PPE_Tools']:,.0f}")
+        if float(s.get("Adv_Fuel", 0)) > 0:
+            adv_parts.append(f"Fuel: Rs.{s['Adv_Fuel']:,.0f}")
+        if float(s.get("Closing_Carry_Forward", 0)) > 0:
+            adv_parts.append(f"Bal. Next Month: Rs.{s['Closing_Carry_Forward']:,.0f}")
+
+        if adv_parts:
+            pdf.set_font("Helvetica", "B", 6.8)
+            pdf.set_text_color(30, 41, 59)
+            pdf.set_xy(x0 + 3.0, y0 + 40.5)
+            pdf.cell(180, 4.0, "Adv. Breakup: " + "  |  ".join(adv_parts))
 
         pdf.set_text_color(15, 23, 42)
         pdf.set_font("Helvetica", "B", 7.6)
@@ -2312,7 +2350,6 @@ def render_attendance_module(
                     elif (not is_eligible_free) and iss_mode.startswith("FREE") and (not is_admin):
                         st.error("This item is still within its validity period. Select 'Paid / Lost Recovery' or 'Damaged Exchange', or request Admin approval.")
                     else:
-                        # Auto-save new item to Policy Master if added via quick dropdown
                         if is_creating_new_item and sel_item not in ppe_policy_df["PPE_Item"].astype(str).tolist():
                             new_pol_row = {
                                 "PPE_Item": sel_item,
@@ -2353,9 +2390,9 @@ def render_attendance_module(
                                 "Worker_Name": w_name,
                                 "Division": w_div,
                                 "Amount": float(rec_amount),
-                                "Payment_Mode": "PPE / Tool Recovery",
+                                "Payment_Mode": "PPE/Tools",
                                 "Supervisor": current_user,
-                                "Remarks": f"Early/Lost Item Recovery: {sel_item} (Qty {iss_qty})"
+                                "Remarks": f"PPE/Tool Recovery: {sel_item} (Qty {iss_qty})"
                             }
                             upd_adv = pd.concat([adv_cur, pd.DataFrame([new_adv_ded])], ignore_index=True)
                             save_fn("worker_advances", upd_adv[ADVANCE_LOG_COLS])
@@ -2421,7 +2458,7 @@ def render_attendance_module(
                         a_date = st.date_input("Date", value=datetime.date.today())
                         sel_w = st.selectbox("Employee", list(worker_options.keys()))
                         a_amt = st.number_input("Amount (₹)", min_value=100.0, step=100.0, value=500.0)
-                        a_mode = st.selectbox("Mode", ["Cash", "Online UPI", "Bank Transfer"])
+                        a_mode = st.selectbox("Mode / Type", ["Cash", "Online UPI", "Bank Transfer", "Fuel Advance", "PPE/Tools"])
                         a_rem = st.text_input("Remarks").strip()
                         if st.form_submit_button("Record Transaction", type="primary", use_container_width=True):
                             w_id, w_name, w_div = worker_options[sel_w]
@@ -2462,7 +2499,8 @@ def render_attendance_module(
     # 8. MONTHLY WAGES, FORM XVI + DUPLICATE RESOLVER, FORM XVII + DUPLICATE RESOLVER, SLIPS & BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
         st.markdown("#### Monthly Wages, Biometric Audit, Salary Slips & Bank Letters")
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
+        w_master_full = load_fn("worker_master")
+        w_master = filter_workers_by_allowed_division(w_master_full, allowed_division if is_div_restricted else "All Divisions")
         muster_df = load_fn("muster_roll")
         adv_df = load_fn("worker_advances")
         f16_df = load_fn("tata_form_xvi")
@@ -2779,6 +2817,8 @@ def render_attendance_module(
         recon_rows = []
         f17_boi_batch, f17_neft_batch = [], []
         np_boi_batch, np_neft_batch = [], []
+        f17_missing_bank_list = []
+        np_missing_bank_list = []
         salary_slip_records = []
 
         for wid, p in payroll_results.items():
@@ -2807,25 +2847,58 @@ def render_attendance_module(
                 "Adv. Ded. (₹)": p["Advance_Deducted"], "Carry Fwd Adv (₹)": p["Closing_Carry_Forward"]
             })
 
-            if f17_net > 0 and p["Bank_Account_No"]:
-                item_17 = {
-                    "NAME": p["Worker_Name"], "AMOUNT": f17_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
-                    "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
-                }
-                if p["Bank_IFSC_Code"].startswith("BKID"):
-                    f17_boi_batch.append(item_17)
-                else:
-                    f17_neft_batch.append(item_17)
+            has_valid_bank = is_valid_bank_for_transfer(p["Bank_Account_No"], p["Bank_IFSC_Code"])
 
-            if np_net > 0 and p["Bank_Account_No"]:
-                item_np = {
-                    "NAME": p["Worker_Name"], "AMOUNT": np_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
-                    "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
-                }
-                if p["Bank_IFSC_Code"].startswith("BKID"):
-                    np_boi_batch.append(item_np)
+            if f17_net > 0:
+                if has_valid_bank:
+                    item_17 = {
+                        "NAME": p["Worker_Name"], "AMOUNT": f17_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
+                        "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
+                    }
+                    if p["Bank_IFSC_Code"].startswith("BKID"):
+                        f17_boi_batch.append(item_17)
+                    else:
+                        f17_neft_batch.append(item_17)
                 else:
-                    np_neft_batch.append(item_np)
+                    missing_reason = []
+                    if not clean_excel_cell(p["Bank_Account_No"]):
+                        missing_reason.append("Missing Account No")
+                    elif not re.fullmatch(r"\d{9,18}", clean_excel_cell(p["Bank_Account_No"])):
+                        missing_reason.append("Invalid Account No")
+                    if not clean_excel_cell(p["Bank_IFSC_Code"]):
+                        missing_reason.append("Missing IFSC")
+                    elif not re.fullmatch(r"^[A-Z]{4}0[A-Z0-9]{6}$", clean_excel_cell(p["Bank_IFSC_Code"]).upper()):
+                        missing_reason.append("Invalid IFSC")
+
+                    f17_missing_bank_list.append({
+                        "Worker_ID": wid,
+                        "Full_Name": p["Worker_Name"],
+                        "Father_Husband_Name": p.get("Father_Husband_Name", ""),
+                        "Form_XVII_Net": f17_net,
+                        "Issue": ", ".join(missing_reason),
+                        "Bank_Account_No": clean_excel_cell(p["Bank_Account_No"]),
+                        "Bank_IFSC_Code": clean_excel_cell(p["Bank_IFSC_Code"]),
+                        "Bank_Branch_Details": clean_excel_cell(p["Bank_Branch_Details"])
+                    })
+
+            if np_net > 0:
+                if has_valid_bank:
+                    item_np = {
+                        "NAME": p["Worker_Name"], "AMOUNT": np_net, "BENEFICIARY ACCOUNT NO": p["Bank_Account_No"],
+                        "IFSC CODE": p["Bank_IFSC_Code"], "BANK & BRANCH DETAILS": p["Bank_Branch_Details"]
+                    }
+                    if p["Bank_IFSC_Code"].startswith("BKID"):
+                        np_boi_batch.append(item_np)
+                    else:
+                        np_neft_batch.append(item_np)
+                else:
+                    np_missing_bank_list.append({
+                        "Worker ID": wid,
+                        "Name": p["Worker_Name"],
+                        "Non-Punch Net (₹)": np_net,
+                        "Bank A/C": clean_excel_cell(p["Bank_Account_No"]) or "Missing",
+                        "IFSC": clean_excel_cell(p["Bank_IFSC_Code"]) or "Missing"
+                    })
 
         if recon_rows:
             st.dataframe(pd.DataFrame(recon_rows), use_container_width=True, hide_index=True)
@@ -2847,6 +2920,51 @@ def render_attendance_module(
                     )
 
         st.markdown("###### 🏦 Bank Covering Letters — Set 1: Tata Steel Form XVII Compliance (Punch Payouts Only)")
+
+        # STRICT COMPLIANCE GUARDRAIL FOR MISSING BANK DATA IN FORM XVII
+        if f17_missing_bank_list:
+            tot_missing_17 = sum([x["Form_XVII_Net"] for x in f17_missing_bank_list])
+            st.error(
+                f"🚨 **MANDATORY COMPLIANCE ALERT:** **{len(f17_missing_bank_list)} Form XVII workers** (Total: **₹{tot_missing_17:,.0f}**) have missing or invalid Bank Account / IFSC details and are currently **excluded from the Bank Covering Letters**!"
+            )
+            with st.container(border=True):
+                st.markdown("###### ⚡ Quick-Fix Missing Form XVII Bank Details (Update Directly Here)")
+                st.caption("Fill in Bank Account No, 11-character IFSC Code, and Branch below and click Save — these workers will immediately appear in the BOI/NEFT Bank Letters.")
+                miss_df = pd.DataFrame(f17_missing_bank_list)
+                edited_miss_df = st.data_editor(
+                    miss_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["Worker_ID", "Full_Name", "Father_Husband_Name", "Form_XVII_Net", "Issue"],
+                    key=f"quick_bank_fix_{target_ym}"
+                )
+                if st.button("💾 Save Bank Details & Refresh Bank Letters", type="primary", key=f"btn_save_bank_fix_{target_ym}"):
+                    fix_errors = []
+                    updates_to_apply = {}
+                    for _, mr in edited_miss_df.iterrows():
+                        wid_m = str(mr["Worker_ID"]).strip()
+                        acc_m = clean_excel_cell(mr["Bank_Account_No"])
+                        ifsc_m = clean_excel_cell(mr["Bank_IFSC_Code"]).upper()
+                        br_m = clean_excel_cell(mr["Bank_Branch_Details"]).upper()
+                        if acc_m or ifsc_m:
+                            c_res, c_errs = validate_and_clean_employee_fields("", "", acc_m, ifsc_m)
+                            if c_errs:
+                                fix_errors.append(f"{mr['Full_Name']} ({wid_m}): " + "; ".join(c_errs))
+                            else:
+                                updates_to_apply[wid_m] = (c_res["Bank_Account_No"], c_res["Bank_IFSC_Code"], br_m)
+
+                    if fix_errors:
+                        for fe in fix_errors:
+                            st.warning(f"❌ {fe}")
+                    elif updates_to_apply:
+                        latest_wm = load_fn("worker_master")
+                        for wid_u, (u_acc, u_ifsc, u_br) in updates_to_apply.items():
+                            mask_u = latest_wm["Worker_ID"].astype(str) == wid_u
+                            latest_wm.loc[mask_u, ["Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [u_acc, u_ifsc, u_br]
+                        if save_fn("worker_master", latest_wm[WORKER_MASTER_COLS]):
+                            st.success(f"Updated bank details for {len(updates_to_apply)} workers!")
+                            st.rerun()
+
         p_c1, p_c2 = st.columns(2)
         with p_c1:
             chq_no_17 = st.text_input("Cheque Number (Form XVII Compliance)", value="238883", key="bank_chq_no_17").strip()
@@ -2872,9 +2990,13 @@ def render_attendance_module(
                     file_name=f"FormXVII_NEFT_Transfer_Letter_{wage_period_str}.pdf", mime="application/pdf", type="primary", use_container_width=True
                 )
 
-        if np_boi_batch or np_neft_batch:
+        if np_boi_batch or np_neft_batch or np_missing_bank_list:
             st.markdown("---")
             st.markdown("###### 🏦 Bank Covering Letters — Set 2: Internal Non-Punch, Fixed & Differential Top-Up Payouts")
+            if np_missing_bank_list:
+                st.warning(f"⚠️ **{len(np_missing_bank_list)} Non-Punch / Top-Up workers** have no valid Bank A/C linked and will be paid via **Cash**:")
+                st.dataframe(pd.DataFrame(np_missing_bank_list), use_container_width=True, hide_index=True)
+
             np_c1, np_c2 = st.columns(2)
             with np_c1:
                 chq_no_np = st.text_input("Cheque Number (Internal Balance Payout)", value="238884", key="bank_chq_no_np").strip()
