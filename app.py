@@ -15,7 +15,8 @@ except ImportError:
 from worker_attendance import (
     WORKER_MASTER_COLS, MUSTER_ROLL_COLS, ADVANCE_LOG_COLS,
     TATA_FORM_XVI_COLS, TATA_COMPLIANCE_COLS, WAGE_MASTER_COLS,
-    PPE_POLICY_COLS, PPE_ISSUE_COLS, render_attendance_module
+    PPE_POLICY_COLS, PPE_ISSUE_COLS, STATUTORY_CONFIG_COLS,
+    BASE_DIVISIONS, render_attendance_module
 )
 from tata_billing import render_billing_module
 from fuel_and_audit import (
@@ -76,6 +77,7 @@ def load_sheet_df(worksheet_name):
         "tata_form_xvii": TATA_COMPLIANCE_COLS,
         "app_users": USER_COLUMNS,
         "wage_rate_master": WAGE_MASTER_COLS,
+        "statutory_config": STATUTORY_CONFIG_COLS,
         "ppe_policy_master": PPE_POLICY_COLS,
         "ppe_issue_log": PPE_ISSUE_COLS,
         "fuel_fleet_master": FUEL_FLEET_COLS,
@@ -178,6 +180,21 @@ def get_effective_admin_password(users_df):
             if saved_p:
                 return saved_p
     return str(st.secrets.get("app_password", DEFAULT_ADMIN_PASS)).strip()
+
+
+def get_all_known_divisions():
+    """Combines base departments with any custom departments created in worker_master."""
+    divs = list(BASE_DIVISIONS)
+    try:
+        wm = load_sheet_df("worker_master")
+        if wm is not None and not wm.empty and "Division" in wm.columns:
+            for d in wm["Division"].astype(str).unique().tolist():
+                dc = d.strip()
+                if dc and dc.lower() != "nan" and dc not in divs:
+                    divs.append(dc)
+    except Exception:
+        pass
+    return divs
 
 
 # ----------------- 2. SHARED BRANDING & LETTERHEAD HELPERS -----------------
@@ -377,7 +394,7 @@ def login_screen():
                             u_role = str(u_row.get("Role", "USER")).strip().upper()
                             permitted = list(TAB_REGISTRY.keys()) if u_role == "ADMIN" else [t.strip() for t in str(u_row.get("Allowed_Tabs", "")).split(",") if t.strip() in TAB_REGISTRY]
                             raw_div_perm = str(u_row.get("Allowed_Division", "All Divisions")).strip()
-                            if u_role == "ADMIN" or raw_div_perm not in ["Fleet Operations", "Civil Construction"]:
+                            if u_role == "ADMIN" or not raw_div_perm or "all divisions" in raw_div_perm.lower():
                                 div_perm = "All Divisions"
                             else:
                                 div_perm = raw_div_perm
@@ -441,7 +458,8 @@ with st.sidebar:
 user_display_name = st.session_state.get("current_name") or st.session_state.get("current_user") or "User"
 initials = "".join([p[0] for p in str(user_display_name).split()[:2] if p]).upper() or "US"
 badge_class = "status-admin" if st.session_state.current_role == "ADMIN" else "status-user"
-div_badge = f" • {st.session_state.allowed_division}" if st.session_state.allowed_division != "All Divisions" else ""
+raw_div_disp = str(st.session_state.allowed_division or "All Divisions")
+div_badge = f" • {raw_div_disp}" if raw_div_disp != "All Divisions" else ""
 
 h1, h2, h3 = st.columns([2.8, 1.5, 0.8], gap="small")
 with h1:
@@ -478,7 +496,7 @@ elif mod_type == "Fuel":
         load_media_fn=load_media_photo, save_media_fn=save_media_photo
     )
 elif current_view == "User Accounts & RBAC" and st.session_state.current_role == "ADMIN":
-    st.markdown("#### User Accounts, Permissions & Admin Security")
+    st.markdown("#### User Accounts, Multi-Division Permissions & Admin Security")
     col_u1, col_u2 = st.columns([1.15, 1.85], gap="large")
 
     with col_u1:
@@ -512,6 +530,7 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
 
         with st.container(border=True):
             st.markdown("###### Provision / Update User")
+            all_divs_avail = get_all_known_divisions()
             with st.form("create_user_form", clear_on_submit=False):
                 new_username = st.text_input("Username").strip()
                 new_password = st.text_input("Password", type="password").strip()
@@ -522,10 +541,11 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                 new_role = fc1.selectbox("Role", ["USER", "ADMIN"])
                 new_status = fc2.selectbox("Status", ["ACTIVE", "INACTIVE"])
 
-                new_allowed_div = st.selectbox(
-                    "Allowed Workforce Division",
-                    ["All Divisions", "Fleet Operations", "Civil Construction"],
-                    help="Restricts this user to view and manage attendance ONLY for the selected division."
+                selected_divs = st.multiselect(
+                    "Allowed Workforce Divisions / Departments (Select 1, 2, or more — leave empty for ALL)",
+                    options=all_divs_avail,
+                    placeholder="All Divisions (or select specific divisions like Office Staff, Cleaning...)",
+                    help="This user will ONLY see and mark attendance for employees in their assigned division(s)."
                 )
 
                 selected_permissions = []
@@ -547,6 +567,8 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                         has_admin = not users_df[users_df["_u_chk"] == DEFAULT_ADMIN_USER.lower()].empty
                         users_df = users_df[users_df["_u_chk"] != new_username.lower()].drop(columns=["_u_chk"])
 
+                        div_str_to_save = "All Divisions" if (new_role == "ADMIN" or not selected_divs) else ",".join(selected_divs)
+
                         rows_to_add = []
                         if not has_admin:
                             rows_to_add.append({
@@ -558,11 +580,11 @@ elif current_view == "User Accounts & RBAC" and st.session_state.current_role ==
                         rows_to_add.append({
                             "Username": new_username, "Password": new_password, "Full_Name": new_name, "Role": new_role,
                             "Allowed_Tabs": ",".join(selected_permissions) if new_role != "ADMIN" else "ALL",
-                            "Allowed_Division": "All Divisions" if new_role == "ADMIN" else new_allowed_div,
+                            "Allowed_Division": div_str_to_save,
                             "Status": new_status, "Contact_No": new_contact, "Emergency_Contact": "", "Photo_Base64": ""
                         })
                         if save_sheet_df("app_users", pd.concat([users_df, pd.DataFrame(rows_to_add)], ignore_index=True)[USER_COLUMNS]):
-                            st.success(f"User '{new_username}' saved ({new_allowed_div}).")
+                            st.success(f"User '{new_username}' saved (Divisions: {div_str_to_save}).")
                             st.rerun()
 
     with col_u2:
