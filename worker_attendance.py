@@ -28,6 +28,14 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # ----------------- SCHEMAS & CONSTANTS -----------------
+BASE_DIVISIONS = [
+    "Fleet Operations",
+    "Civil Construction",
+    "Office Staff",
+    "Cleaning & Housekeeping",
+    "Workshop & Maintenance"
+]
+
 SKILL_CATEGORIES = ["Unskilled", "Semi-Skilled", "Skilled", "Highly Skilled"]
 WEEK_DAYS_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "No Fixed Week-Off"]
 
@@ -119,10 +127,121 @@ CIVIL_ROLES = [
     "Civil Construction Helper", "Civil Site Supervisor", "Other (Custom Entry)"
 ]
 
+GENERAL_STAFF_ROLES = [
+    "Site Accountant / Clerk", "Data Entry Operator", "Storekeeper / Timekeeper",
+    "Site Engineer / Coordinator", "Office Boy / Peon", "Housekeeping / Cleaning Staff",
+    "Sweeper / Sanitation Worker", "Security Guard / Watchman", "Other (Custom Entry)"
+]
+
 COMPANY_CURRENT_AC = "482025110000105"
 
 
-# ----------------- HELPERS -----------------
+# ----------------- VALIDATION, NORMALIZATION & ID HELPERS -----------------
+def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, ifsc_raw):
+    """
+    Auto-cleans spaces/dashes and validates:
+    - Mobile: 10 digits (strips +91 / leading 0)
+    - Govt ID (12-digit ID): 12 digits (strips spaces/dashes)
+    - Bank Account: 9 to 18 digits (strips spaces/dashes)
+    - IFSC Code: 11-char RBI standard (4 letters + '0' + 6 alphanumeric)
+    Returns (cleaned_dict, error_list).
+    """
+    errors = []
+
+    # 1. Mobile Number (10 digits)
+    mob_clean = re.sub(r"[\s\-\(\)]", "", str(contact_raw or "").strip())
+    if mob_clean.startswith("+91") and len(mob_clean) == 13:
+        mob_clean = mob_clean[3:]
+    elif mob_clean.startswith("91") and len(mob_clean) == 12:
+        mob_clean = mob_clean[2:]
+    elif mob_clean.startswith("0") and len(mob_clean) == 11:
+        mob_clean = mob_clean[1:]
+    if mob_clean and not re.fullmatch(r"\d{10}", mob_clean):
+        errors.append("Mobile Number must be exactly 10 digits.")
+
+    # 2. Govt ID (12 digits when entered)
+    gid_clean = re.sub(r"[\s\-]", "", str(govt_id_raw or "").strip())
+    if gid_clean and not re.fullmatch(r"\d{12}", gid_clean):
+        errors.append("Identity ID Number must be exactly 12 digits (spaces are removed automatically).")
+
+    # 3. Bank Account Number (no spaces, 9-18 digits)
+    acc_clean = re.sub(r"[\s\-]", "", str(bank_acc_raw or "").strip())
+    if acc_clean and not re.fullmatch(r"\d{9,18}", acc_clean):
+        errors.append("Bank Account Number must contain only digits (9 to 18 digits, no spaces/letters).")
+
+    # 4. IFSC Code (11 chars: 4 letters + '0' + 6 alphanumeric)
+    ifsc_clean = re.sub(r"\s+", "", str(ifsc_raw or "").strip()).upper()
+    if ifsc_clean and not re.fullmatch(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc_clean):
+        errors.append("IFSC Code must be 11 characters: first 4 letters, 5th character '0', and 6 branch characters (e.g. BKID0004820).")
+
+    return {
+        "Contact_No": mob_clean,
+        "Govt_ID_Ref": gid_clean,
+        "Bank_Account_No": acc_clean,
+        "Bank_IFSC_Code": ifsc_clean
+    }, errors
+
+
+def normalize_division_name(raw_div):
+    """Normalizes common department variations cleanly while supporting custom departments."""
+    s = re.sub(r"\s+", " ", str(raw_div or "").strip())
+    if not s or s.lower() == "nan":
+        return "Civil Construction"
+    sl = s.lower()
+    if sl in ["fleet", "fleet operations", "transport", "machinery", "equipment"]:
+        return "Fleet Operations"
+    if sl in ["civil", "civil construction", "civil work", "civil work (4501)", "construction"]:
+        return "Civil Construction"
+    if sl in ["office", "office staff", "admin", "staff", "accounts"]:
+        return "Office Staff"
+    if sl in ["cleaning", "cleaning department", "cleaning & housekeeping", "housekeeping", "sanitation"]:
+        return "Cleaning & Housekeeping"
+    if sl in ["workshop", "workshop & maintenance", "maintenance", "garage"]:
+        return "Workshop & Maintenance"
+    return s
+
+
+def get_available_divisions(w_df=None):
+    """Returns all base divisions plus any custom divisions stored in worker_master."""
+    divs = list(BASE_DIVISIONS)
+    if w_df is not None and not w_df.empty and "Division" in w_df.columns:
+        for d in w_df["Division"].astype(str).unique().tolist():
+            dc = d.strip()
+            if dc and dc.lower() != "nan" and dc not in divs:
+                divs.append(dc)
+    return divs
+
+
+def parse_allowed_divisions_list(allowed_division_str):
+    """Parses comma-separated allowed divisions into a clean list (empty list = All Divisions)."""
+    raw = str(allowed_division_str or "").strip()
+    if not raw or "all divisions" in raw.lower():
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def generate_next_worker_id(division, existing_df):
+    """
+    Generates permanent, division-neutral sequential IDs: IS-1001, IS-1002, IS-1003...
+    Preserves compatibility with legacy FLT- / CIV- IDs while ensuring new IDs never depend on division.
+    """
+    if existing_df is None or existing_df.empty or "Worker_ID" not in existing_df.columns:
+        return "IS-1001"
+    existing_ids = existing_df["Worker_ID"].astype(str).tolist()
+    matched_nums = []
+    for wid in existing_ids:
+        w_up = wid.strip().upper()
+        if w_up.startswith("IS-"):
+            try:
+                num = int(w_up.split("-")[1])
+                matched_nums.append(num)
+            except (IndexError, ValueError):
+                continue
+    if not matched_nums:
+        return "IS-1001"
+    return f"IS-{max(matched_nums) + 1}"
+
+
 def normalize_duty_type(val):
     s = str(val).strip()
     if s in ["Punch", "Tata Site (In-Plant)"]:
@@ -158,11 +277,11 @@ def infer_skill_category_from_role_or_rate(role_str, rate_val, wage_type="DAILY_
     if str(wage_type).upper() == "MONTHLY_FIXED":
         return "Monthly Fixed"
     r = str(role_str).lower()
-    if "supervisor" in r or "excavator" in r or "crane" in r or "dozer" in r:
+    if "supervisor" in r or "excavator" in r or "crane" in r or "dozer" in r or "engineer" in r:
         return "Highly Skilled"
-    if "driver" in r or "operator" in r or "mason" in r or "welder" in r or "electrician" in r or "mechanic" in r or "carpenter" in r or "plumber" in r or "tile" in r or "fitter" in r:
+    if "driver" in r or "operator" in r or "mason" in r or "welder" in r or "electrician" in r or "mechanic" in r or "carpenter" in r or "plumber" in r or "tile" in r or "fitter" in r or "accountant" in r:
         return "Skilled"
-    if "rigger" in r or "painter" in r or "gypsum" in r or "bender" in r:
+    if "rigger" in r or "painter" in r or "gypsum" in r or "bender" in r or "storekeeper" in r:
         return "Semi-Skilled"
     try:
         rv = float(rate_val or 0)
@@ -261,30 +380,12 @@ def get_active_ppe_policies_df(load_fn):
     return df
 
 
-def generate_next_worker_id(division, existing_df):
-    prefix = "FLT" if division == "Fleet Operations" else "CIV"
-    if existing_df.empty or "Worker_ID" not in existing_df.columns:
-        return f"{prefix}-1001"
-    existing_ids = existing_df["Worker_ID"].astype(str).tolist()
-    matched_nums = []
-    for wid in existing_ids:
-        if wid.startswith(prefix + "-"):
-            try:
-                num = int(wid.split("-")[1])
-                matched_nums.append(num)
-            except (IndexError, ValueError):
-                continue
-    if not matched_nums:
-        return f"{prefix}-1001"
-    return f"{prefix}-{max(matched_nums) + 1}"
-
-
 def build_bulk_employee_template_excel(default_div="Fleet Operations"):
     sample_rows = [
         {
             "Full_Name": "RAMESH KUMAR MAHTO",
             "Father_Husband_Name": "BIRBAL MAHTO",
-            "Govt_ID_Ref": "AADHAAR-4521",
+            "Govt_ID_Ref": "234567891234",
             "Division": "Fleet Operations",
             "Designation": "Excavator Operator (Heavy)",
             "Wage_Type": "DAILY_WAGE",
@@ -300,7 +401,7 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         {
             "Full_Name": "SONI DEVI",
             "Father_Husband_Name": "UGAN MAHTO",
-            "Govt_ID_Ref": "AADHAAR-8890",
+            "Govt_ID_Ref": "345678912345",
             "Division": "Civil Construction",
             "Designation": "Civil Construction Helper",
             "Wage_Type": "DAILY_WAGE",
@@ -316,9 +417,9 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         {
             "Full_Name": "MANOJ SINGH",
             "Father_Husband_Name": "RAMCHANDRA SINGH",
-            "Govt_ID_Ref": "EMP-SUP-01",
-            "Division": "Fleet Operations",
-            "Designation": "Fleet Supervisor",
+            "Govt_ID_Ref": "456789123456",
+            "Division": "Office Staff",
+            "Designation": "Site Accountant / Clerk",
             "Wage_Type": "MONTHLY_FIXED",
             "Skill_Category": "Monthly Fixed",
             "Base_Rate": 22000,
@@ -331,8 +432,9 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
         }
     ]
     df_tpl = pd.DataFrame(sample_rows)
-    if default_div in ["Fleet Operations", "Civil Construction"]:
-        df_tpl["Division"] = default_div
+    allowed_list = parse_allowed_divisions_list(default_div)
+    if len(allowed_list) == 1:
+        df_tpl["Division"] = allowed_list[0]
     buf = io.BytesIO()
     try:
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -427,7 +529,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                         p_cnt = float(v_num)
                         break
 
-            # Skip zero-attendance workers
             if p_cnt <= 0:
                 continue
 
@@ -459,7 +560,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                     continue
                 full_lines.append(ln)
 
-        # Group lines into worker entries starting with Serial No + Name ... Male/Female
         entries = []
         cur_buf = []
         for ln in full_lines:
@@ -480,13 +580,11 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
             prefix_part = ent_clean[:g_match.start()].strip()
             suffix_part = ent_clean[g_match.end():].strip()
 
-            # Remove leading serial number
             prefix_no_sl = re.sub(r"^\d{1,3}\s+", "", prefix_part).strip()
             name_words = [w for w in prefix_no_sl.split() if not w.isdigit()]
             if len(name_words) < 2:
                 continue
 
-            # Split Worker Name and Father/Husband Name cleanly
             if len(name_words) == 2:
                 w_name = name_words[0].upper()
                 f_name = name_words[1].upper()
@@ -494,11 +592,9 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                 w_name = " ".join(name_words[:2]).upper()
                 f_name = name_words[2].upper()
             else:
-                # Most names are 2-3 words; father's name is last 2 words
                 w_name = " ".join(name_words[:-2]).upper()
                 f_name = " ".join(name_words[-2:]).upper()
 
-            # Extract daily tokens and Total Attendance from suffix
             toks = suffix_part.split()
             day_marks = []
             tot_att_val = None
@@ -515,7 +611,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
                     tot_att_val = float(tk_up)
                     break
 
-            # Also check remark summary like "P:-15" or "NH:-1" if Total Attendance wasn't caught
             p_rem = re.search(r"P\s*:\s*-?\s*(\d+)", suffix_part, re.IGNORECASE)
             nh_rem = re.search(r"NHP?\s*:\s*-?\s*(\d+)", suffix_part, re.IGNORECASE)
             if p_rem:
@@ -526,7 +621,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
             if tot_att_val is None:
                 tot_att_val = float(len([m for m in day_marks if m == "P"]) + 0.5 * len([m for m in day_marks if m == "HD"]))
 
-            # Skip zero-attendance workers
             if tot_att_val <= 0:
                 continue
 
@@ -577,7 +671,6 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
     buffer = ""
     for line in all_lines:
         buffer = (buffer + " " + line).strip()
-        # Rate formula pattern like "350+215-565", "494+300=794", "494+300 794", "579+354-933"
         rate_match = re.search(r"\b\d{3}\+\d{3}[\=\-\s]\d{3}\b", buffer)
         if rate_match:
             parts = buffer.split()
@@ -591,7 +684,6 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
                     days_worked = float(parts[formula_idx - 1])
                     net_amount = float(parts[-1])
 
-                    # Tokens before days_worked: [Optional Sl_No] + [Name Words] + [Register_Sl_No]
                     pre_tokens = parts[:formula_idx - 1]
                     if pre_tokens and pre_tokens[0].isdigit():
                         pre_tokens = pre_tokens[1:]
@@ -711,7 +803,6 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
             f17_days = 0.0
             f17_net = 0.0
             if not tata_p_df.empty:
-                # Match by exact Worker_ID first (resolves duplicate names cleanly); fallback to unique Worker_Name
                 tm_by_id = tata_p_df[tata_p_df["Worker_ID"].astype(str).str.strip() == wid]
                 if not tm_by_id.empty:
                     tm = tm_by_id
@@ -967,9 +1058,9 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
         if wfather:
             pdf.cell(59, 3.3, f"S/o W/o: {wfather}")
         else:
-            pdf.cell(59, 3.3, f"Div: {wdiv}")
+            pdf.cell(59, 3.3, f"Dept: {wdiv}")
         pdf.set_xy(x0 + 24.5, y0 + 33.5)
-        pdf.cell(59, 3.3, f"Ref: {wref} | Mob: {wphone}")
+        pdf.cell(59, 3.3, f"ID: {wref} | Mob: {wphone}")
 
         pdf.set_fill_color(241, 245, 249)
         pdf.rect(x0, y0 + 44.5, card_w, 9.5, style="F")
@@ -1045,7 +1136,7 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
         pdf.set_xy(x0 + 3.0, y0 + 19.6)
         b_disp = s["Bank_Account_No"] if s["Bank_Account_No"] else "Cash"
         i_disp = s["Bank_IFSC_Code"] if s["Bank_IFSC_Code"] else "N/A"
-        pdf.cell(94, 4.0, f"Div: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f} ({s['Wage_Type']})")
+        pdf.cell(94, 4.0, f"Dept: {s['Division']}  |  Rate: Rs.{s['Base_Rate']:.0f} ({s['Wage_Type']})")
         pdf.cell(86, 4.0, f"Bank A/C: {b_disp} ({i_disp})", align="R")
 
         t_y = y0 + 25.0
@@ -1102,13 +1193,15 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
     return bytes(pdf.output())
 
 
-# ----------------- DIVISION FILTER HELPER -----------------
+# ----------------- MULTI-DIVISION FILTER HELPER -----------------
 def filter_workers_by_allowed_division(df, allowed_division):
     if df is None or df.empty or "Division" not in df.columns:
         return df
-    if not allowed_division or allowed_division == "All Divisions":
+    allowed_list = parse_allowed_divisions_list(allowed_division)
+    if not allowed_list:
         return df
-    return df[df["Division"].astype(str).str.strip() == allowed_division].copy()
+    allowed_lower = {x.lower() for x in allowed_list}
+    return df[df["Division"].astype(str).str.strip().str.lower().isin(allowed_lower)].copy()
 
 
 # ----------------- MAIN RENDER ENTRYPOINT FOR ATTENDANCE MODULE -----------------
@@ -1118,13 +1211,13 @@ def render_attendance_module(
     load_media_fn=None, save_media_fn=None
 ):
     is_admin = (str(current_role).upper() == "ADMIN")
-    eff_div_scope = "All Divisions" if is_admin else (allowed_division or "All Divisions")
-    is_div_restricted = (eff_div_scope in ["Fleet Operations", "Civil Construction"])
+    allowed_div_list = [] if is_admin else parse_allowed_divisions_list(allowed_division)
+    is_div_restricted = (len(allowed_div_list) > 0)
 
     # 1. EMPLOYEE ENROLMENT
     if current_view == "➕ Employee Enrolment":
         st.markdown("#### Employee Enrolment")
-        st.caption("Onboard workforce members with Father/Husband Name, statutory skill category, fixed Week-Off day, photo, and bank particulars")
+        st.caption("Permanent IS-1001 Employee Codes, Multi-Department Support, and Auto-Validated Mobile / Govt ID / Bank / IFSC")
 
         wage_rates_df = get_active_wage_rates_df(load_fn)
         rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
@@ -1135,22 +1228,37 @@ def render_attendance_module(
             with c_form:
                 with st.container(border=True):
                     w_df_current = load_fn("worker_master")
-                    div_choices = [eff_div_scope] if is_div_restricted else ["Fleet Operations", "Civil Construction"]
-                    w_div = st.selectbox("Operational Division", div_choices, disabled=is_div_restricted, key="enrol_div")
-                    next_wid = generate_next_worker_id(w_div, w_df_current)
-                    st.caption(f"Assigned System ID: **{next_wid}**")
+                    next_wid = generate_next_worker_id("", w_df_current)
+                    st.caption(f"Assigned Permanent Employee Code: **{next_wid}** (Remains permanent across department transfers)")
+
+                    all_known_divs = get_available_divisions(w_df_current)
+                    if is_div_restricted:
+                        div_choices = allowed_div_list
+                    else:
+                        div_choices = all_known_divs + ["Other (Custom Department)"]
+
+                    w_div_sel = st.selectbox("Department / Division", div_choices, disabled=(is_div_restricted and len(div_choices) == 1), key="enrol_div")
+                    custom_div_in = ""
+                    if w_div_sel == "Other (Custom Department)":
+                        custom_div_in = st.text_input("Specify Custom Department / Division Name", placeholder="e.g. Security / Stores / Canteen", key="enrol_custom_div").strip()
 
                     c_np1, c_np2 = st.columns([1.6, 1.0])
                     with c_np1:
                         w_name = st.text_input("Full Official Name", key="enrol_name").strip()
-                        w_father = st.text_input("Father's / Husband's Name", placeholder="Required to distinguish duplicate names", key="enrol_father").strip()
-                        w_ref = st.text_input("Identity Verification Reference (Aadhaar / ID)", key="enrol_ref").strip()
+                        w_father = st.text_input("Father's / Husband's Name", placeholder="Distinguishes duplicate names in Form XVI/XVII", key="enrol_father").strip()
+                        w_ref = st.text_input("12-Digit Govt Identity Number (Optional)", placeholder="e.g. 234567891234", key="enrol_ref").strip()
                     with c_np2:
                         w_photo_file = st.file_uploader("Passport Photo (Optional)", type=["jpg", "jpeg", "png"], key="enrol_photo")
                         if w_photo_file:
                             st.image(w_photo_file, width=85)
 
-                    role_choices = FLEET_ROLES if w_div == "Fleet Operations" else CIVIL_ROLES
+                    if w_div_sel == "Fleet Operations":
+                        role_choices = FLEET_ROLES
+                    elif w_div_sel == "Civil Construction":
+                        role_choices = CIVIL_ROLES
+                    else:
+                        role_choices = GENERAL_STAFF_ROLES + [r for r in CIVIL_ROLES if r != "Other (Custom Entry)"]
+
                     sel_role = st.selectbox("Designation / Role", role_choices, key="enrol_role")
                     custom_role = st.text_input("Specify Custom Role", key="enrol_custom_role").strip() if sel_role == "Other (Custom Entry)" else ""
 
@@ -1174,61 +1282,77 @@ def render_attendance_module(
                     with c_wo1:
                         w_week_off = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=0, key="enrol_week_off")
                     with c_wo2:
-                        w_contact = st.text_input("Contact Mobile Number", key="enrol_contact").strip()
+                        w_contact = st.text_input("Contact Mobile Number (10 Digits)", placeholder="e.g. 9835100001", key="enrol_contact").strip()
 
-                    st.markdown("###### Bank Transfer Details")
-                    b_acc = st.text_input("Bank Account Number", key="enrol_b_acc").strip()
+                    st.markdown("###### Bank Transfer Details (Auto-Cleaned & Validated)")
+                    b_acc = st.text_input("Bank Account Number (Spaces auto-removed)", placeholder="e.g. 482010110001234", key="enrol_b_acc").strip()
                     c_b1, c_b2 = st.columns(2)
                     with c_b1:
-                        b_ifsc = st.text_input("IFSC Code", placeholder="e.g. BKID0004869", key="enrol_b_ifsc").strip().upper()
+                        b_ifsc = st.text_input("IFSC Code (11 Characters)", placeholder="e.g. BKID0004869", key="enrol_b_ifsc").strip().upper()
                     with c_b2:
                         b_branch = st.text_input("Bank & Branch", placeholder="e.g. BOI SARUBERA", key="enrol_b_branch").strip().upper()
 
                     w_status = st.selectbox("Employment Status", ["ACTIVE", "INACTIVE"], key="enrol_status")
 
                     if st.button("Save Employee Record", type="primary", use_container_width=True):
+                        final_div = normalize_division_name(custom_div_in) if w_div_sel == "Other (Custom Department)" else w_div_sel
                         final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
+
+                        cleaned_fields, val_errors = validate_and_clean_employee_fields(w_contact, w_ref, b_acc, b_ifsc)
+
                         if not w_name:
                             st.error("Employee Name is mandatory.")
+                        elif w_div_sel == "Other (Custom Department)" and not custom_div_in:
+                            st.error("Please type the custom Department / Division name.")
                         elif sel_role == "Other (Custom Entry)" and not custom_role:
                             st.error("Please specify custom role.")
+                        elif val_errors:
+                            for err_msg in val_errors:
+                                st.error(f"❌ {err_msg}")
                         else:
                             w_df = load_fn("worker_master")
+                            fresh_wid = generate_next_worker_id("", w_df)
                             b64_photo = compress_photo_to_base64(w_photo_file)
                             photo_flag = ""
                             if b64_photo:
-                                if save_media_fn and save_media_fn(f"EMP_{next_wid}", b64_photo):
+                                if save_media_fn and save_media_fn(f"EMP_{fresh_wid}", b64_photo):
                                     photo_flag = "SAVED"
                                 else:
                                     photo_flag = b64_photo
 
                             new_row = {
-                                "Worker_ID": next_wid, "Full_Name": w_name,
-                                "Father_Husband_Name": w_father, "Govt_ID_Ref": w_ref,
-                                "Division": w_div, "Designation": final_role, "Wage_Type": w_wage_type,
+                                "Worker_ID": fresh_wid, "Full_Name": w_name,
+                                "Father_Husband_Name": w_father, "Govt_ID_Ref": cleaned_fields["Govt_ID_Ref"],
+                                "Division": final_div, "Designation": final_role, "Wage_Type": w_wage_type,
                                 "Skill_Category": w_skill_cat, "Base_Rate": w_rate, "Week_Off_Day": w_week_off,
-                                "Contact_No": w_contact, "Bank_Account_No": b_acc, "Bank_IFSC_Code": b_ifsc,
+                                "Contact_No": cleaned_fields["Contact_No"], "Bank_Account_No": cleaned_fields["Bank_Account_No"],
+                                "Bank_IFSC_Code": cleaned_fields["Bank_IFSC_Code"],
                                 "Bank_Branch_Details": b_branch, "Status": w_status,
                                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
                                 "Photo_Base64": photo_flag
                             }
                             updated_w_df = pd.concat([w_df, pd.DataFrame([new_row])], ignore_index=True)
                             if save_fn("worker_master", updated_w_df[WORKER_MASTER_COLS]):
-                                st.success(f"Employee {w_name} ({next_wid}) enrolled (Week-Off: {w_week_off}).")
+                                st.success(f"Employee {w_name} ({fresh_wid}) enrolled in {final_div}!")
                                 st.rerun()
 
             with c_info:
                 with st.container(border=True):
-                    st.markdown("###### Active Statutory Daily Rates")
+                    st.markdown("###### Validation & ID Rules")
+                    st.caption("• **Employee Code:** Permanent `IS-1001` series (stays fixed even if department changes).")
+                    st.caption("• **Mobile No:** Exact 10 digits (`+91` / spaces auto-cleaned).")
+                    st.caption("• **Govt ID:** Exact 12 digits (spaces auto-removed).")
+                    st.caption("• **Bank A/C:** Spaces/dashes auto-removed.")
+                    st.caption("• **IFSC Code:** 11 chars (`4 letters + 0 + 6 branch chars`).")
+                    st.markdown("---")
+                    st.markdown("###### Active Daily Wage Rates")
                     for _, rr in wage_rates_df.iterrows():
                         st.caption(f"• **{rr['Skill_Category']}:** ₹{float(rr['Total_Daily_Rate']):,.0f}/day")
-                    st.markdown("---")
-                    st.caption("Adding **Father's / Husband's Name** lets the system automatically distinguish workers with identical names during Tata Steel Form XVI & Form XVII imports.")
 
         else:
             with st.container(border=True):
                 st.markdown("###### 1. Download Sample Bulk Enrolment Template")
-                tpl_bytes, tpl_ext = build_bulk_employee_template_excel(eff_div_scope if is_div_restricted else "Fleet Operations")
+                tpl_bytes, tpl_ext = build_bulk_employee_template_excel(allowed_division if is_div_restricted else "Fleet Operations")
                 tpl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if tpl_ext == "xlsx" else "text/csv"
                 st.download_button(
                     label=f"📥 Download Sample Employee Enrolment Template (.{tpl_ext})",
@@ -1249,13 +1373,30 @@ def render_attendance_module(
                     if st.button("Commit Bulk Roster", type="primary", use_container_width=True):
                         w_df = load_fn("worker_master")
                         appended_rows = []
-                        for _, b_row in b_df.iterrows():
+                        bulk_errors = []
+
+                        for r_idx, b_row in b_df.iterrows():
                             fname_chk = str(b_row.get("Full_Name", "")).strip()
                             if not fname_chk or fname_chk.lower() == "nan":
                                 continue
-                            div_val = eff_div_scope if is_div_restricted else str(b_row.get("Division", "Fleet Operations")).strip()
+
+                            raw_div = b_row.get("Division", "")
+                            div_val = normalize_division_name(raw_div)
+                            if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
+                                div_val = allowed_div_list[0]
+
+                            cleaned_f, row_errs = validate_and_clean_employee_fields(
+                                b_row.get("Contact_No", ""),
+                                b_row.get("Govt_ID_Ref", ""),
+                                b_row.get("Bank_Account_No", ""),
+                                b_row.get("Bank_IFSC_Code", "")
+                            )
+                            if row_errs:
+                                bulk_errors.append(f"Row {r_idx + 2} ({fname_chk}): " + "; ".join(row_errs))
+                                continue
+
                             cur_merged = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                            new_gen_id = generate_next_worker_id(div_val, cur_merged)
+                            new_gen_id = generate_next_worker_id("", cur_merged)
                             raw_desig = str(b_row.get("Designation", "")).strip()
                             clean_desig = raw_desig if raw_desig and raw_desig.lower() != "nan" else "Unassigned"
                             w_type_val = str(b_row.get("Wage_Type", "DAILY_WAGE")).strip().upper()
@@ -1271,28 +1412,33 @@ def render_attendance_module(
                             appended_rows.append({
                                 "Worker_ID": new_gen_id, "Full_Name": fname_chk,
                                 "Father_Husband_Name": f_husb,
-                                "Govt_ID_Ref": str(b_row.get("Govt_ID_Ref", "")).strip(), "Division": div_val,
+                                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"], "Division": div_val,
                                 "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": raw_skill,
                                 "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
-                                "Contact_No": str(b_row.get("Contact_No", "")).strip(),
-                                "Bank_Account_No": str(b_row.get("Bank_Account_No", "")).strip(),
-                                "Bank_IFSC_Code": str(b_row.get("Bank_IFSC_Code", "")).strip().upper(),
+                                "Contact_No": cleaned_f["Contact_No"],
+                                "Bank_Account_No": cleaned_f["Bank_Account_No"],
+                                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
                                 "Bank_Branch_Details": str(b_row.get("Bank_Branch_Details", "")).strip().upper(),
                                 "Status": str(b_row.get("Status", "ACTIVE")).strip().upper(),
                                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"), "Photo_Base64": ""
                             })
 
-                        fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
-                        if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                            st.success(f"{len(appended_rows)} records imported.")
-                            st.rerun()
+                        if bulk_errors:
+                            st.error("Please fix the following validation issues in your Excel/CSV file before importing:")
+                            for be in bulk_errors[:10]:
+                                st.warning(be)
+                        elif appended_rows:
+                            fin_w_df = pd.concat([w_df, pd.DataFrame(appended_rows)], ignore_index=True)
+                            if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
+                                st.success(f"{len(appended_rows)} records imported with permanent IS-series IDs!")
+                                st.rerun()
 
     # 2. STATUTORY WAGE RATES & EDITABLE EPF/ESIC CEILING MASTER
     elif current_view == "⚖️ Statutory Wage Rates":
         st.markdown("#### Statutory Minimum Wage & PF/ESIC Ceiling Master")
         wage_rates_df = get_active_wage_rates_df(load_fn)
         stat_cfg = get_active_statutory_config(load_fn)
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
 
         c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
         kpi_cols = [c_kpi1, c_kpi2, c_kpi3, c_kpi4]
@@ -1393,7 +1539,7 @@ def render_attendance_module(
     # 3. EMPLOYEE MASTER REGISTER & OPEN PROFILE
     elif current_view == "📋 Employee Master Register":
         w_table_full = load_fn("worker_master")
-        w_table = filter_workers_by_allowed_division(w_table_full, eff_div_scope)
+        w_table = filter_workers_by_allowed_division(w_table_full, allowed_division if is_div_restricted else "All Divisions")
         muster_all = load_fn("muster_roll")
         adv_all = load_fn("worker_advances")
         tata_all = load_fn("tata_form_xvii")
@@ -1417,7 +1563,7 @@ def render_attendance_module(
             emp_name = str(emp.get("Full_Name", ""))
             emp_father = str(emp.get("Father_Husband_Name", "")).strip()
             emp_ref = str(emp.get("Govt_ID_Ref", ""))
-            emp_div = str(emp.get("Division", "Fleet Operations"))
+            emp_div = str(emp.get("Division", "Civil Construction"))
             emp_role = str(emp.get("Designation", ""))
             emp_wage_type = str(emp.get("Wage_Type", "DAILY_WAGE"))
             emp_skill = str(emp.get("Skill_Category", "")).strip() or infer_skill_category_from_role_or_rate(emp_role, emp.get("Base_Rate", 0), emp_wage_type)
@@ -1460,7 +1606,7 @@ def render_attendance_module(
                 with p_c1:
                     f_disp = f" • S/o W/o: **{emp_father}**" if emp_father else ""
                     st.markdown(f"### {emp_name} (`{target_wid}`)")
-                    st.markdown(f"**Division:** {emp_div}{f_disp}  |  **Role:** {emp_role}")
+                    st.markdown(f"**Department:** {emp_div}{f_disp}  |  **Role:** {emp_role}")
                     st.markdown(f"**Category:** `{emp_skill}` ({emp_wage_type})  |  **Rate:** **₹{emp_rate:,.0f}**  |  **Off:** `{emp_wo}`  |  **Status:** `{emp_status}`")
 
                 with p_c2:
@@ -1468,17 +1614,20 @@ def render_attendance_module(
                     st.markdown(f"**A/C No:** `{emp_acc or 'Not Linked'}`")
                     st.markdown(f"**IFSC:** `{emp_ifsc or 'N/A'}` ({emp_branch or 'Cash Disbursement'})")
 
-            with st.expander("✏️ Edit Employee Details or Delete Record", expanded=False):
+            with st.expander("✏️ Edit Employee Details / Shift Department or Delete Record", expanded=False):
+                all_edit_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_table_full)
+                if emp_div and emp_div not in all_edit_divs:
+                    all_edit_divs.append(emp_div)
+
                 with st.form(f"edit_full_emp_form_{target_wid}"):
                     ed_c1, ed_c2, ed_c3 = st.columns(3)
                     with ed_c1:
                         ed_name = st.text_input("Full Official Name", value=emp_name).strip()
                         ed_father = st.text_input("Father's / Husband's Name", value=emp_father).strip()
-                        ed_ref = st.text_input("Identity Verification Ref (Aadhaar)", value=emp_ref).strip()
-                        ed_contact = st.text_input("Contact Mobile No", value=emp_contact).strip()
+                        ed_ref = st.text_input("12-Digit Govt Identity Number", value=emp_ref).strip()
+                        ed_contact = st.text_input("Contact Mobile No (10 Digits)", value=emp_contact).strip()
                     with ed_c2:
-                        div_opts = [eff_div_scope] if is_div_restricted else ["Fleet Operations", "Civil Construction"]
-                        ed_div = st.selectbox("Division", div_opts, index=div_opts.index(emp_div) if emp_div in div_opts else 0, disabled=is_div_restricted)
+                        ed_div = st.selectbox("Department / Division (Transfer Anytime)", all_edit_divs, index=all_edit_divs.index(emp_div) if emp_div in all_edit_divs else 0, disabled=(is_div_restricted and len(all_edit_divs) == 1))
                         ed_role = st.text_input("Designation / Role", value=emp_role).strip()
                         ed_wo = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=WEEK_DAYS_OPTIONS.index(emp_wo))
                     with ed_c3:
@@ -1492,7 +1641,7 @@ def render_attendance_module(
                     with eb_c1:
                         ed_acc = st.text_input("Bank Account No", value=emp_acc).strip()
                     with eb_c2:
-                        ed_ifsc = st.text_input("IFSC Code", value=emp_ifsc).strip().upper()
+                        ed_ifsc = st.text_input("IFSC Code (11 Chars)", value=emp_ifsc).strip().upper()
                     with eb_c3:
                         ed_branch = st.text_input("Bank & Branch Details", value=emp_branch).strip().upper()
                     with eb_c4:
@@ -1500,10 +1649,16 @@ def render_attendance_module(
                         ed_status = st.selectbox("Status", stat_opts, index=stat_opts.index(emp_status) if emp_status in stat_opts else 0)
 
                     if st.form_submit_button("💾 Save Updated Employee Profile", type="primary", use_container_width=True):
-                        if ed_name:
+                        cleaned_ed, ed_errs = validate_and_clean_employee_fields(ed_contact, ed_ref, ed_acc, ed_ifsc)
+                        if not ed_name:
+                            st.error("Employee Name is required.")
+                        elif ed_errs:
+                            for em in ed_errs:
+                                st.error(f"❌ {em}")
+                        else:
                             mask_w = w_table_full["Worker_ID"].astype(str) == target_wid
                             w_table_full.loc[mask_w, ["Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
-                                ed_name, ed_father, ed_ref, ed_contact, ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, ed_acc, ed_ifsc, ed_branch
+                                ed_name, ed_father, cleaned_ed["Govt_ID_Ref"], cleaned_ed["Contact_No"], ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, cleaned_ed["Bank_Account_No"], cleaned_ed["Bank_IFSC_Code"], ed_branch
                             ]
                             if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Profile updated!")
@@ -1593,23 +1748,24 @@ def render_attendance_module(
         else:
             st.markdown("#### Employee Master Register & Selective ATM ID Cards")
             if w_table.empty or "Worker_ID" not in w_table.columns:
-                st.info("No employee records found for your division.")
+                st.info("No employee records found for your assigned department(s).")
                 return
 
-            flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.0, 1.0, 1.1, 1.6])
+            avail_reg_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_table)
+            flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.1, 1.0, 1.0, 1.6])
             with flt_c1:
-                div_filter_opts = [eff_div_scope] if is_div_restricted else ["All", "Fleet Operations", "Civil Construction"]
-                f_div = st.selectbox("Division", div_filter_opts, disabled=is_div_restricted, key="reg_div_f")
+                div_filter_opts = avail_reg_divs if (is_div_restricted and len(avail_reg_divs) == 1) else (["All"] + avail_reg_divs)
+                f_div = st.selectbox("Department / Division", div_filter_opts, disabled=(is_div_restricted and len(avail_reg_divs) == 1), key="reg_div_f")
             with flt_c2:
                 f_skill = st.selectbox("Skill Category", ["All"] + SKILL_CATEGORIES + ["Monthly Fixed"], key="reg_skill_f")
             with flt_c3:
                 f_status = st.selectbox("Status", ["All", "ACTIVE", "INACTIVE"], index=1, key="reg_stat_f")
             with flt_c4:
-                f_search = st.text_input("Search Employee", placeholder="Filter by Name, Father Name, ID, or Account...").strip().lower()
+                f_search = st.text_input("Search Employee", placeholder="Filter by Name, Father Name, IS-ID, or Account...").strip().lower()
 
             disp_table = w_table.copy()
             if f_div != "All":
-                disp_table = disp_table[disp_table["Division"] == f_div]
+                disp_table = disp_table[disp_table["Division"].astype(str).str.strip() == f_div]
             if f_skill != "All":
                 disp_table = disp_table[disp_table["Skill_Category"].astype(str) == f_skill]
             if f_status != "All":
@@ -1625,7 +1781,7 @@ def render_attendance_module(
             act_c1, act_c2 = st.columns([1.25, 1.35], gap="medium")
             with act_c1:
                 with st.container(border=True):
-                    st.markdown("###### 🔍 Open Profile (Edit / Delete / Photo / PPE)")
+                    st.markdown("###### 🔍 Open Profile (Edit / Shift Dept / Photo / PPE)")
                     emp_choices = {
                         f"{r['Worker_ID']} — {r['Full_Name']}" + (f" (S/o W/o {r['Father_Husband_Name']})" if str(r.get("Father_Husband_Name", "")).strip() else f" ({r['Designation']})"): str(r["Worker_ID"])
                         for _, r in disp_table.iterrows()
@@ -1666,18 +1822,24 @@ def render_attendance_module(
             req_cols = ["Worker_ID", "Full_Name", "Father_Husband_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
 
-    # 4. DAILY FIELD MUSTER ROLL
+    # 4. DAILY FIELD MUSTER ROLL (MULTI-DIVISION SCOPED)
     elif current_view == "Daily Muster Roll (Field Attendance)":
         st.markdown("#### Daily Field Muster Roll")
-        st.caption("Supervisor Duplicate Lock, Employee Week-Off Lock, Paid Leave (L), and 90-Day Audit Trail")
+        st.caption("Multi-Department Attendance Lock, Employee Week-Off Lock, Paid Leave (L), and 90-Day Audit Trail")
 
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         if w_master.empty or "Worker_ID" not in w_master.columns:
-            st.warning("No employees available in your assigned division.")
+            st.warning("No employees available in your assigned department(s).")
             return
 
         active_workers = w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].copy()
         muster_df = load_fn("muster_roll")
+
+        avail_m_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_master)
+        if is_div_restricted and len(avail_m_divs) == 1:
+            m_div_opts = avail_m_divs
+        else:
+            m_div_opts = ["All Assigned Departments" if is_div_restricted else "All Divisions"] + avail_m_divs
 
         top_m1, top_m2, top_m3 = st.columns([1.1, 1.2, 1.2])
         with top_m1:
@@ -1685,16 +1847,20 @@ def render_attendance_module(
             muster_date_str = muster_date.strftime("%Y-%m-%d")
             selected_weekday_name = muster_date.strftime("%A")
         with top_m2:
-            m_div_opts = [eff_div_scope] if is_div_restricted else ["All Divisions", "Fleet Operations", "Civil Construction"]
-            sel_division = st.selectbox("Division", m_div_opts, disabled=is_div_restricted, key="muster_div_filter")
+            sel_division = st.selectbox("Department / Division", m_div_opts, disabled=(len(m_div_opts) == 1), key="muster_div_filter")
         with top_m3:
             st.metric(f"Active Crew ({selected_weekday_name})", len(active_workers))
 
-        if sel_division != "All Divisions":
-            active_workers = active_workers[active_workers["Division"] == sel_division]
+        is_all_scope = sel_division in ["All Divisions", "All Assigned Departments"]
+        if not is_all_scope:
+            active_workers = active_workers[active_workers["Division"].astype(str).str.strip() == sel_division]
 
+        allowed_wids_set = set(active_workers["Worker_ID"].astype(str).tolist())
         day_records = muster_df[muster_df["Date"].astype(str) == muster_date_str] if not muster_df.empty and "Date" in muster_df.columns else pd.DataFrame()
-        div_day_records = day_records[day_records["Division"] == sel_division] if (sel_division != "All Divisions" and not day_records.empty and "Division" in day_records.columns) else day_records.copy()
+        if not day_records.empty and "Worker_ID" in day_records.columns:
+            div_day_records = day_records[day_records["Worker_ID"].astype(str).isin(allowed_wids_set)].copy()
+        else:
+            div_day_records = pd.DataFrame()
 
         is_date_already_logged = (not div_day_records.empty)
         supervisor_locked_out = is_date_already_logged and (not is_admin)
@@ -1705,8 +1871,8 @@ def render_attendance_module(
 
         ym_prefix = muster_date.strftime("%Y-%m")
         m_dates_sub = muster_df[muster_df["Date"].astype(str).str.startswith(ym_prefix)] if not muster_df.empty and "Date" in muster_df.columns else pd.DataFrame()
-        if sel_division != "All Divisions" and not m_dates_sub.empty and "Division" in m_dates_sub.columns:
-            m_dates_sub = m_dates_sub[m_dates_sub["Division"] == sel_division]
+        if not m_dates_sub.empty and "Worker_ID" in m_dates_sub.columns:
+            m_dates_sub = m_dates_sub[m_dates_sub["Worker_ID"].astype(str).isin(allowed_wids_set)]
         logged_dates_this_month = sorted(m_dates_sub["Date"].astype(str).unique().tolist()) if not m_dates_sub.empty else []
 
         if is_date_already_logged:
@@ -1873,8 +2039,14 @@ def render_attendance_module(
     # 5. MONTHLY ATTENDANCE MATRIX
     elif current_view == "Monthly Attendance Matrix":
         st.markdown("#### Monthly Attendance Matrix (Excel Register)")
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
-        muster_df = filter_workers_by_allowed_division(load_fn("muster_roll"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
+        muster_df = filter_workers_by_allowed_division(load_fn("muster_roll"), allowed_division if is_div_restricted else "All Divisions")
+
+        avail_mat_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_master)
+        if is_div_restricted and len(avail_mat_divs) == 1:
+            mat_div_opts = avail_mat_divs
+        else:
+            mat_div_opts = ["All Assigned Departments" if is_div_restricted else "All Divisions"] + avail_mat_divs
 
         mc1, mc2, mc3 = st.columns([1.0, 1.2, 1.3])
         with mc1:
@@ -1882,8 +2054,7 @@ def render_attendance_module(
         with mc2:
             mat_month = st.selectbox("Month", list(calendar.month_name)[1:], index=datetime.date.today().month - 1, key="mat_mo")
         with mc3:
-            mat_div_opts = [eff_div_scope] if is_div_restricted else ["All Divisions", "Fleet Operations", "Civil Construction"]
-            mat_div = st.selectbox("Division", mat_div_opts, disabled=is_div_restricted, key="mat_dv")
+            mat_div = st.selectbox("Department / Division", mat_div_opts, disabled=(len(mat_div_opts) == 1), key="mat_dv")
 
         m_num = list(calendar.month_name).index(mat_month)
         ym_str = f"{mat_year}-{m_num:02d}"
@@ -1895,8 +2066,8 @@ def render_attendance_module(
 
         m_sub = muster_df[muster_df["Date"].astype(str).str.startswith(ym_str)].copy()
         m_sub["Duty_Location"] = m_sub["Duty_Location"].apply(normalize_duty_type)
-        if mat_div != "All Divisions" and "Division" in m_sub.columns:
-            m_sub = m_sub[m_sub["Division"] == mat_div]
+        if mat_div not in ["All Divisions", "All Assigned Departments"] and "Division" in m_sub.columns:
+            m_sub = m_sub[m_sub["Division"].astype(str).str.strip() == mat_div]
 
         present_wids = m_sub[m_sub["Attendance"].isin(["P", "HD", "L"])]["Worker_ID"].astype(str).unique().tolist() if not m_sub.empty else []
         if not present_wids:
@@ -1917,7 +2088,7 @@ def render_attendance_module(
                     w_desig = str(wm_hit.iloc[0].get("Designation", ""))
                     w_skill_v = str(wm_hit.iloc[0].get("Skill_Category", ""))
 
-            row_dict = {"Worker ID": wid, "Employee Name": w_name, "Father/Husband": w_fath_v, "Category": w_skill_v, "Designation": w_desig, "Division": w_div_val}
+            row_dict = {"Worker ID": wid, "Employee Name": w_name, "Father/Husband": w_fath_v, "Category": w_skill_v, "Designation": w_desig, "Department": w_div_val}
             day_map = {int(str(lr["Date"]).split("-")[2]): str(lr["Attendance"]) for _, lr in w_logs.iterrows() if len(str(lr["Date"]).split("-")) == 3}
             for d_i in range(1, days_cnt + 1):
                 row_dict[f"{d_i:02d}"] = day_map.get(d_i, "")
@@ -1947,13 +2118,13 @@ def render_attendance_module(
         st.markdown("#### PPE & Safety Gear Issue Register")
         st.caption("Track safety gear issuance with validity timelines, automatic eligibility alerts, and early-replacement wage recovery")
 
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         ppe_policy_df = get_active_ppe_policies_df(load_fn)
         ppe_log_df = load_fn("ppe_issue_log")
 
         active_w = w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].copy() if not w_master.empty and "Status" in w_master.columns else pd.DataFrame()
         if active_w.empty:
-            st.warning("No active employees found in your assigned division.")
+            st.warning("No active employees found in your assigned department(s).")
             return
 
         c_ppe1, c_ppe2 = st.columns([1.15, 1.85], gap="large")
@@ -2080,7 +2251,7 @@ def render_attendance_module(
         with c_ppe2:
             with st.container(border=True):
                 st.markdown("###### 📋 Recent PPE Issuance Log")
-                disp_ppe = filter_workers_by_allowed_division(ppe_log_df, eff_div_scope)
+                disp_ppe = filter_workers_by_allowed_division(ppe_log_df, allowed_division if is_div_restricted else "All Divisions")
                 if disp_ppe.empty or "Issue_ID" not in disp_ppe.columns:
                     st.info("No PPE items issued yet.")
                 else:
@@ -2113,7 +2284,7 @@ def render_attendance_module(
     # 7. ADVANCE & EXPENSE REGISTER
     elif current_view == "Advance & Expense Register":
         st.markdown("#### Advance & Expense Register (With Carry-Forward Ledger)")
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         muster_df = load_fn("muster_roll")
         adv_history = load_fn("worker_advances")
         tata_df = load_fn("tata_form_xvii")
@@ -2164,14 +2335,14 @@ def render_attendance_module(
 
             with st.container(border=True):
                 st.markdown("###### Recent Advance Transactions")
-                disp_adv = filter_workers_by_allowed_division(adv_history, eff_div_scope)
+                disp_adv = filter_workers_by_allowed_division(adv_history, allowed_division if is_div_restricted else "All Divisions")
                 if not disp_adv.empty and "Txn_ID" in disp_adv.columns:
                     st.dataframe(disp_adv[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
 
     # 8. MONTHLY WAGES, FORM XVI + DUPLICATE RESOLVER, FORM XVII + DUPLICATE RESOLVER, SLIPS & BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
         st.markdown("#### Monthly Wages, Biometric Audit, Salary Slips & Bank Letters")
-        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), eff_div_scope)
+        w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         muster_df = load_fn("muster_roll")
         adv_df = load_fn("worker_advances")
         f16_df = load_fn("tata_form_xvi")
@@ -2201,7 +2372,6 @@ def render_attendance_module(
         f16_month_df = f16_df[f16_df["Wages_Period"].apply(period_matches)].copy() if (not f16_df.empty and "Wages_Period" in f16_df.columns) else pd.DataFrame(columns=TATA_FORM_XVI_COLS)
         is_f16_uploaded_for_month = (not f16_month_df.empty)
 
-        # STEP 1: FORM XVI IMPORT WITH ZERO-ATTENDANCE FILTER + FATHER NAME MATCH + DUPLICATE RESOLVER
         with st.expander(f"📋 Step 1: Import Tata Steel FORM XVI (Biometric Muster Roll) — {'✅ Synced' if is_f16_uploaded_for_month else '⚠️ Required First'}", expanded=(not is_f16_uploaded_for_month)):
             st.caption("Parses Form XVI PDF/Excel, skips 0-attendance workers, auto-matches Father/Husband Name, and prompts Duplicate Name Resolver if needed.")
             xvi_file = st.file_uploader("Upload Tata Steel Form XVI (PDF / CSV / XLSX)", type=["pdf", "csv", "xlsx"], key="f16_uploader")
@@ -2213,7 +2383,6 @@ def render_attendance_module(
                     full_w_all = load_fn("worker_master")
                     st.success(f"Extracted {len(parsed_16)} active workers (zero-attendance workers skipped) • Total Days: {parsed_16['Punch_Days_Count'].sum():.0f}")
 
-                    # Identify any rows with duplicate names in Form XVI or Worker Master
                     resolved_f16_wids = {}
                     ambiguous_f16_rows = []
 
@@ -2227,7 +2396,6 @@ def render_attendance_module(
                         if len(wm_hits) == 1 and same_in_pdf == 1:
                             resolved_f16_wids[idx16] = str(wm_hits.iloc[0]["Worker_ID"])
                         elif len(wm_hits) > 1 and fn_up:
-                            # Try auto-matching via Father/Husband Name
                             f_hits = wm_hits[wm_hits["Father_Husband_Name"].apply(normalize_name_key) == fn_up]
                             if len(f_hits) == 1:
                                 resolved_f16_wids[idx16] = str(f_hits.iloc[0]["Worker_ID"])
@@ -2360,7 +2528,6 @@ def render_attendance_module(
                 else:
                     st.info("No biometric punch discrepancies detected for this period.")
 
-        # STEP 2: FORM XVII IMPORT WITH CROSS-MATCH + DUPLICATE NAME RESOLVER
         if not is_f16_uploaded_for_month:
             st.warning(f"⚠️ **Action Required:** Please upload and sync **Tata Steel Form XVI (Biometric Muster Roll)** for **{wage_period_str}** in Step 1 above before importing Form XVII.")
         else:
@@ -2410,7 +2577,6 @@ def render_attendance_module(
                             if len(wm_hits) == 1 and same_in_17 == 1:
                                 resolved_f17_wids[idx17] = str(wm_hits.iloc[0]["Worker_ID"])
                             elif len(wm_hits) > 1 or same_in_17 > 1:
-                                # Check if Form XVI already uniquely mapped by exact Punch Days
                                 f16_same = f16_month_df[
                                     (f16_month_df["Worker_Name"].apply(normalize_name_key) == w_name_raw) &
                                     (pd.to_numeric(f16_month_df["Punch_Days_Count"], errors="coerce") == appr_d) &
