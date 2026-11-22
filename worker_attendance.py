@@ -78,7 +78,8 @@ DEFAULT_PPE_POLICIES = [
     {"PPE_Item": "Reflective Safety Jacket", "Validity_Days": 180, "Recovery_Cost": 150.0, "Exchange_Rule": "6 Months Free Validity", "Remarks": "High-Visibility"},
     {"PPE_Item": "Dust Mask / Respirator", "Validity_Days": 15, "Recovery_Cost": 50.0, "Exchange_Rule": "15 Days Free Validity", "Remarks": "N95 / FFP2"},
     {"PPE_Item": "Ear Plugs / Ear Muff", "Validity_Days": 90, "Recovery_Cost": 120.0, "Exchange_Rule": "3 Months Free Validity", "Remarks": "High-Noise Zone"},
-    {"PPE_Item": "Gumboots (Pair)", "Validity_Days": 180, "Recovery_Cost": 500.0, "Exchange_Rule": "6 Months Free Validity", "Remarks": "Monsoon / Slurry Duty"}
+    {"PPE_Item": "Gumboots (Pair)", "Validity_Days": 180, "Recovery_Cost": 500.0, "Exchange_Rule": "6 Months Free Validity", "Remarks": "Monsoon / Slurry Duty"},
+    {"PPE_Item": "Measuring Tape (5m)", "Validity_Days": 180, "Recovery_Cost": 150.0, "Exchange_Rule": "6 Months Validity; Return Old Tape", "Remarks": "Site Civil / Layout Tool"}
 ]
 
 PPE_ISSUE_COLS = [
@@ -178,7 +179,6 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
     """
     errors = []
 
-    # 1. Mobile Number (10 digits)
     mob_raw = clean_excel_cell(contact_raw)
     mob_clean = re.sub(r"[\s\-\(\)\+]", "", mob_raw)
     if mob_clean.startswith("91") and len(mob_clean) == 12:
@@ -188,19 +188,16 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
     if mob_clean and not re.fullmatch(r"\d{10}", mob_clean):
         errors.append(f"Mobile '{mob_raw}' must be 10 digits.")
 
-    # 2. Govt ID (12 digits when entered)
     gid_raw = clean_excel_cell(govt_id_raw)
     gid_clean = re.sub(r"[\s\-]", "", gid_raw)
     if gid_clean and not re.fullmatch(r"\d{12}", gid_clean):
         errors.append(f"Govt ID '{gid_raw}' must be 12 digits.")
 
-    # 3. Bank Account Number (no spaces, 9-18 digits)
     acc_raw = clean_excel_cell(bank_acc_raw)
     acc_clean = re.sub(r"[\s\-]", "", acc_raw)
     if acc_clean and not re.fullmatch(r"\d{9,18}", acc_clean):
         errors.append(f"Bank A/C '{acc_raw}' must be 9-18 digits.")
 
-    # 4. IFSC Code (11 chars: 4 letters + '0' + 6 alphanumeric)
     ifsc_raw_c = clean_excel_cell(ifsc_raw)
     ifsc_clean = re.sub(r"\s+", "", ifsc_raw_c).upper()
     if len(ifsc_clean) == 11 and ifsc_clean[4] == "O":
@@ -479,7 +476,7 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
     """
     Validates a bulk Excel/CSV DataFrame and separates it into:
     - valid_rows: list of clean dicts ready for worker_master (assigned sequential IS-#### IDs)
-    - error_rows: list of dicts with Row_No, Full_Name, Error_Reason + original columns
+    - error_rows: list of dicts with Excel_Row, Full_Name, Error_Reason + original columns
     """
     valid_rows = []
     error_rows = []
@@ -816,9 +813,12 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
 
 
 # ----------------- PAYROLL & ADVANCE CARRY-FORWARD ENGINE -----------------
-def calculate_statutory_pf_esic(gross_wages, stat_cfg=None):
-    """Applies dynamic EPF & ESIC wage ceilings and rates configured in Statutory Master."""
-    if gross_wages <= 0:
+def calculate_statutory_pf_esic(punch_wages_only, stat_cfg=None):
+    """
+    Applies dynamic EPF & ESIC wage ceilings and rates ONLY on Punch (Form XVI/XVII) wages.
+    Non-Punch wages are completely exempt from PF & ESIC deductions.
+    """
+    if punch_wages_only <= 0:
         return 0.0, 0.0
     cfg = stat_cfg or {}
     epf_cap = float(cfg.get("EPF_WAGE_CEILING", DEFAULT_EPF_WAGE_CEILING))
@@ -826,9 +826,9 @@ def calculate_statutory_pf_esic(gross_wages, stat_cfg=None):
     esic_cap = float(cfg.get("ESIC_WAGE_CEILING", DEFAULT_ESIC_WAGE_CEILING))
     esic_pct = float(cfg.get("ESIC_RATE_PCT", DEFAULT_ESIC_RATE_PCT)) / 100.0
 
-    pf_eligible_wage = min(float(gross_wages), epf_cap) if epf_cap > 0 else float(gross_wages)
+    pf_eligible_wage = min(float(punch_wages_only), epf_cap) if epf_cap > 0 else float(punch_wages_only)
     pf_amt = round(pf_eligible_wage * epf_pct, 0)
-    esic_amt = round(float(gross_wages) * esic_pct, 0) if (esic_cap <= 0 or float(gross_wages) <= esic_cap) else 0.0
+    esic_amt = round(float(punch_wages_only) * esic_pct, 0) if (esic_cap <= 0 or float(punch_wages_only) <= esic_cap) else 0.0
     return pf_amt, esic_amt
 
 
@@ -946,9 +946,13 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                 total_net_payable = f17_net + non_punch_take_home
             else:
                 total_paid_days = punch_days + non_punch_days
+                punch_gross = round(punch_days * wrate, 0)
                 ot_pay = (wrate / 8.0) * ot_hrs
-                gross_total = round((total_paid_days * wrate) + ot_pay, 0)
-                pf_ded, esic_ded = calculate_statutory_pf_esic(gross_total, stat_cfg)
+                non_punch_gross = round((non_punch_days * wrate) + ot_pay, 0)
+                gross_total = punch_gross + non_punch_gross
+
+                # PF & ESIC calculated strictly on Punch wages ONLY (zero on Non-Punch)
+                pf_ded, esic_ded = calculate_statutory_pf_esic(punch_gross, stat_cfg)
                 agreed_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
 
                 if f17_net > 0:
@@ -1596,7 +1600,7 @@ def render_attendance_module(
 
         with st.container(border=True):
             st.markdown("###### 🏛️ Statutory EPF & ESIC Wage Ceiling & Contribution Settings")
-            st.caption("Update government EPF / ESIC wage ceilings or percentage rates anytime without modifying code. Changes automatically apply to Payroll & Salary Slips.")
+            st.caption("Update government EPF / ESIC wage ceilings or percentage rates anytime without modifying code. Applies strictly to Punch wages (Non-Punch wages have zero PF/ESIC).")
 
             sc1, sc2, sc3, sc4, sc5 = st.columns([1.15, 1.0, 1.15, 1.0, 1.0])
             with sc1:
@@ -1793,7 +1797,7 @@ def render_attendance_module(
                 emp_ppe = ppe_all[ppe_all["Worker_ID"].astype(str) == target_wid].copy()
                 if not emp_ppe.empty:
                     with st.container(border=True):
-                        st.markdown("###### 🦺 Issued PPE & Safety Equipment History")
+                        st.markdown("###### 🦺 Issued PPE & Site Tools History")
                         st.dataframe(
                             emp_ppe[["Issue_Date", "PPE_Item", "Quantity", "Issue_Mode", "Recovery_Amount", "Next_Eligible_Date", "Remarks"]],
                             use_container_width=True, hide_index=True
@@ -2199,10 +2203,10 @@ def render_attendance_module(
             file_name=f"M_s_INDU_SAO_Attendance_Matrix_{ym_str}.csv", mime="text/csv", type="primary"
         )
 
-    # 6. PPE & SAFETY GEAR ISSUE
+    # 6. PPE, SAFETY GEAR & SITE TOOLS ISSUE REGISTER (WITH DYNAMIC NEW ITEM ADDITION)
     elif current_view == "🦺 PPE & Safety Gear Issue":
-        st.markdown("#### PPE & Safety Gear Issue Register")
-        st.caption("Track safety gear issuance with validity timelines, automatic eligibility alerts, and early-replacement wage recovery")
+        st.markdown("#### PPE, Safety Gear & Site Tools Issue Register")
+        st.caption("Track safety gear & site tools (Measuring Tapes, Helmets, Shoes, etc.) with validity timelines, custom item creation, and wage recovery")
 
         w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         ppe_policy_df = get_active_ppe_policies_df(load_fn)
@@ -2217,30 +2221,42 @@ def render_attendance_module(
 
         with c_ppe1:
             with st.container(border=True):
-                st.markdown("###### 🦺 Issue Safety Equipment")
+                st.markdown("###### 🦺 Issue Safety Gear / Site Tool")
                 w_map = {f"{r['Worker_ID']} — {r['Full_Name']}": (str(r["Worker_ID"]), str(r["Full_Name"]), str(r["Division"])) for _, r in active_w.iterrows()}
                 sel_w_lbl = st.selectbox("Select Employee", list(w_map.keys()), key="ppe_w_sel")
                 w_id, w_name, w_div = w_map[sel_w_lbl]
 
-                item_list = ppe_policy_df["PPE_Item"].astype(str).tolist()
-                sel_item = st.selectbox("Select PPE Item", item_list, key="ppe_item_sel")
+                item_list = ppe_policy_df["PPE_Item"].astype(str).tolist() + ["➕ Add New Item / Tool..."]
+                sel_item_raw = st.selectbox("Select Item / Tool", item_list, key="ppe_item_sel")
 
-                pol_row = ppe_policy_df[ppe_policy_df["PPE_Item"].astype(str) == sel_item].iloc[0]
-                val_days = int(pol_row["Validity_Days"])
-                rec_unit_cost = float(pol_row["Recovery_Cost"])
-                exch_rule = str(pol_row["Exchange_Rule"])
+                is_creating_new_item = (sel_item_raw == "➕ Add New Item / Tool...")
+                if is_creating_new_item:
+                    new_item_name = st.text_input("New Item / Tool Name", placeholder="e.g. Measuring Tape (5m) / Spirit Level", key="ppe_new_item_name").strip()
+                    ni_c1, ni_c2 = st.columns(2)
+                    with ni_c1:
+                        val_days = int(st.number_input("Free Validity (Days)", min_value=1, max_value=1825, value=180, step=15, key="ppe_new_val_days"))
+                    with ni_c2:
+                        rec_unit_cost = float(st.number_input("Lost/Early Recovery Cost (₹)", min_value=0.0, value=150.0, step=10.0, key="ppe_new_rec_cost"))
+                    exch_rule = f"{val_days} Days Validity; Return Old Item"
+                    sel_item = new_item_name
+                else:
+                    sel_item = sel_item_raw
+                    pol_row = ppe_policy_df[ppe_policy_df["PPE_Item"].astype(str) == sel_item].iloc[0]
+                    val_days = int(pol_row["Validity_Days"])
+                    rec_unit_cost = float(pol_row["Recovery_Cost"])
+                    exch_rule = str(pol_row["Exchange_Rule"])
 
                 p_c1, p_c2 = st.columns(2)
                 with p_c1:
                     iss_date = st.date_input("Issue Date", value=datetime.date.today(), key="ppe_iss_dt")
                 with p_c2:
-                    iss_qty = st.number_input("Quantity", min_value=1, max_value=10, value=1, step=1, key="ppe_qty")
+                    iss_qty = st.number_input("Quantity", min_value=1, max_value=20, value=1, step=1, key="ppe_qty")
 
                 is_eligible_free = True
                 next_due_dt = iss_date + datetime.timedelta(days=val_days)
                 days_remaining = 0
 
-                if not ppe_log_df.empty and "Worker_ID" in ppe_log_df.columns and "PPE_Item" in ppe_log_df.columns:
+                if sel_item and not ppe_log_df.empty and "Worker_ID" in ppe_log_df.columns and "PPE_Item" in ppe_log_df.columns:
                     prev_issues = ppe_log_df[
                         (ppe_log_df["Worker_ID"].astype(str) == w_id) &
                         (ppe_log_df["PPE_Item"].astype(str) == sel_item)
@@ -2286,14 +2302,28 @@ def render_attendance_module(
                 else:
                     rec_amount = 0.0
 
-                ppe_rem = st.text_input("Remarks / Condition Note", placeholder="e.g. Old sole worn out / Lost on site", key="ppe_rem").strip()
+                ppe_rem = st.text_input("Remarks / Condition Note", placeholder="e.g. Site layout work / Lost on site", key="ppe_rem").strip()
 
-                if st.button("💾 Confirm & Issue PPE Item", type="primary", use_container_width=True):
-                    if iss_mode.startswith("DAMAGED") and not old_returned and not ppe_rem:
+                if st.button("💾 Confirm & Issue Item", type="primary", use_container_width=True):
+                    if is_creating_new_item and not sel_item:
+                        st.error("Please type the name of the new item / tool.")
+                    elif iss_mode.startswith("DAMAGED") and not old_returned and not ppe_rem:
                         st.error("Please confirm old item return or enter a damage justification remark.")
                     elif (not is_eligible_free) and iss_mode.startswith("FREE") and (not is_admin):
                         st.error("This item is still within its validity period. Select 'Paid / Lost Recovery' or 'Damaged Exchange', or request Admin approval.")
                     else:
+                        # Auto-save new item to Policy Master if added via quick dropdown
+                        if is_creating_new_item and sel_item not in ppe_policy_df["PPE_Item"].astype(str).tolist():
+                            new_pol_row = {
+                                "PPE_Item": sel_item,
+                                "Validity_Days": int(val_days),
+                                "Recovery_Cost": float(rec_unit_cost),
+                                "Exchange_Rule": exch_rule,
+                                "Remarks": "Added via Issue Form"
+                            }
+                            upd_pol_df = pd.concat([ppe_policy_df, pd.DataFrame([new_pol_row])], ignore_index=True)
+                            save_fn("ppe_policy_master", upd_pol_df[PPE_POLICY_COLS])
+
                         iss_date_str = iss_date.strftime("%Y-%m-%d")
                         new_ppe_row = {
                             "Issue_ID": f"PPE-{int(time.time())}",
@@ -2323,9 +2353,9 @@ def render_attendance_module(
                                 "Worker_Name": w_name,
                                 "Division": w_div,
                                 "Amount": float(rec_amount),
-                                "Payment_Mode": "PPE Recovery",
+                                "Payment_Mode": "PPE / Tool Recovery",
                                 "Supervisor": current_user,
-                                "Remarks": f"Early/Lost PPE Recovery: {sel_item} (Qty {iss_qty})"
+                                "Remarks": f"Early/Lost Item Recovery: {sel_item} (Qty {iss_qty})"
                             }
                             upd_adv = pd.concat([adv_cur, pd.DataFrame([new_adv_ded])], ignore_index=True)
                             save_fn("worker_advances", upd_adv[ADVANCE_LOG_COLS])
@@ -2336,35 +2366,39 @@ def render_attendance_module(
 
         with c_ppe2:
             with st.container(border=True):
-                st.markdown("###### 📋 Recent PPE Issuance Log")
+                st.markdown("###### 📋 Recent PPE & Site Tools Issuance Log")
                 disp_ppe = filter_workers_by_allowed_division(ppe_log_df, allowed_division if is_div_restricted else "All Divisions")
                 if disp_ppe.empty or "Issue_ID" not in disp_ppe.columns:
-                    st.info("No PPE items issued yet.")
+                    st.info("No PPE or site tools issued yet.")
                 else:
                     show_cols = ["Issue_Date", "Worker_ID", "Worker_Name", "PPE_Item", "Quantity", "Issue_Mode", "Recovery_Amount", "Next_Eligible_Date"]
                     st.dataframe(disp_ppe.iloc[::-1][show_cols], use_container_width=True, hide_index=True)
 
                     csv_ppe = disp_ppe.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        label="📥 Export PPE Issue Register (CSV)",
+                        label="📥 Export PPE & Tools Register (CSV)",
                         data=csv_ppe,
-                        file_name=f"M_s_INDU_SAO_PPE_Register_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                        file_name=f"M_s_INDU_SAO_PPE_Tools_Register_{datetime.date.today().strftime('%Y%m%d')}.csv",
                         mime="text/csv",
                         type="secondary"
                     )
 
-            with st.expander("⚙️ PPE Validity & Recovery Rate Policy Master", expanded=False):
-                st.caption("Configure standard free validity periods (in days) and recovery costs for early/lost replacements.")
+            with st.expander("⚙️ PPE & Site Tools Master List (Click '+ Add row' below table to add new items)", expanded=False):
+                st.caption("Add new items (Measuring Tapes, Raincoats, Tools, etc.) or edit free validity days and recovery rates.")
                 edited_pol = st.data_editor(
                     ppe_policy_df[PPE_POLICY_COLS],
                     use_container_width=True,
                     hide_index=True,
+                    num_rows="dynamic" if is_admin else "fixed",
                     disabled=[] if is_admin else PPE_POLICY_COLS,
                     key="ppe_policy_editor"
                 )
-                if is_admin and st.button("💾 Save PPE Policy Rules", type="primary"):
-                    if save_fn("ppe_policy_master", edited_pol[PPE_POLICY_COLS]):
-                        st.success("PPE validity policy updated!")
+                if is_admin and st.button("💾 Save PPE & Tools Master List", type="primary"):
+                    clean_pol = edited_pol[edited_pol["PPE_Item"].astype(str).str.strip() != ""].copy()
+                    clean_pol["Validity_Days"] = pd.to_numeric(clean_pol["Validity_Days"], errors="coerce").fillna(180).astype(int)
+                    clean_pol["Recovery_Cost"] = pd.to_numeric(clean_pol["Recovery_Cost"], errors="coerce").fillna(0.0)
+                    if save_fn("ppe_policy_master", clean_pol[PPE_POLICY_COLS]):
+                        st.success("PPE & Site Tools master list updated!")
                         st.rerun()
 
     # 7. ADVANCE & EXPENSE REGISTER
@@ -2797,7 +2831,7 @@ def render_attendance_module(
             st.dataframe(pd.DataFrame(recon_rows), use_container_width=True, hide_index=True)
 
         with st.container(border=True):
-            st.markdown(f"###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF {epf_cap_disp} Cap @ {epf_pct_disp}, ESIC {esic_cap_disp} Cap @ {esic_pct_disp}, Form XVII & Carry-Forward Advance)")
+            st.markdown(f"###### 🧾 Worker Salary Slips (3 Slips per A4 Page • PF {epf_cap_disp} Cap @ {epf_pct_disp} & ESIC {esic_cap_disp} Cap @ {esic_pct_disp} on Punch Only)")
             if salary_slip_records and FPDF_AVAILABLE:
                 slip_options = {f"{r['Worker_ID']} — {r['Worker_Name']} (Net: ₹{r['Net_Payable']:,.0f})": r["Worker_ID"] for r in salary_slip_records}
                 sc_1, sc_2 = st.columns([2.1, 1.1])
