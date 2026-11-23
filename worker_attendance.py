@@ -841,6 +841,8 @@ def calculate_statutory_pf_esic(punch_wages_only, stat_cfg=None):
 def classify_advance_category(payment_mode, remarks):
     pm = str(payment_mode or "").strip().lower()
     rm = str(remarks or "").strip().lower()
+    if "theft" in pm or "theft" in rm or "loss" in pm or "loss" in rm or "stolen" in rm or "damage" in rm:
+        return "Theft/Loss"
     if "ppe" in pm or "ppe" in rm or "tool" in pm or "tool" in rm or "safety" in rm:
         return "PPE/Tools"
     if "fuel" in pm or "fuel" in rm or "diesel" in pm or "diesel" in rm or "petrol" in rm:
@@ -897,7 +899,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
             opening_adv = carry_fwd_map.get(wid, 0.0)
 
             new_adv = 0.0
-            adv_cat_totals = {"Cash/UPI": 0.0, "PPE/Tools": 0.0, "Fuel": 0.0}
+            adv_cat_totals = {"Cash/UPI": 0.0, "PPE/Tools": 0.0, "Fuel": 0.0, "Theft/Loss": 0.0}
             if not adv_df.empty and "Date" in adv_df.columns and "Worker_ID" in adv_df.columns:
                 wa = adv_df[(adv_df["Worker_ID"].astype(str) == wid) &
                             (adv_df["Date"].astype(str) >= p_start) &
@@ -1007,6 +1009,7 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                     "Adv_Cash_UPI": adv_cat_totals["Cash/UPI"],
                     "Adv_PPE_Tools": adv_cat_totals["PPE/Tools"],
                     "Adv_Fuel": adv_cat_totals["Fuel"],
+                    "Adv_Theft_Loss": adv_cat_totals["Theft/Loss"],
                     "Total_Advance_Due": total_adv_due, "Advance_Deducted": adv_deducted,
                     "Closing_Carry_Forward": closing_adv, "Non_Punch_Net_Pay": non_punch_take_home,
                     "Net_Payable": total_net_payable
@@ -1304,7 +1307,7 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
         pdf.set_font("Helvetica", "B", 8.0)
         pdf.cell(w_cols[7], 7.2, f"Rs.{s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
 
-        # Brief category-wise advance breakup (no verbose payout descriptions)
+        # Brief category-wise advance breakup (including Theft/Loss)
         adv_parts = []
         if float(s.get("Opening_Advance", 0)) > 0:
             adv_parts.append(f"Prev. Bal: Rs.{s['Opening_Advance']:,.0f}")
@@ -1314,6 +1317,8 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
             adv_parts.append(f"PPE/Tools: Rs.{s['Adv_PPE_Tools']:,.0f}")
         if float(s.get("Adv_Fuel", 0)) > 0:
             adv_parts.append(f"Fuel: Rs.{s['Adv_Fuel']:,.0f}")
+        if float(s.get("Adv_Theft_Loss", 0)) > 0:
+            adv_parts.append(f"Theft/Loss: Rs.{s['Adv_Theft_Loss']:,.0f}")
         if float(s.get("Closing_Carry_Forward", 0)) > 0:
             adv_parts.append(f"Bal. Next Month: Rs.{s['Closing_Carry_Forward']:,.0f}")
 
@@ -2438,27 +2443,28 @@ def render_attendance_module(
                         st.success("PPE & Site Tools master list updated!")
                         st.rerun()
 
-    # 7. ADVANCE & EXPENSE REGISTER
+    # 7. ADVANCE, SITE THEFT/LOSS SHARED RECOVERY & CARRY-FORWARD LEDGER
     elif current_view == "Advance & Expense Register":
-        st.markdown("#### Advance & Expense Register (With Carry-Forward Ledger)")
+        st.markdown("#### Advance, Site Loss Recovery & Carry-Forward Ledger")
         w_master = filter_workers_by_allowed_division(load_fn("worker_master"), allowed_division if is_div_restricted else "All Divisions")
         muster_df = load_fn("muster_roll")
         adv_history = load_fn("worker_advances")
         tata_df = load_fn("tata_form_xvii")
         stat_cfg = get_active_statutory_config(load_fn)
 
-        worker_options = {f"{r['Full_Name']} ({r['Worker_ID']})": (r['Worker_ID'], r['Full_Name'], r['Division']) for _, r in w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].iterrows()} if not w_master.empty and "Worker_ID" in w_master.columns else {}
+        active_w_df = w_master[w_master["Status"].astype(str).str.upper() == "ACTIVE"].copy() if not w_master.empty and "Worker_ID" in w_master.columns else pd.DataFrame()
+        worker_options = {f"{r['Full_Name']} ({r['Worker_ID']})": (r['Worker_ID'], r['Full_Name'], r['Division']) for _, r in active_w_df.iterrows()} if not active_w_df.empty else {}
 
-        c_adv1, c_adv2 = st.columns([1.0, 2.0], gap="large")
+        c_adv1, c_adv2 = st.columns([1.05, 1.95], gap="large")
         with c_adv1:
             with st.container(border=True):
-                st.markdown("###### Disburse Advance")
+                st.markdown("###### 💵 Disburse Individual Advance")
                 if worker_options:
                     with st.form("disburse_adv_form"):
                         a_date = st.date_input("Date", value=datetime.date.today())
                         sel_w = st.selectbox("Employee", list(worker_options.keys()))
-                        a_amt = st.number_input("Amount (₹)", min_value=100.0, step=100.0, value=500.0)
-                        a_mode = st.selectbox("Mode / Type", ["Cash", "Online UPI", "Bank Transfer", "Fuel Advance", "PPE/Tools"])
+                        a_amt = st.number_input("Amount (₹)", min_value=50.0, step=100.0, value=500.0)
+                        a_mode = st.selectbox("Category / Mode", ["Cash", "Online UPI", "Bank Transfer", "Fuel Advance", "PPE/Tools", "Theft / Loss Recovery"])
                         a_rem = st.text_input("Remarks").strip()
                         if st.form_submit_button("Record Transaction", type="primary", use_container_width=True):
                             w_id, w_name, w_div = worker_options[sel_w]
@@ -2472,9 +2478,124 @@ def render_attendance_module(
                                 st.success("Transaction recorded.")
                                 st.rerun()
 
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+            # SITE THEFT / LOSS BULK SHARED RECOVERY
+            with st.container(border=True):
+                st.markdown("###### 🚨 Site Theft / Loss Shared Recovery")
+                st.caption("Auto-fetches workers engaged on the incident date and splits recovery equally or custom-wise.")
+
+                avail_th_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_master)
+                th_div_opts = avail_th_divs if (is_div_restricted and len(avail_th_divs) == 1) else (["All Divisions"] + avail_th_divs)
+
+                th_c1, th_c2 = st.columns(2)
+                with th_c1:
+                    th_date = st.date_input("Incident Date", value=datetime.date.today(), key="theft_dt_pick")
+                    th_date_str = th_date.strftime("%Y-%m-%d")
+                with th_c2:
+                    th_div = st.selectbox("Site / Division", th_div_opts, disabled=(len(th_div_opts) == 1), key="theft_div_pick")
+
+                th_item = st.text_input("Stolen / Lost Item Description", placeholder="e.g. Copper Wire Coil / Bosch Grinder", key="theft_item_txt").strip()
+                th_tot_loss = st.number_input("Total Recovery Amount (₹)", min_value=0.0, value=2000.0, step=100.0, key="theft_tot_amt")
+                th_split_mode = st.radio("Split Method", ["Equal Split", "Custom Split"], horizontal=True, key="theft_split_mode")
+
+                # Find workers engaged (Present P or HD) on th_date_str
+                scoped_active_w = active_w_df.copy()
+                if th_div != "All Divisions" and not scoped_active_w.empty:
+                    scoped_active_w = scoped_active_w[scoped_active_w["Division"].astype(str).str.strip() == th_div]
+
+                engaged_wids_default = []
+                if not muster_df.empty and "Date" in muster_df.columns and "Worker_ID" in muster_df.columns:
+                    m_hit = muster_df[
+                        (muster_df["Date"].astype(str) == th_date_str) &
+                        (muster_df["Attendance"].isin(["P", "HD"]))
+                    ]
+                    if not m_hit.empty:
+                        engaged_set = set(m_hit["Worker_ID"].astype(str).tolist())
+                        engaged_wids_default = [str(r["Worker_ID"]) for _, r in scoped_active_w.iterrows() if str(r["Worker_ID"]) in engaged_set]
+
+                all_th_worker_map = {
+                    f"{r['Worker_ID']} — {r['Full_Name']}": (str(r["Worker_ID"]), str(r["Full_Name"]), str(r["Division"]))
+                    for _, r in scoped_active_w.iterrows()
+                }
+                default_th_labels = [
+                    lbl for lbl, (wid_v, _, _) in all_th_worker_map.items() if wid_v in engaged_wids_default
+                ]
+
+                if engaged_wids_default:
+                    st.info(f"📋 Auto-detected **{len(engaged_wids_default)} workers** present on `{th_date_str}`.")
+                else:
+                    st.caption(f"No attendance logged yet for `{th_date_str}` — select engaged workers manually below:")
+
+                sel_th_labels = st.multiselect(
+                    "Engaged Workers Responsible",
+                    options=list(all_th_worker_map.keys()),
+                    default=default_th_labels,
+                    key=f"theft_w_multi_{th_date_str}_{th_div}"
+                )
+
+                if sel_th_labels and th_tot_loss > 0:
+                    cnt_sel = len(sel_th_labels)
+                    equal_share = round(th_tot_loss / cnt_sel, 0)
+                    split_preview_rows = []
+                    for i_s, lbl in enumerate(sel_th_labels):
+                        wid_v, wname_v, wdiv_v = all_th_worker_map[lbl]
+                        # Adjust last worker by rounding diff so sum matches th_tot_loss exactly
+                        share_amt = round(th_tot_loss - (equal_share * (cnt_sel - 1)), 0) if i_s == cnt_sel - 1 else equal_share
+                        split_preview_rows.append({
+                            "Worker_ID": wid_v,
+                            "Worker_Name": wname_v,
+                            "Division": wdiv_v,
+                            "Recovery_Amount": float(max(0.0, share_amt))
+                        })
+
+                    split_df = pd.DataFrame(split_preview_rows)
+                    if th_split_mode == "Custom Split":
+                        edited_split_df = st.data_editor(
+                            split_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=["Worker_ID", "Worker_Name", "Division"],
+                            key=f"theft_custom_ed_{th_date_str}_{cnt_sel}"
+                        )
+                    else:
+                        st.dataframe(split_df[["Worker_ID", "Worker_Name", "Recovery_Amount"]], use_container_width=True, hide_index=True)
+                        edited_split_df = split_df
+
+                    tot_assigned = float(pd.to_numeric(edited_split_df["Recovery_Amount"], errors="coerce").fillna(0.0).sum())
+                    st.caption(f"Total Recovery Allocated: **₹{tot_assigned:,.0f}** across **{cnt_sel} workers**")
+
+                    if st.button("💾 Post Shared Recovery to Advance Ledger", type="primary", use_container_width=True, key="btn_post_theft_rec"):
+                        if not th_item:
+                            st.error("Please enter the stolen/lost item description.")
+                        elif tot_assigned <= 0:
+                            st.error("Total recovery amount must be greater than ₹0.")
+                        else:
+                            base_ts = int(time.time())
+                            new_rec_rows = []
+                            for idx_r, sr in edited_split_df.iterrows():
+                                amt_r = float(pd.to_numeric(sr["Recovery_Amount"], errors="coerce") or 0.0)
+                                if amt_r > 0:
+                                    new_rec_rows.append({
+                                        "Txn_ID": f"THF-{base_ts}-{idx_r + 1}",
+                                        "Date": th_date_str,
+                                        "Worker_ID": str(sr["Worker_ID"]),
+                                        "Worker_Name": str(sr["Worker_Name"]),
+                                        "Division": str(sr["Division"]),
+                                        "Amount": amt_r,
+                                        "Payment_Mode": "Theft / Loss Recovery",
+                                        "Supervisor": current_user,
+                                        "Remarks": f"Site Loss/Theft Recovery: {th_item} ({th_date_str})"
+                                    })
+                            if new_rec_rows:
+                                updated_adv = pd.concat([adv_history, pd.DataFrame(new_rec_rows)], ignore_index=True)
+                                if save_fn("worker_advances", updated_adv[ADVANCE_LOG_COLS]):
+                                    st.success(f"Posted ₹{tot_assigned:,.0f} recovery across {len(new_rec_rows)} workers!")
+                                    st.rerun()
+
         with c_adv2:
             with st.container(border=True):
-                st.markdown("###### 📊 Worker-Wise Advance Balance & Carry-Forward Status")
+                st.markdown("###### 📊 Worker-Wise Advance & Recovery Balance (Carry-Forward Status)")
                 today_dt = datetime.date.today()
                 payroll_now = compute_monthly_payroll_and_advances(w_master, muster_df, adv_history, tata_df, today_dt.year, today_dt.month, stat_cfg)
                 bal_rows = [
@@ -2488,13 +2609,13 @@ def render_attendance_module(
                 if bal_rows:
                     st.dataframe(pd.DataFrame(bal_rows), use_container_width=True, hide_index=True)
                 else:
-                    st.info("All employee advances are fully settled (₹0 pending balance).")
+                    st.info("All employee advances and recoveries are fully settled (₹0 pending balance).")
 
             with st.container(border=True):
-                st.markdown("###### Recent Advance Transactions")
+                st.markdown("###### Recent Advance & Recovery Transactions")
                 disp_adv = filter_workers_by_allowed_division(adv_history, allowed_division if is_div_restricted else "All Divisions")
                 if not disp_adv.empty and "Txn_ID" in disp_adv.columns:
-                    st.dataframe(disp_adv[["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].tail(15), use_container_width=True, hide_index=True)
+                    st.dataframe(disp_adv.iloc[::-1][["Date", "Worker_Name", "Amount", "Payment_Mode", "Supervisor", "Remarks"]].head(20), use_container_width=True, hide_index=True)
 
     # 8. MONTHLY WAGES, FORM XVI + DUPLICATE RESOLVER, FORM XVII + DUPLICATE RESOLVER, SLIPS & BANK LETTERS
     elif current_view == "Monthly Wages & Payout Summary":
