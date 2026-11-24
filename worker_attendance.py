@@ -94,6 +94,12 @@ WORKER_MASTER_COLS = [
     "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", "Status", "Created_Date", "Photo_Base64"
 ]
 
+EXPORT_ROSTER_COLS = [
+    "Worker_ID", "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Division", "Designation",
+    "Wage_Type", "Skill_Category", "Base_Rate", "Week_Off_Day", "Contact_No",
+    "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", "Status"
+]
+
 MUSTER_ROLL_COLS = [
     "Date", "Worker_ID", "Worker_Name", "Division", "Attendance", "OT_Hours",
     "Duty_Location", "Advance_Amount", "Payment_Mode", "Supervisor", "Remarks"
@@ -137,7 +143,7 @@ GENERAL_STAFF_ROLES = [
 COMPANY_CURRENT_AC = "482025110000105"
 
 
-# ----------------- SAFE PANDAS UPDATE & VALIDATION HELPERS -----------------
+# ----------------- SAFE PANDAS UPDATE, UNIQUENESS & VALIDATION HELPERS -----------------
 def safe_update_df_rows(df, mask, updates_dict):
     """
     Safely assigns scalar values to masked rows in a Pandas DataFrame without raising
@@ -229,6 +235,49 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
         "Bank_Account_No": acc_clean,
         "Bank_IFSC_Code": ifsc_clean
     }, errors
+
+
+def check_employee_uniqueness(cleaned_fields, existing_df, exclude_wid=None, batch_seen=None):
+    """
+    Ensures no two distinct employees share the same Mobile Number, 12-Digit Govt ID,
+    or Bank Account Number (Full_Name is allowed to be the same).
+    Returns a list of human-readable conflict error strings.
+    """
+    conflicts = []
+    mob = cleaned_fields.get("Contact_No", "")
+    gid = cleaned_fields.get("Govt_ID_Ref", "")
+    acc = cleaned_fields.get("Bank_Account_No", "")
+    excl = str(exclude_wid or "").strip().upper()
+
+    if existing_df is not None and not existing_df.empty and "Worker_ID" in existing_df.columns:
+        for _, r in existing_df.iterrows():
+            r_wid = clean_excel_cell(r.get("Worker_ID", "")).upper()
+            if excl and r_wid == excl:
+                continue
+            r_name = clean_excel_cell(r.get("Full_Name", "Existing Employee"))
+
+            if mob:
+                r_mob = re.sub(r"[\s\-\(\)\+]", "", clean_excel_cell(r.get("Contact_No", "")))
+                if r_mob == mob:
+                    conflicts.append(f"Duplicate Mobile '{mob}' already assigned to {r_name} ({r_wid}).")
+            if gid:
+                r_gid = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Govt_ID_Ref", "")))
+                if r_gid == gid:
+                    conflicts.append(f"Duplicate 12-Digit Govt ID already assigned to {r_name} ({r_wid}).")
+            if acc:
+                r_acc = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Bank_Account_No", "")))
+                if r_acc == acc:
+                    conflicts.append(f"Duplicate Bank A/C '{acc}' already assigned to {r_name} ({r_wid}).")
+
+    if batch_seen is not None:
+        if mob and mob in batch_seen.get("mob", {}):
+            conflicts.append(f"Duplicate Mobile '{mob}' repeated in same Excel file ({batch_seen['mob'][mob]}).")
+        if gid and gid in batch_seen.get("gid", {}):
+            conflicts.append(f"Duplicate 12-Digit Govt ID repeated in same Excel file ({batch_seen['gid'][gid]}).")
+        if acc and acc in batch_seen.get("acc", {}):
+            conflicts.append(f"Duplicate Bank A/C '{acc}' repeated in same Excel file ({batch_seen['acc'][acc]}).")
+
+    return list(dict.fromkeys(conflicts))
 
 
 def is_valid_bank_for_transfer(acc_str, ifsc_str):
@@ -432,9 +481,20 @@ def get_active_ppe_policies_df(load_fn):
     return df
 
 
+def export_df_to_excel_bytes(df_to_export, sheet_name="Master_Roster"):
+    buf = io.BytesIO()
+    try:
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df_to_export.to_excel(writer, sheet_name=sheet_name, index=False)
+        return buf.getvalue(), "xlsx"
+    except Exception:
+        return df_to_export.to_csv(index=False).encode("utf-8"), "csv"
+
+
 def build_bulk_employee_template_excel(default_div="Fleet Operations"):
     sample_rows = [
         {
+            "Worker_ID": "",
             "Full_Name": "RAMESH KUMAR MAHTO",
             "Father_Husband_Name": "BIRBAL MAHTO",
             "Govt_ID_Ref": "234567891234",
@@ -451,6 +511,7 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
             "Status": "ACTIVE"
         },
         {
+            "Worker_ID": "",
             "Full_Name": "SONI DEVI",
             "Father_Husband_Name": "UGAN MAHTO",
             "Govt_ID_Ref": "345678912345",
@@ -465,67 +526,94 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
             "Bank_IFSC_Code": "SBIN0001234",
             "Bank_Branch_Details": "SBI WEST BOKARO",
             "Status": "ACTIVE"
-        },
-        {
-            "Full_Name": "MANOJ SINGH",
-            "Father_Husband_Name": "RAMCHANDRA SINGH",
-            "Govt_ID_Ref": "456789123456",
-            "Division": "Office Staff",
-            "Designation": "Site Accountant / Clerk",
-            "Wage_Type": "MONTHLY_FIXED",
-            "Skill_Category": "Monthly Fixed",
-            "Base_Rate": 22000,
-            "Week_Off_Day": "Sunday",
-            "Contact_No": "9835100003",
-            "Bank_Account_No": "482010110005678",
-            "Bank_IFSC_Code": "BKID0004820",
-            "Bank_Branch_Details": "BOI CHAINPUR",
-            "Status": "ACTIVE"
         }
     ]
     df_tpl = pd.DataFrame(sample_rows)
     allowed_list = parse_allowed_divisions_list(default_div)
     if len(allowed_list) == 1:
         df_tpl["Division"] = allowed_list[0]
-    buf = io.BytesIO()
-    try:
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            df_tpl.to_excel(writer, sheet_name="Employee_Enrolment", index=False)
-        return buf.getvalue(), "xlsx"
-    except Exception:
-        return df_tpl.to_csv(index=False).encode("utf-8"), "csv"
+    return export_df_to_excel_bytes(df_tpl, sheet_name="Employee_Enrolment")
 
 
 def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_restricted, allowed_div_list):
     """
-    Validates a bulk Excel/CSV DataFrame and separates it into:
-    - valid_rows: list of clean dicts ready for worker_master (assigned sequential IS-#### IDs)
-    - error_rows: list of dicts with Excel_Row, Full_Name, Error_Reason + original columns
+    Smart Upsert + Strict Uniqueness Validator:
+    - Matches existing employees by Worker_ID -> Govt_ID_Ref -> (Full_Name + Father_Husband_Name).
+    - Preserves existing Worker_IDs permanently; assigns sequential IS-#### only to genuinely new employees.
+    - Blocks duplicate Mobile, 12-Digit Govt ID, or Bank Account across employees (Full_Name may be identical).
+    - Separates results into:
+      1. update_items: list of dicts with Worker_ID, Full_Name, Changed_Fields, and updated_row_dict
+      2. new_rows: list of clean dicts ready to append
+      3. unchanged_count: int of existing rows with zero modifications
+      4. error_rows: list of dicts with Excel_Row, Full_Name, Error_Reason + original columns
     """
-    valid_rows = []
+    update_items = []
+    new_rows = []
+    unchanged_count = 0
     error_rows = []
+
+    batch_seen = {"mob": {}, "gid": {}, "acc": {}}
+
+    # Pre-index existing employees for fast matching
+    existing_by_wid = {}
+    existing_by_gid = {}
+    existing_by_name_father = {}
+    if existing_w_df is not None and not existing_w_df.empty and "Worker_ID" in existing_w_df.columns:
+        for _, er in existing_w_df.iterrows():
+            ewid = clean_excel_cell(er.get("Worker_ID", "")).upper()
+            if ewid:
+                existing_by_wid[ewid] = er
+            egid = re.sub(r"[\s\-]", "", clean_excel_cell(er.get("Govt_ID_Ref", "")))
+            if egid:
+                existing_by_gid[egid] = er
+            ename = normalize_name_key(er.get("Full_Name", ""))
+            efath = normalize_name_key(er.get("Father_Husband_Name", ""))
+            if ename:
+                nf_key = (ename, efath)
+                existing_by_name_father.setdefault(nf_key, []).append(er)
+
+    compare_fields = [
+        "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Division", "Designation",
+        "Wage_Type", "Skill_Category", "Base_Rate", "Week_Off_Day", "Contact_No",
+        "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details", "Status"
+    ]
 
     for r_idx, b_row in b_df.iterrows():
         fname_chk = clean_excel_cell(b_row.get("Full_Name", ""))
         if not fname_chk:
             continue
 
-        raw_div = b_row.get("Division", "")
-        div_val = normalize_division_name(raw_div)
-        if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
-            div_val = allowed_div_list[0]
-
+        raw_wid = clean_excel_cell(b_row.get("Worker_ID", "")).upper()
         cleaned_f, row_errs = validate_and_clean_employee_fields(
             b_row.get("Contact_No", ""),
             b_row.get("Govt_ID_Ref", ""),
             b_row.get("Bank_Account_No", ""),
             b_row.get("Bank_IFSC_Code", "")
         )
-        if row_errs:
+
+        # Determine if this row corresponds to an existing employee
+        matched_existing = None
+        if raw_wid and raw_wid in existing_by_wid:
+            matched_existing = existing_by_wid[raw_wid]
+        elif cleaned_f["Govt_ID_Ref"] and cleaned_f["Govt_ID_Ref"] in existing_by_gid:
+            matched_existing = existing_by_gid[cleaned_f["Govt_ID_Ref"]]
+        else:
+            nf_k = (normalize_name_key(fname_chk), normalize_name_key(b_row.get("Father_Husband_Name", "")))
+            cands = existing_by_name_father.get(nf_k, [])
+            if len(cands) == 1:
+                matched_existing = cands[0]
+
+        target_excl_wid = clean_excel_cell(matched_existing.get("Worker_ID", "")).upper() if matched_existing is not None else None
+
+        # Check uniqueness across existing DB (excluding self) and within current Excel batch
+        uniq_errs = check_employee_uniqueness(cleaned_f, existing_w_df, exclude_wid=target_excl_wid, batch_seen=batch_seen)
+        all_row_errs = row_errs + uniq_errs
+
+        if all_row_errs:
             err_dict = {
                 "Excel_Row": r_idx + 2,
                 "Full_Name": fname_chk,
-                "Error_Reason": "; ".join(row_errs)
+                "Error_Reason": "; ".join(all_row_errs)
             }
             for col_k in b_df.columns:
                 if col_k not in err_dict:
@@ -533,13 +621,27 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             error_rows.append(err_dict)
             continue
 
-        cur_merged = pd.concat([existing_w_df, pd.DataFrame(valid_rows)], ignore_index=True)
-        new_gen_id = generate_next_worker_id("", cur_merged)
+        # Record unique tokens in batch_seen
+        row_label = f"Row {r_idx + 2}: {fname_chk}"
+        if cleaned_f["Contact_No"]:
+            batch_seen["mob"][cleaned_f["Contact_No"]] = row_label
+        if cleaned_f["Govt_ID_Ref"]:
+            batch_seen["gid"][cleaned_f["Govt_ID_Ref"]] = row_label
+        if cleaned_f["Bank_Account_No"]:
+            batch_seen["acc"][cleaned_f["Bank_Account_No"]] = row_label
+
+        raw_div = b_row.get("Division", "")
+        div_val = normalize_division_name(raw_div)
+        if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
+            div_val = allowed_div_list[0]
+
         raw_desig = clean_excel_cell(b_row.get("Designation", ""))
-        clean_desig = raw_desig if raw_desig else "Unassigned"
-        w_type_val = clean_excel_cell(b_row.get("Wage_Type", "DAILY_WAGE")).upper() or "DAILY_WAGE"
+        clean_desig = raw_desig if raw_desig else (clean_excel_cell(matched_existing.get("Designation", "")) if matched_existing is not None else "Unassigned")
+        w_type_val = clean_excel_cell(b_row.get("Wage_Type", "")).upper()
         if w_type_val not in ["DAILY_WAGE", "MONTHLY_FIXED"]:
-            w_type_val = "DAILY_WAGE"
+            w_type_val = clean_excel_cell(matched_existing.get("Wage_Type", "DAILY_WAGE")).upper() if matched_existing is not None else "DAILY_WAGE"
+            if w_type_val not in ["DAILY_WAGE", "MONTHLY_FIXED"]:
+                w_type_val = "DAILY_WAGE"
 
         raw_rate_num = pd.to_numeric(clean_excel_cell(b_row.get("Base_Rate", "")), errors="coerce")
         b_rate_val = float(raw_rate_num) if (pd.notna(raw_rate_num) and float(raw_rate_num) > 0) else 0.0
@@ -551,28 +653,91 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             w_type_val
         )
         if b_rate_val <= 0:
-            b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
+            if matched_existing is not None and float(pd.to_numeric(matched_existing.get("Base_Rate", 0), errors="coerce") or 0) > 0:
+                b_rate_val = float(pd.to_numeric(matched_existing.get("Base_Rate", 0), errors="coerce"))
+            else:
+                b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
 
         f_husb = clean_excel_cell(b_row.get("Father_Husband_Name", ""))
-        stat_val = clean_excel_cell(b_row.get("Status", "ACTIVE")).upper() or "ACTIVE"
+        stat_val = clean_excel_cell(b_row.get("Status", "")).upper()
         if stat_val not in ["ACTIVE", "INACTIVE"]:
-            stat_val = "ACTIVE"
+            stat_val = clean_excel_cell(matched_existing.get("Status", "ACTIVE")).upper() if matched_existing is not None else "ACTIVE"
+            if stat_val not in ["ACTIVE", "INACTIVE"]:
+                stat_val = "ACTIVE"
 
-        valid_rows.append({
-            "Worker_ID": new_gen_id, "Full_Name": fname_chk,
-            "Father_Husband_Name": f_husb,
-            "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"], "Division": div_val,
-            "Designation": clean_desig, "Wage_Type": w_type_val, "Skill_Category": clean_skill,
-            "Base_Rate": b_rate_val, "Week_Off_Day": normalize_week_off(b_row.get("Week_Off_Day", "Sunday")),
-            "Contact_No": cleaned_f["Contact_No"],
-            "Bank_Account_No": cleaned_f["Bank_Account_No"],
-            "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
-            "Bank_Branch_Details": clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper(),
-            "Status": stat_val,
-            "Created_Date": datetime.date.today().strftime("%Y-%m-%d"), "Photo_Base64": ""
-        })
+        wo_val = normalize_week_off(b_row.get("Week_Off_Day", "Sunday"))
+        br_val = clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper()
 
-    return valid_rows, error_rows
+        if matched_existing is not None:
+            # Preserve exact existing Worker_ID, Created_Date, Photo_Base64
+            keep_wid = clean_excel_cell(matched_existing.get("Worker_ID", ""))
+            updated_dict = {
+                "Worker_ID": keep_wid,
+                "Full_Name": fname_chk,
+                "Father_Husband_Name": f_husb,
+                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"],
+                "Division": div_val,
+                "Designation": clean_desig,
+                "Wage_Type": w_type_val,
+                "Skill_Category": clean_skill,
+                "Base_Rate": float(b_rate_val),
+                "Week_Off_Day": wo_val,
+                "Contact_No": cleaned_f["Contact_No"],
+                "Bank_Account_No": cleaned_f["Bank_Account_No"],
+                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
+                "Bank_Branch_Details": br_val,
+                "Status": stat_val
+            }
+
+            diffs = []
+            for cf in compare_fields:
+                old_v = matched_existing.get(cf, "")
+                new_v = updated_dict.get(cf, "")
+                if cf == "Base_Rate":
+                    old_num = float(pd.to_numeric(old_v, errors="coerce") or 0.0)
+                    new_num = float(new_v or 0.0)
+                    if abs(old_num - new_num) > 0.01:
+                        diffs.append(f"{cf}: {old_num:g} -> {new_num:g}")
+                else:
+                    old_s = clean_excel_cell(old_v)
+                    new_s = clean_excel_cell(new_v)
+                    if old_s != new_s:
+                        diffs.append(f"{cf}: '{old_s or 'Blank'}' -> '{new_s or 'Blank'}'")
+
+            if diffs:
+                update_items.append({
+                    "Worker_ID": keep_wid,
+                    "Full_Name": fname_chk,
+                    "Changed_Fields": " | ".join(diffs),
+                    "updated_dict": updated_dict
+                })
+            else:
+                unchanged_count += 1
+        else:
+            # Genuinely new employee -> assign next sequential IS-#### without touching old IDs
+            cur_merged = pd.concat([existing_w_df, pd.DataFrame(new_rows)], ignore_index=True)
+            new_gen_id = generate_next_worker_id("", cur_merged)
+            new_rows.append({
+                "Worker_ID": new_gen_id,
+                "Full_Name": fname_chk,
+                "Father_Husband_Name": f_husb,
+                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"],
+                "Division": div_val,
+                "Designation": clean_desig,
+                "Wage_Type": w_type_val,
+                "Skill_Category": clean_skill,
+                "Base_Rate": float(b_rate_val),
+                "Week_Off_Day": wo_val,
+                "Contact_No": cleaned_f["Contact_No"],
+                "Bank_Account_No": cleaned_f["Bank_Account_No"],
+                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
+                "Bank_Branch_Details": br_val,
+                "Status": stat_val,
+                "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
+                "Photo_Base64": ""
+            })
+
+    return update_items, new_rows, unchanged_count, error_rows
 
 
 # ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
@@ -993,7 +1158,6 @@ def compute_monthly_payroll_and_advances(w_master, muster_df, adv_df, tata_df, s
                 non_punch_gross = round((non_punch_days * wrate) + ot_pay, 0)
                 gross_total = punch_gross + non_punch_gross
 
-                # PF & ESIC calculated strictly on Punch wages ONLY (zero on Non-Punch)
                 pf_ded, esic_ded = calculate_statutory_pf_esic(punch_gross, stat_cfg)
                 agreed_net_before_adv = max(0.0, gross_total - pf_ded - esic_ded)
 
@@ -1386,14 +1550,14 @@ def render_attendance_module(
     allowed_div_list = [] if is_admin else parse_allowed_divisions_list(allowed_division)
     is_div_restricted = (len(allowed_div_list) > 0)
 
-    # 1. EMPLOYEE ENROLMENT
+    # 1. EMPLOYEE ENROLMENT (SINGLE + SMART UPSERT BULK UPLOAD)
     if current_view == "➕ Employee Enrolment":
         st.markdown("#### Employee Enrolment")
-        st.caption("Permanent IS-1001 Employee Codes, Multi-Department Support, and Auto-Validated Mobile / Govt ID / Bank / IFSC")
+        st.caption("Permanent IS-1001 Employee Codes, Strict Uniqueness (Mobile / Bank A/C / 12-Digit ID), and Smart Excel Upsert")
 
         wage_rates_df = get_active_wage_rates_df(load_fn)
         rate_lookup = dict(zip(wage_rates_df["Skill_Category"], wage_rates_df["Total_Daily_Rate"]))
-        entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload"], horizontal=True)
+        entry_mode = st.radio("Enrolment Method", ["Single Employee Form", "Bulk Excel/CSV Upload (Add & Update)"], horizontal=True)
 
         if entry_mode == "Single Employee Form":
             c_form, c_info = st.columns([1.35, 0.65], gap="large")
@@ -1418,7 +1582,7 @@ def render_attendance_module(
                     with c_np1:
                         w_name = st.text_input("Full Official Name", key="enrol_name").strip()
                         w_father = st.text_input("Father's / Husband's Name", placeholder="Distinguishes duplicate names in Form XVI/XVII", key="enrol_father").strip()
-                        w_ref = st.text_input("12-Digit Govt Identity Number (Optional)", placeholder="e.g. 234567891234", key="enrol_ref").strip()
+                        w_ref = st.text_input("12-Digit Govt Identity Number (Unique)", placeholder="e.g. 234567891234", key="enrol_ref").strip()
                     with c_np2:
                         w_photo_file = st.file_uploader("Passport Photo (Optional)", type=["jpg", "jpeg", "png"], key="enrol_photo")
                         if w_photo_file:
@@ -1454,10 +1618,10 @@ def render_attendance_module(
                     with c_wo1:
                         w_week_off = st.selectbox("Fixed Weekly Off Day", WEEK_DAYS_OPTIONS, index=0, key="enrol_week_off")
                     with c_wo2:
-                        w_contact = st.text_input("Contact Mobile Number (10 Digits)", placeholder="e.g. 9835100001", key="enrol_contact").strip()
+                        w_contact = st.text_input("Contact Mobile Number (10 Digits • Unique)", placeholder="e.g. 9835100001", key="enrol_contact").strip()
 
-                    st.markdown("###### Bank Transfer Details (Auto-Cleaned & Validated)")
-                    b_acc = st.text_input("Bank Account Number (Spaces auto-removed)", placeholder="e.g. 482010110001234", key="enrol_b_acc").strip()
+                    st.markdown("###### Bank Transfer Details (Unique A/C & Validated IFSC)")
+                    b_acc = st.text_input("Bank Account Number (Unique • Spaces auto-removed)", placeholder="e.g. 482010110001234", key="enrol_b_acc").strip()
                     c_b1, c_b2 = st.columns(2)
                     with c_b1:
                         b_ifsc = st.text_input("IFSC Code (11 Characters)", placeholder="e.g. BKID0004869", key="enrol_b_ifsc").strip().upper()
@@ -1471,6 +1635,9 @@ def render_attendance_module(
                         final_role = custom_role if sel_role == "Other (Custom Entry)" and custom_role else sel_role
 
                         cleaned_fields, val_errors = validate_and_clean_employee_fields(w_contact, w_ref, b_acc, b_ifsc)
+                        w_df = load_fn("worker_master")
+                        uniq_errors = check_employee_uniqueness(cleaned_fields, w_df)
+                        all_errs = val_errors + uniq_errors
 
                         if not w_name:
                             st.error("Employee Name is mandatory.")
@@ -1478,11 +1645,10 @@ def render_attendance_module(
                             st.error("Please type the custom Department / Division name.")
                         elif sel_role == "Other (Custom Entry)" and not custom_role:
                             st.error("Please specify custom role.")
-                        elif val_errors:
-                            for err_msg in val_errors:
+                        elif all_errs:
+                            for err_msg in all_errs:
                                 st.error(f"❌ {err_msg}")
                         else:
-                            w_df = load_fn("worker_master")
                             fresh_wid = generate_next_worker_id("", w_df)
                             b64_photo = compress_photo_to_base64(w_photo_file)
                             photo_flag = ""
@@ -1510,11 +1676,10 @@ def render_attendance_module(
 
             with c_info:
                 with st.container(border=True):
-                    st.markdown("###### Validation & ID Rules")
-                    st.caption("• **Employee Code:** Permanent `IS-1001` series (stays fixed even if department changes).")
-                    st.caption("• **Mobile No:** Exact 10 digits (`+91` / spaces auto-cleaned).")
-                    st.caption("• **Govt ID:** Exact 12 digits (spaces auto-removed).")
-                    st.caption("• **Bank A/C:** Spaces/dashes auto-removed.")
+                    st.markdown("###### Validation & Uniqueness Rules")
+                    st.caption("• **Employee Code:** Permanent `IS-1001` series (never changes when new employees are added).")
+                    st.caption("• **Same Name Allowed:** Two employees can have the same `Full_Name`.")
+                    st.caption("• **Strictly Unique:** Mobile No (10 digits), 12-Digit Govt ID, and Bank A/C cannot coincide across employees.")
                     st.caption("• **IFSC Code:** 11 chars (`4 letters + 0 + 6 branch chars`).")
                     st.markdown("---")
                     st.markdown("###### Active Daily Wage Rates")
@@ -1523,11 +1688,12 @@ def render_attendance_module(
 
         else:
             with st.container(border=True):
-                st.markdown("###### 1. Download Sample Bulk Enrolment Template")
+                st.markdown("###### 1. Download Template or Export Master Roster")
+                st.caption("Tip: To edit existing employees in bulk, export your current roster from **Master Register & ID Cards**, edit in Excel, add new rows at the bottom (leave `Worker_ID` blank for new employees), and upload below.")
                 tpl_bytes, tpl_ext = build_bulk_employee_template_excel(allowed_division if is_div_restricted else "Fleet Operations")
                 tpl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if tpl_ext == "xlsx" else "text/csv"
                 st.download_button(
-                    label=f"📥 Download Sample Employee Enrolment Template (.{tpl_ext})",
+                    label=f"📥 Download Blank Enrolment Template (.{tpl_ext})",
                     data=tpl_bytes,
                     file_name=f"M_s_INDU_SAO_Employee_Enrolment_Template.{tpl_ext}",
                     mime=tpl_mime,
@@ -1535,55 +1701,71 @@ def render_attendance_module(
                 )
 
                 st.markdown("---")
-                st.markdown("###### 2. Upload Completed Employee Roster")
+                st.markdown("###### 2. Upload Completed Employee Roster (Smart Update + Add New)")
                 up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
                 if up_file:
                     b_df = pd.read_csv(up_file, dtype=str) if up_file.name.lower().endswith(".csv") else pd.ExcelFile(up_file).parse(0, dtype=str)
                     b_df.columns = [str(c).strip() for c in b_df.columns]
-                    st.dataframe(b_df.head(5), use_container_width=True, hide_index=True)
 
                     w_df_live = load_fn("worker_master")
-                    valid_rows, error_rows = parse_and_validate_bulk_roster_df(
+                    update_items, new_rows, unchanged_cnt, error_rows = parse_and_validate_bulk_roster_df(
                         b_df, w_df_live, rate_lookup, is_div_restricted, allowed_div_list
                     )
 
-                    if not error_rows:
-                        if valid_rows:
-                            st.success(f"✅ All **{len(valid_rows)} rows** passed validation and are ready to import!")
-                            if st.button(f"🚀 Commit All {len(valid_rows)} Workers", type="primary", use_container_width=True):
-                                fin_w_df = pd.concat([w_df_live, pd.DataFrame(valid_rows)], ignore_index=True)
-                                if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                    st.success(f"Successfully imported {len(valid_rows)} workers with permanent IS-series IDs!")
-                                    st.rerun()
-                        else:
-                            st.warning("No valid employee rows found in the uploaded file.")
-                    else:
-                        st.warning(f"⚠️ Found **{len(valid_rows)} valid rows** and **{len(error_rows)} rows with validation issues**.")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("🔄 To Update (Edited)", len(update_items))
+                    m2.metric("➕ New Employees", len(new_rows))
+                    m3.metric("⏸️ Unchanged (Skipped)", unchanged_cnt)
+                    m4.metric("⚠️ Duplicate / Errors", len(error_rows))
 
-                        act_b1, act_b2 = st.columns([1.3, 1.0])
-                        with act_b1:
-                            if valid_rows:
-                                if st.button(f"✅ Import {len(valid_rows)} Valid Workers Now (Skip {len(error_rows)} Error Rows)", type="primary", use_container_width=True):
-                                    fin_w_df = pd.concat([w_df_live, pd.DataFrame(valid_rows)], ignore_index=True)
-                                    if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                        st.success(f"Imported {len(valid_rows)} valid workers! ({len(error_rows)} error rows were skipped).")
-                                        st.rerun()
-                            else:
-                                st.error("0 valid rows available to import. Please fix the errors below.")
+                    if update_items:
+                        st.markdown("###### 🔄 Preview: Existing Employees to Be Updated (Original `Worker_ID` Preserved)")
+                        upd_preview_df = pd.DataFrame([
+                            {"Worker_ID": u["Worker_ID"], "Full_Name": u["Full_Name"], "Changed_Fields": u["Changed_Fields"]}
+                            for u in update_items
+                        ])
+                        st.dataframe(upd_preview_df, use_container_width=True, hide_index=True)
 
-                        with act_b2:
-                            err_df_export = pd.DataFrame(error_rows)
-                            st.download_button(
-                                label=f"📥 Download {len(error_rows)} Skipped Error Rows (CSV)",
-                                data=err_df_export.to_csv(index=False).encode("utf-8"),
-                                file_name=f"Skipped_Error_Rows_{datetime.date.today().strftime('%Y%m%d')}.csv",
-                                mime="text/csv",
-                                type="secondary",
-                                use_container_width=True
-                            )
+                    if new_rows:
+                        st.markdown("###### ➕ Preview: New Employees to Be Added")
+                        new_preview_df = pd.DataFrame(new_rows)[["Worker_ID", "Full_Name", "Father_Husband_Name", "Division", "Designation", "Skill_Category", "Base_Rate", "Contact_No", "Bank_Account_No"]]
+                        st.dataframe(new_preview_df, use_container_width=True, hide_index=True)
 
+                    if error_rows:
+                        st.warning(f"⚠️ **{len(error_rows)} rows** have duplicate Mobile / Bank A/C / 12-Digit ID or format errors and will be skipped:")
+                        err_df_export = pd.DataFrame(error_rows)
+                        st.download_button(
+                            label=f"📥 Download {len(error_rows)} Skipped Error Rows (CSV)",
+                            data=err_df_export.to_csv(index=False).encode("utf-8"),
+                            file_name=f"Skipped_Error_Rows_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            type="secondary"
+                        )
                         with st.expander(f"🔍 View {len(error_rows)} Skipped / Error Rows Details", expanded=True):
-                            st.dataframe(pd.DataFrame(error_rows)[["Excel_Row", "Full_Name", "Error_Reason"]], use_container_width=True, hide_index=True)
+                            st.dataframe(err_df_export[["Excel_Row", "Full_Name", "Error_Reason"]], use_container_width=True, hide_index=True)
+
+                    total_valid_actions = len(update_items) + len(new_rows)
+                    if total_valid_actions > 0:
+                        btn_lbl = f"🚀 Commit {len(update_items)} Updates & {len(new_rows)} New Employees"
+                        if error_rows:
+                            btn_lbl += f" (Skip {len(error_rows)} Errors)"
+                        if st.button(btn_lbl, type="primary", use_container_width=True):
+                            fin_w_df = w_df_live.copy()
+                            # 1. Apply updates to existing rows while preserving exact Worker_ID
+                            for u in update_items:
+                                mask_u = fin_w_df["Worker_ID"].astype(str).str.strip().str.upper() == u["Worker_ID"].upper()
+                                upd_fields_no_id = {k: v for k, v in u["updated_dict"].items() if k != "Worker_ID"}
+                                fin_w_df = safe_update_df_rows(fin_w_df, mask_u, upd_fields_no_id)
+
+                            # 2. Append genuinely new rows with new IS-#### IDs
+                            if new_rows:
+                                fin_w_df = pd.concat([fin_w_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+                            if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
+                                st.success(f"Done! Updated **{len(update_items)}** existing employees and added **{len(new_rows)}** new employees.")
+                                st.rerun()
+                    elif not error_rows:
+                        st.info("No changes or new employees detected in the uploaded file.")
 
     # 2. STATUTORY WAGE RATES & EDITABLE EPF/ESIC CEILING MASTER
     elif current_view == "⚖️ Statutory Wage Rates":
@@ -1782,8 +1964,8 @@ def render_attendance_module(
                     with ed_c1:
                         ed_name = st.text_input("Full Official Name", value=emp_name).strip()
                         ed_father = st.text_input("Father's / Husband's Name", value=emp_father).strip()
-                        ed_ref = st.text_input("12-Digit Govt Identity Number", value=emp_ref).strip()
-                        ed_contact = st.text_input("Contact Mobile No (10 Digits)", value=emp_contact).strip()
+                        ed_ref = st.text_input("12-Digit Govt Identity Number (Unique)", value=emp_ref).strip()
+                        ed_contact = st.text_input("Contact Mobile No (10 Digits • Unique)", value=emp_contact).strip()
                     with ed_c2:
                         ed_div = st.selectbox("Department / Division (Transfer Anytime)", all_edit_divs, index=all_edit_divs.index(emp_div) if emp_div in all_edit_divs else 0, disabled=(is_div_restricted and len(all_edit_divs) == 1))
                         ed_role = st.text_input("Designation / Role", value=emp_role).strip()
@@ -1797,7 +1979,7 @@ def render_attendance_module(
 
                     eb_c1, eb_c2, eb_c3, eb_c4 = st.columns([1.2, 1.0, 1.2, 0.9])
                     with eb_c1:
-                        ed_acc = st.text_input("Bank Account No", value=emp_acc).strip()
+                        ed_acc = st.text_input("Bank Account No (Unique)", value=emp_acc).strip()
                     with eb_c2:
                         ed_ifsc = st.text_input("IFSC Code (11 Chars)", value=emp_ifsc).strip().upper()
                     with eb_c3:
@@ -1808,10 +1990,13 @@ def render_attendance_module(
 
                     if st.form_submit_button("💾 Save Updated Employee Profile", type="primary", use_container_width=True):
                         cleaned_ed, ed_errs = validate_and_clean_employee_fields(ed_contact, ed_ref, ed_acc, ed_ifsc)
+                        uniq_ed_errs = check_employee_uniqueness(cleaned_ed, w_table_full, exclude_wid=target_wid)
+                        tot_ed_errs = ed_errs + uniq_ed_errs
+
                         if not ed_name:
                             st.error("Employee Name is required.")
-                        elif ed_errs:
-                            for em in ed_errs:
+                        elif tot_ed_errs:
+                            for em in tot_ed_errs:
                                 st.error(f"❌ {em}")
                         else:
                             mask_w = w_table_full["Worker_ID"].astype(str) == target_wid
@@ -2003,6 +2188,23 @@ def render_attendance_module(
             disp_table_view["Week_Off_Day"] = disp_table_view["Week_Off_Day"].apply(normalize_week_off)
             req_cols = ["Worker_ID", "Full_Name", "Father_Husband_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
+
+            # EXPORT FULL MASTER ROSTER TO EXCEL (FOR BULK EDITING & RE-UPLOAD)
+            if not disp_table.empty:
+                export_cols_present = [c for c in EXPORT_ROSTER_COLS if c in disp_table.columns]
+                export_clean_df = disp_table[export_cols_present].copy()
+                for c_clean in export_clean_df.columns:
+                    if c_clean != "Base_Rate":
+                        export_clean_df[c_clean] = export_clean_df[c_clean].apply(clean_excel_cell)
+                roster_bytes, roster_ext = export_df_to_excel_bytes(export_clean_df, sheet_name="Master_Roster")
+                roster_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if roster_ext == "xlsx" else "text/csv"
+                st.download_button(
+                    label=f"📥 Export Master Roster to Excel ({len(export_clean_df)} Employees • .{roster_ext})",
+                    data=roster_bytes,
+                    file_name=f"M_s_INDU_SAO_Master_Roster_{datetime.date.today().strftime('%Y%m%d')}.{roster_ext}",
+                    mime=roster_mime,
+                    type="secondary"
+                )
 
     # 4. DAILY FIELD MUSTER ROLL (MULTI-DIVISION SCOPED)
     elif current_view == "Daily Muster Roll (Field Attendance)":
@@ -2529,7 +2731,6 @@ def render_attendance_module(
 
             st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
-            # SITE THEFT / LOSS BULK SHARED RECOVERY
             with st.container(border=True):
                 st.markdown("###### 🚨 Site Theft / Loss Shared Recovery")
                 st.caption("Auto-fetches workers engaged on the incident date and splits recovery equally or custom-wise.")
@@ -3111,6 +3312,7 @@ def render_attendance_module(
                 if st.button("💾 Save Bank Details & Refresh Bank Letters", type="primary", key=f"btn_save_bank_fix_{target_ym}"):
                     fix_errors = []
                     updates_to_apply = {}
+                    latest_wm = load_fn("worker_master")
                     for _, mr in edited_miss_df.iterrows():
                         wid_m = str(mr["Worker_ID"]).strip()
                         acc_m = clean_excel_cell(mr["Bank_Account_No"])
@@ -3118,8 +3320,10 @@ def render_attendance_module(
                         br_m = clean_excel_cell(mr["Bank_Branch_Details"]).upper()
                         if acc_m or ifsc_m:
                             c_res, c_errs = validate_and_clean_employee_fields("", "", acc_m, ifsc_m)
-                            if c_errs:
-                                fix_errors.append(f"{mr['Full_Name']} ({wid_m}): " + "; ".join(c_errs))
+                            u_errs = check_employee_uniqueness(c_res, latest_wm, exclude_wid=wid_m)
+                            all_f_errs = c_errs + u_errs
+                            if all_f_errs:
+                                fix_errors.append(f"{mr['Full_Name']} ({wid_m}): " + "; ".join(all_f_errs))
                             else:
                                 updates_to_apply[wid_m] = (c_res["Bank_Account_No"], c_res["Bank_IFSC_Code"], br_m)
 
@@ -3127,7 +3331,6 @@ def render_attendance_module(
                         for fe in fix_errors:
                             st.warning(f"❌ {fe}")
                     elif updates_to_apply:
-                        latest_wm = load_fn("worker_master")
                         for wid_u, (u_acc, u_ifsc, u_br) in updates_to_apply.items():
                             mask_u = latest_wm["Worker_ID"].astype(str) == wid_u
                             latest_wm = safe_update_df_rows(
