@@ -137,7 +137,25 @@ GENERAL_STAFF_ROLES = [
 COMPANY_CURRENT_AC = "482025110000105"
 
 
-# ----------------- VALIDATION, NORMALIZATION & ID HELPERS -----------------
+# ----------------- SAFE PANDAS UPDATE & VALIDATION HELPERS -----------------
+def safe_update_df_rows(df, mask, updates_dict):
+    """
+    Safely assigns scalar values to masked rows in a Pandas DataFrame without raising
+    LossySetitemError on Python 3.14 / Pandas 2.x when numeric columns receive strings.
+    """
+    df = df.copy()
+    for col, val in updates_dict.items():
+        if col not in df.columns:
+            df[col] = ""
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
+            df.loc[mask, col] = float(val)
+        else:
+            df[col] = df[col].astype(object)
+            df.loc[mask, col] = str(val) if val is not None else ""
+    return df
+
+
 def clean_excel_cell(val):
     """Safely converts Excel/CSV values to clean strings, stripping NaN/None and trailing '.0'."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -1307,7 +1325,6 @@ def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, 
         pdf.set_font("Helvetica", "B", 8.0)
         pdf.cell(w_cols[7], 7.2, f"Rs.{s['Net_Payable']:,.0f}/-", border=1, align="R", fill=True)
 
-        # Brief category-wise advance breakup (including Theft/Loss)
         adv_parts = []
         if float(s.get("Opening_Advance", 0)) > 0:
             adv_parts.append(f"Prev. Bal: Rs.{s['Opening_Advance']:,.0f}")
@@ -1612,12 +1629,14 @@ def render_attendance_module(
                     full_w_master = load_fn("worker_master")
                     updated_count = 0
                     if not full_w_master.empty and "Wage_Type" in full_w_master.columns:
+                        full_w_master["Skill_Category"] = full_w_master["Skill_Category"].astype(object)
+                        full_w_master["Base_Rate"] = pd.to_numeric(full_w_master["Base_Rate"], errors="coerce").fillna(0.0).astype(float)
                         for idx, wr in full_w_master.iterrows():
                             if str(wr.get("Wage_Type", "")).upper() == "DAILY_WAGE":
                                 w_cat = normalize_skill_category(wr.get("Skill_Category", ""), wr.get("Designation", ""), wr.get("Base_Rate", 0), "DAILY_WAGE")
                                 full_w_master.at[idx, "Skill_Category"] = w_cat
                                 if w_cat in new_rate_map:
-                                    full_w_master.at[idx, "Base_Rate"] = new_rate_map[w_cat]
+                                    full_w_master.at[idx, "Base_Rate"] = float(new_rate_map[w_cat])
                                     updated_count += 1
                         save_fn("worker_master", full_w_master[WORKER_MASTER_COLS])
                     st.success(f"Updated rates for **{updated_count} Daily Wage Workers**!")
@@ -1627,6 +1646,8 @@ def render_attendance_module(
                 if st.button("🔄 Auto-Assign Skill Categories & Defaults", type="secondary", use_container_width=True):
                     full_w_master = load_fn("worker_master")
                     if not full_w_master.empty:
+                        full_w_master["Skill_Category"] = full_w_master["Skill_Category"].astype(object)
+                        full_w_master["Week_Off_Day"] = full_w_master["Week_Off_Day"].astype(object)
                         assigned = 0
                         for idx, wr in full_w_master.iterrows():
                             norm_cat = normalize_skill_category(wr.get("Skill_Category", ""), wr.get("Designation", ""), wr.get("Base_Rate", 0), wr.get("Wage_Type", "DAILY_WAGE"))
@@ -1693,20 +1714,20 @@ def render_attendance_module(
                 return
 
             emp = w_match.iloc[0]
-            emp_name = str(emp.get("Full_Name", ""))
-            emp_father = str(emp.get("Father_Husband_Name", "")).strip()
-            emp_ref = str(emp.get("Govt_ID_Ref", ""))
-            emp_div = str(emp.get("Division", "Civil Construction"))
-            emp_role = str(emp.get("Designation", ""))
-            emp_wage_type = str(emp.get("Wage_Type", "DAILY_WAGE"))
+            emp_name = clean_excel_cell(emp.get("Full_Name", ""))
+            emp_father = clean_excel_cell(emp.get("Father_Husband_Name", ""))
+            emp_ref = clean_excel_cell(emp.get("Govt_ID_Ref", ""))
+            emp_div = clean_excel_cell(emp.get("Division", "Civil Construction")) or "Civil Construction"
+            emp_role = clean_excel_cell(emp.get("Designation", ""))
+            emp_wage_type = clean_excel_cell(emp.get("Wage_Type", "DAILY_WAGE")) or "DAILY_WAGE"
             emp_skill = normalize_skill_category(emp.get("Skill_Category", ""), emp_role, emp.get("Base_Rate", 0), emp_wage_type)
             emp_rate = float(pd.to_numeric(emp.get("Base_Rate", 0.0), errors="coerce") or 0.0)
             emp_wo = normalize_week_off(emp.get("Week_Off_Day", "Sunday"))
-            emp_acc = str(emp.get("Bank_Account_No", ""))
-            emp_ifsc = str(emp.get("Bank_IFSC_Code", ""))
-            emp_branch = str(emp.get("Bank_Branch_Details", ""))
-            emp_contact = str(emp.get("Contact_No", ""))
-            emp_status = str(emp.get("Status", "ACTIVE")).upper()
+            emp_acc = clean_excel_cell(emp.get("Bank_Account_No", ""))
+            emp_ifsc = clean_excel_cell(emp.get("Bank_IFSC_Code", ""))
+            emp_branch = clean_excel_cell(emp.get("Bank_Branch_Details", ""))
+            emp_contact = clean_excel_cell(emp.get("Contact_No", ""))
+            emp_status = (clean_excel_cell(emp.get("Status", "ACTIVE")) or "ACTIVE").upper()
             emp_photo_b64 = resolve_worker_photo_b64(emp, load_media_fn)
 
             with top_nav2:
@@ -1731,7 +1752,11 @@ def render_attendance_module(
                             p_flag = b64_new
                             if save_media_fn and save_media_fn(f"EMP_{target_wid}", b64_new):
                                 p_flag = "SAVED"
-                            w_table_full.loc[w_table_full["Worker_ID"].astype(str) == target_wid, "Photo_Base64"] = p_flag
+                            w_table_full = safe_update_df_rows(
+                                w_table_full,
+                                w_table_full["Worker_ID"].astype(str) == target_wid,
+                                {"Photo_Base64": p_flag}
+                            )
                             if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Photo updated!")
                                 st.rerun()
@@ -1790,9 +1815,26 @@ def render_attendance_module(
                                 st.error(f"❌ {em}")
                         else:
                             mask_w = w_table_full["Worker_ID"].astype(str) == target_wid
-                            w_table_full.loc[mask_w, ["Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Contact_No", "Division", "Designation", "Week_Off_Day", "Status", "Wage_Type", "Skill_Category", "Base_Rate", "Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [
-                                ed_name, ed_father, cleaned_ed["Govt_ID_Ref"], cleaned_ed["Contact_No"], ed_div, ed_role, ed_wo, ed_status, ed_wtype, ed_skill, ed_rate, cleaned_ed["Bank_Account_No"], cleaned_ed["Bank_IFSC_Code"], ed_branch
-                            ]
+                            w_table_full = safe_update_df_rows(
+                                w_table_full,
+                                mask_w,
+                                {
+                                    "Full_Name": ed_name,
+                                    "Father_Husband_Name": ed_father,
+                                    "Govt_ID_Ref": cleaned_ed["Govt_ID_Ref"],
+                                    "Contact_No": cleaned_ed["Contact_No"],
+                                    "Division": ed_div,
+                                    "Designation": ed_role,
+                                    "Week_Off_Day": ed_wo,
+                                    "Status": ed_status,
+                                    "Wage_Type": ed_wtype,
+                                    "Skill_Category": ed_skill,
+                                    "Base_Rate": float(ed_rate),
+                                    "Bank_Account_No": cleaned_ed["Bank_Account_No"],
+                                    "Bank_IFSC_Code": cleaned_ed["Bank_IFSC_Code"],
+                                    "Bank_Branch_Details": ed_branch
+                                }
+                            )
                             if save_fn("worker_master", w_table_full[WORKER_MASTER_COLS]):
                                 st.success("Profile updated!")
                                 st.rerun()
@@ -1867,9 +1909,16 @@ def render_attendance_module(
                         for _, erow in edited_emp_df.iterrows():
                             d_val = str(erow["Date"])
                             mask = (full_m_df["Worker_ID"].astype(str) == target_wid) & (full_m_df["Date"].astype(str) == d_val)
-                            full_m_df.loc[mask, ["Attendance", "Duty_Location", "OT_Hours", "Remarks"]] = [
-                                str(erow["Attendance"]), str(erow["Duty_Location"]), float(erow["OT_Hours"] or 0.0), str(erow["Remarks"] or "")
-                            ]
+                            full_m_df = safe_update_df_rows(
+                                full_m_df,
+                                mask,
+                                {
+                                    "Attendance": str(erow["Attendance"]),
+                                    "Duty_Location": str(erow["Duty_Location"]),
+                                    "OT_Hours": float(erow["OT_Hours"] or 0.0),
+                                    "Remarks": str(erow["Remarks"] or "")
+                                }
+                            )
                         if save_fn("muster_roll", full_m_df[MUSTER_ROLL_COLS]):
                             log_attendance_activity(load_fn, save_fn, "PROFILE_EDIT", f"{user_display_name} ({current_user})", "PROFILE_ATT_EDIT", f"Edited {emp_name} ({target_wid})")
                             for k in list(st.session_state.keys()):
@@ -2499,7 +2548,6 @@ def render_attendance_module(
                 th_tot_loss = st.number_input("Total Recovery Amount (₹)", min_value=0.0, value=2000.0, step=100.0, key="theft_tot_amt")
                 th_split_mode = st.radio("Split Method", ["Equal Split", "Custom Split"], horizontal=True, key="theft_split_mode")
 
-                # Find workers engaged (Present P or HD) on th_date_str
                 scoped_active_w = active_w_df.copy()
                 if th_div != "All Divisions" and not scoped_active_w.empty:
                     scoped_active_w = scoped_active_w[scoped_active_w["Division"].astype(str).str.strip() == th_div]
@@ -2540,7 +2588,6 @@ def render_attendance_module(
                     split_preview_rows = []
                     for i_s, lbl in enumerate(sel_th_labels):
                         wid_v, wname_v, wdiv_v = all_th_worker_map[lbl]
-                        # Adjust last worker by rounding diff so sum matches th_tot_loss exactly
                         share_amt = round(th_tot_loss - (equal_share * (cnt_sel - 1)), 0) if i_s == cnt_sel - 1 else equal_share
                         split_preview_rows.append({
                             "Worker_ID": wid_v,
@@ -2733,8 +2780,11 @@ def render_attendance_module(
                                 )
                                 fix_n = int(mask_fix.sum())
                                 if fix_n > 0:
-                                    full_m_all.loc[mask_fix, "Duty_Location"] = "Punch"
-                                    full_m_all.loc[mask_fix, "Remarks"] = "Auto-Synced to Punch via Form XVI"
+                                    full_m_all = safe_update_df_rows(
+                                        full_m_all,
+                                        mask_fix,
+                                        {"Duty_Location": "Punch", "Remarks": "Auto-Synced to Punch via Form XVI"}
+                                    )
                                     auto_corrected_cnt += fix_n
 
                         if auto_corrected_cnt > 0:
@@ -3042,7 +3092,6 @@ def render_attendance_module(
 
         st.markdown("###### 🏦 Bank Covering Letters — Set 1: Tata Steel Form XVII Compliance (Punch Payouts Only)")
 
-        # STRICT COMPLIANCE GUARDRAIL FOR MISSING BANK DATA IN FORM XVII
         if f17_missing_bank_list:
             tot_missing_17 = sum([x["Form_XVII_Net"] for x in f17_missing_bank_list])
             st.error(
@@ -3081,7 +3130,15 @@ def render_attendance_module(
                         latest_wm = load_fn("worker_master")
                         for wid_u, (u_acc, u_ifsc, u_br) in updates_to_apply.items():
                             mask_u = latest_wm["Worker_ID"].astype(str) == wid_u
-                            latest_wm.loc[mask_u, ["Bank_Account_No", "Bank_IFSC_Code", "Bank_Branch_Details"]] = [u_acc, u_ifsc, u_br]
+                            latest_wm = safe_update_df_rows(
+                                latest_wm,
+                                mask_u,
+                                {
+                                    "Bank_Account_No": u_acc,
+                                    "Bank_IFSC_Code": u_ifsc,
+                                    "Bank_Branch_Details": u_br
+                                }
+                            )
                         if save_fn("worker_master", latest_wm[WORKER_MASTER_COLS]):
                             st.success(f"Updated bank details for {len(updates_to_apply)} workers!")
                             st.rerun()
