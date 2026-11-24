@@ -143,7 +143,7 @@ GENERAL_STAFF_ROLES = [
 COMPANY_CURRENT_AC = "482025110000105"
 
 
-# ----------------- SAFE PANDAS UPDATE, UNIQUENESS & VALIDATION HELPERS -----------------
+# ----------------- SAFE PANDAS UPDATE, COLUMN MAPPER & VALIDATION HELPERS -----------------
 def safe_update_df_rows(df, mask, updates_dict):
     """
     Safely assigns scalar values to masked rows in a Pandas DataFrame without raising
@@ -163,19 +163,62 @@ def safe_update_df_rows(df, mask, updates_dict):
 
 
 def clean_excel_cell(val):
-    """Safely converts Excel/CSV values to clean strings, stripping NaN/None and trailing '.0'."""
+    """Safely converts Excel/CSV values (including scientific notation like 2.34568E+11) to clean strings."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     s = str(val).strip()
     if s.lower() in ["nan", "none", "null", "nat", "n/a", "-", "--"]:
         return ""
     if re.fullmatch(r"\d+\.0+", s):
-        s = s.split(".")[0]
+        return s.split(".")[0]
+    if re.fullmatch(r"\d+(\.\d+)?[eE]\+\d+", s):
+        try:
+            return str(int(round(float(s))))
+        except Exception:
+            pass
     return s
 
 
+def auto_map_excel_columns(df):
+    """Maps common Excel header variations (Govt ID, Mobile, Bank A/C, etc.) to standard schema names."""
+    df = df.copy()
+    rename_map = {}
+    for col in df.columns:
+        c_norm = re.sub(r"[\s\-_\/\.]+", "", str(col).strip().lower())
+        if c_norm in ["workerid", "empid", "employeecode", "empcode", "id"]:
+            rename_map[col] = "Worker_ID"
+        elif c_norm in ["fullname", "name", "employeename", "workername", "nameofworker"]:
+            rename_map[col] = "Full_Name"
+        elif c_norm in ["fatherhusbandname", "fathername", "husbandname", "fathersname", "fathershusbandname", "so", "wo"]:
+            rename_map[col] = "Father_Husband_Name"
+        elif c_norm in ["govtidref", "govtid", "govtidentity", "govtidentitynumber", "idnumber", "idno", "uid", "aadhar", "aadhaar", "aadharno", "aadhaarno"]:
+            rename_map[col] = "Govt_ID_Ref"
+        elif c_norm in ["division", "department", "dept", "site"]:
+            rename_map[col] = "Division"
+        elif c_norm in ["designation", "role", "post", "trade"]:
+            rename_map[col] = "Designation"
+        elif c_norm in ["wagetype", "wagemodel", "paytype"]:
+            rename_map[col] = "Wage_Type"
+        elif c_norm in ["skillcategory", "skill", "category"]:
+            rename_map[col] = "Skill_Category"
+        elif c_norm in ["baserate", "rate", "dailyrate", "salary", "wage"]:
+            rename_map[col] = "Base_Rate"
+        elif c_norm in ["weekoffday", "weekoff", "weeklyoff", "offday"]:
+            rename_map[col] = "Week_Off_Day"
+        elif c_norm in ["contactno", "mobile", "mobileno", "mobilenumber", "phone", "phoneno", "contact"]:
+            rename_map[col] = "Contact_No"
+        elif c_norm in ["bankaccountno", "accountno", "accountnumber", "bankaccount", "acno", "bankac"]:
+            rename_map[col] = "Bank_Account_No"
+        elif c_norm in ["bankifsccode", "ifsc", "ifsccode", "bankifsc"]:
+            rename_map[col] = "Bank_IFSC_Code"
+        elif c_norm in ["bankbranchdetails", "branch", "bankbranch", "bankname"]:
+            rename_map[col] = "Bank_Branch_Details"
+        elif c_norm in ["status", "activestatus"]:
+            rename_map[col] = "Status"
+    return df.rename(columns=rename_map)
+
+
 def normalize_skill_category(raw_skill, role_str="", rate_val=0.0, wage_type="DAILY_WAGE"):
-    """Normalizes values like 'UN SKILLED', 'SEMI SKILLED', 'HIGHLY SKILLED' to exact system categories."""
     if str(wage_type or "").strip().upper() == "MONTHLY_FIXED":
         return "Monthly Fixed"
     s = re.sub(r"[\s\-_]+", "", clean_excel_cell(raw_skill).upper())
@@ -194,12 +237,11 @@ def normalize_skill_category(raw_skill, role_str="", rate_val=0.0, wage_type="DA
 
 def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, ifsc_raw):
     """
-    Auto-cleans Excel NaN/.0/spaces/dashes and validates:
+    Auto-cleans Excel NaN/.0/spaces/dashes/scientific notation and validates:
     - Mobile: 10 digits (strips +91 / leading 0)
-    - Govt ID (12-digit ID): 12 digits (strips spaces/dashes)
+    - Govt ID (12-digit ID): 12 digits (strips spaces/dashes like '1234 5678 9012')
     - Bank Account: 9 to 18 digits (strips spaces/dashes)
     - IFSC Code: 11-char RBI standard (4 letters + '0' + 6 alphanumeric; auto-fixes 5th char 'O'->'0')
-    Returns (cleaned_dict, error_list).
     """
     errors = []
 
@@ -213,7 +255,7 @@ def validate_and_clean_employee_fields(contact_raw, govt_id_raw, bank_acc_raw, i
         errors.append(f"Mobile '{mob_raw}' must be 10 digits.")
 
     gid_raw = clean_excel_cell(govt_id_raw)
-    gid_clean = re.sub(r"[\s\-]", "", gid_raw)
+    gid_clean = re.sub(r"[\s\-\.\,]", "", gid_raw)
     if gid_clean and not re.fullmatch(r"\d{12}", gid_clean):
         errors.append(f"Govt ID '{gid_raw}' must be 12 digits.")
 
@@ -241,7 +283,6 @@ def check_employee_uniqueness(cleaned_fields, existing_df, exclude_wid=None, bat
     """
     Ensures no two distinct employees share the same Mobile Number, 12-Digit Govt ID,
     or Bank Account Number (Full_Name is allowed to be the same).
-    Returns a list of human-readable conflict error strings.
     """
     conflicts = []
     mob = cleaned_fields.get("Contact_No", "")
@@ -280,6 +321,82 @@ def check_employee_uniqueness(cleaned_fields, existing_df, exclude_wid=None, bat
     return list(dict.fromkeys(conflicts))
 
 
+def find_duplicate_groups_in_master(w_df):
+    """
+    Detects duplicate employee rows in worker_master (matching Full_Name + Father/Husband Name,
+    or matching Mobile, Bank A/C, or 12-Digit Govt ID) for interactive Keep / Delete / Edit review.
+    """
+    if w_df is None or w_df.empty or "Worker_ID" not in w_df.columns:
+        return pd.DataFrame()
+
+    nf_counts = {}
+    mob_counts = {}
+    acc_counts = {}
+    gid_counts = {}
+
+    for _, r in w_df.iterrows():
+        n_k = normalize_name_key(r.get("Full_Name", ""))
+        f_k = normalize_name_key(r.get("Father_Husband_Name", ""))
+        if n_k:
+            nf_counts[(n_k, f_k)] = nf_counts.get((n_k, f_k), 0) + 1
+        m_k = re.sub(r"[\s\-\(\)\+]", "", clean_excel_cell(r.get("Contact_No", "")))
+        if m_k:
+            mob_counts[m_k] = mob_counts.get(m_k, 0) + 1
+        a_k = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Bank_Account_No", "")))
+        if a_k:
+            acc_counts[a_k] = acc_counts.get(a_k, 0) + 1
+        g_k = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Govt_ID_Ref", "")))
+        if g_k:
+            gid_counts[g_k] = gid_counts.get(g_k, 0) + 1
+
+    seen_keys = set()
+    dup_rows = []
+    for _, r in w_df.iterrows():
+        n_k = normalize_name_key(r.get("Full_Name", ""))
+        f_k = normalize_name_key(r.get("Father_Husband_Name", ""))
+        m_k = re.sub(r"[\s\-\(\)\+]", "", clean_excel_cell(r.get("Contact_No", "")))
+        a_k = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Bank_Account_No", "")))
+        g_k = re.sub(r"[\s\-]", "", clean_excel_cell(r.get("Govt_ID_Ref", "")))
+
+        reasons = []
+        grp_sig = None
+        if n_k and nf_counts.get((n_k, f_k), 0) > 1:
+            reasons.append(f"Same Name + Father/Husband ({nf_counts[(n_k, f_k)]}x)")
+            grp_sig = ("NF", n_k, f_k)
+        if m_k and mob_counts.get(m_k, 0) > 1:
+            reasons.append(f"Same Mobile ({mob_counts[m_k]}x)")
+            grp_sig = grp_sig or ("MOB", m_k)
+        if a_k and acc_counts.get(a_k, 0) > 1:
+            reasons.append(f"Same Bank A/C ({acc_counts[a_k]}x)")
+            grp_sig = grp_sig or ("ACC", a_k)
+        if g_k and gid_counts.get(g_k, 0) > 1:
+            reasons.append(f"Same Govt ID ({gid_counts[g_k]}x)")
+            grp_sig = grp_sig or ("GID", g_k)
+
+        if reasons:
+            is_first = grp_sig not in seen_keys
+            seen_keys.add(grp_sig)
+            dup_rows.append({
+                "Action": "Keep (Waise Hi Rehne Dein)" if is_first else "Delete (Hatayein)",
+                "Worker_ID": clean_excel_cell(r.get("Worker_ID", "")),
+                "Full_Name": clean_excel_cell(r.get("Full_Name", "")),
+                "Father_Husband_Name": clean_excel_cell(r.get("Father_Husband_Name", "")),
+                "Govt_ID_Ref": g_k,
+                "Division": clean_excel_cell(r.get("Division", "")),
+                "Designation": clean_excel_cell(r.get("Designation", "")),
+                "Base_Rate": float(pd.to_numeric(r.get("Base_Rate", 0), errors="coerce") or 0.0),
+                "Contact_No": m_k,
+                "Bank_Account_No": a_k,
+                "Bank_IFSC_Code": clean_excel_cell(r.get("Bank_IFSC_Code", "")),
+                "Status": clean_excel_cell(r.get("Status", "ACTIVE")),
+                "Conflict_Reason": " | ".join(reasons)
+            })
+
+    if not dup_rows:
+        return pd.DataFrame()
+    return pd.DataFrame(dup_rows).sort_values(by=["Full_Name", "Worker_ID"]).reset_index(drop=True)
+
+
 def is_valid_bank_for_transfer(acc_str, ifsc_str):
     acc_c = re.sub(r"[\s\-]", "", clean_excel_cell(acc_str))
     ifsc_c = re.sub(r"\s+", "", clean_excel_cell(ifsc_str)).upper()
@@ -287,7 +404,6 @@ def is_valid_bank_for_transfer(acc_str, ifsc_str):
 
 
 def normalize_division_name(raw_div):
-    """Normalizes common department variations cleanly while supporting custom departments."""
     s = re.sub(r"\s+", " ", clean_excel_cell(raw_div))
     if not s:
         return "Civil Construction"
@@ -306,7 +422,6 @@ def normalize_division_name(raw_div):
 
 
 def get_available_divisions(w_df=None):
-    """Returns all base divisions plus any custom divisions stored in worker_master."""
     divs = list(BASE_DIVISIONS)
     if w_df is not None and not w_df.empty and "Division" in w_df.columns:
         for d in w_df["Division"].astype(str).unique().tolist():
@@ -317,7 +432,6 @@ def get_available_divisions(w_df=None):
 
 
 def parse_allowed_divisions_list(allowed_division_str):
-    """Parses comma-separated allowed divisions into a clean list (empty list = All Divisions)."""
     raw = str(allowed_division_str or "").strip()
     if not raw or "all divisions" in raw.lower():
         return []
@@ -417,7 +531,6 @@ def compress_photo_to_base64(uploaded_img):
 
 
 def resolve_worker_photo_b64(emp_row, load_media_fn=None):
-    """Fetches photo from dedicated media_store (or falls back to legacy inline base64)."""
     wid = str(emp_row.get("Worker_ID", "")).strip()
     raw_val = str(emp_row.get("Photo_Base64", "")).strip()
     if raw_val == "SAVED" and load_media_fn:
@@ -430,7 +543,6 @@ def resolve_worker_photo_b64(emp_row, load_media_fn=None):
 
 
 def get_active_statutory_config(load_fn):
-    """Loads dynamic EPF/ESIC wage ceilings & percentages from Google Sheets (with safe defaults)."""
     cfg = {
         "EPF_WAGE_CEILING": DEFAULT_EPF_WAGE_CEILING,
         "EPF_RATE_PCT": DEFAULT_EPF_RATE_PCT,
@@ -537,16 +649,13 @@ def build_bulk_employee_template_excel(default_div="Fleet Operations"):
 
 def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_restricted, allowed_div_list):
     """
-    Smart Upsert + Strict Uniqueness Validator:
-    - Matches existing employees by Worker_ID -> Govt_ID_Ref -> (Full_Name + Father_Husband_Name).
+    Smart Upsert + Flexible Column Auto-Mapper + Strict Uniqueness Validator:
+    - Auto-maps Excel column names (Govt ID, Mobile, Bank A/C, etc.) and cleans spaces/scientific notation.
+    - Matches existing employees by Worker_ID -> Govt_ID_Ref -> Contact_No -> Bank_Account_No -> (Full_Name + Father_Husband_Name).
     - Preserves existing Worker_IDs permanently; assigns sequential IS-#### only to genuinely new employees.
-    - Blocks duplicate Mobile, 12-Digit Govt ID, or Bank Account across employees (Full_Name may be identical).
-    - Separates results into:
-      1. update_items: list of dicts with Worker_ID, Full_Name, Changed_Fields, and updated_row_dict
-      2. new_rows: list of clean dicts ready to append
-      3. unchanged_count: int of existing rows with zero modifications
-      4. error_rows: list of dicts with Excel_Row, Full_Name, Error_Reason + original columns
     """
+    b_df = auto_map_excel_columns(b_df)
+
     update_items = []
     new_rows = []
     unchanged_count = 0
@@ -554,10 +663,13 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
 
     batch_seen = {"mob": {}, "gid": {}, "acc": {}}
 
-    # Pre-index existing employees for fast matching
     existing_by_wid = {}
     existing_by_gid = {}
+    existing_by_mob = {}
+    existing_by_acc = {}
     existing_by_name_father = {}
+    existing_by_name_only = {}
+
     if existing_w_df is not None and not existing_w_df.empty and "Worker_ID" in existing_w_df.columns:
         for _, er in existing_w_df.iterrows():
             ewid = clean_excel_cell(er.get("Worker_ID", "")).upper()
@@ -566,11 +678,17 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             egid = re.sub(r"[\s\-]", "", clean_excel_cell(er.get("Govt_ID_Ref", "")))
             if egid:
                 existing_by_gid[egid] = er
+            emob = re.sub(r"[\s\-\(\)\+]", "", clean_excel_cell(er.get("Contact_No", "")))
+            if emob:
+                existing_by_mob[emob] = er
+            eacc = re.sub(r"[\s\-]", "", clean_excel_cell(er.get("Bank_Account_No", "")))
+            if eacc:
+                existing_by_acc[eacc] = er
             ename = normalize_name_key(er.get("Full_Name", ""))
             efath = normalize_name_key(er.get("Father_Husband_Name", ""))
             if ename:
-                nf_key = (ename, efath)
-                existing_by_name_father.setdefault(nf_key, []).append(er)
+                existing_by_name_father.setdefault((ename, efath), []).append(er)
+                existing_by_name_only.setdefault(ename, []).append(er)
 
     compare_fields = [
         "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Division", "Designation",
@@ -591,21 +709,27 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             b_row.get("Bank_IFSC_Code", "")
         )
 
-        # Determine if this row corresponds to an existing employee
+        # Smart Match Priority: Worker_ID -> Govt_ID -> Mobile -> Bank_Account -> Name+Father -> Unique Name
         matched_existing = None
         if raw_wid and raw_wid in existing_by_wid:
             matched_existing = existing_by_wid[raw_wid]
         elif cleaned_f["Govt_ID_Ref"] and cleaned_f["Govt_ID_Ref"] in existing_by_gid:
             matched_existing = existing_by_gid[cleaned_f["Govt_ID_Ref"]]
+        elif cleaned_f["Contact_No"] and cleaned_f["Contact_No"] in existing_by_mob:
+            matched_existing = existing_by_mob[cleaned_f["Contact_No"]]
+        elif cleaned_f["Bank_Account_No"] and cleaned_f["Bank_Account_No"] in existing_by_acc:
+            matched_existing = existing_by_acc[cleaned_f["Bank_Account_No"]]
         else:
-            nf_k = (normalize_name_key(fname_chk), normalize_name_key(b_row.get("Father_Husband_Name", "")))
-            cands = existing_by_name_father.get(nf_k, [])
-            if len(cands) == 1:
-                matched_existing = cands[0]
+            ename_k = normalize_name_key(fname_chk)
+            efath_k = normalize_name_key(b_row.get("Father_Husband_Name", ""))
+            nf_cands = existing_by_name_father.get((ename_k, efath_k), [])
+            if len(nf_cands) == 1:
+                matched_existing = nf_cands[0]
+            elif not efath_k and len(existing_by_name_only.get(ename_k, [])) == 1:
+                matched_existing = existing_by_name_only[ename_k][0]
 
         target_excl_wid = clean_excel_cell(matched_existing.get("Worker_ID", "")).upper() if matched_existing is not None else None
 
-        # Check uniqueness across existing DB (excluding self) and within current Excel batch
         uniq_errs = check_employee_uniqueness(cleaned_f, existing_w_df, exclude_wid=target_excl_wid, batch_seen=batch_seen)
         all_row_errs = row_errs + uniq_errs
 
@@ -621,7 +745,6 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             error_rows.append(err_dict)
             continue
 
-        # Record unique tokens in batch_seen
         row_label = f"Row {r_idx + 2}: {fname_chk}"
         if cleaned_f["Contact_No"]:
             batch_seen["mob"][cleaned_f["Contact_No"]] = row_label
@@ -631,7 +754,7 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             batch_seen["acc"][cleaned_f["Bank_Account_No"]] = row_label
 
         raw_div = b_row.get("Division", "")
-        div_val = normalize_division_name(raw_div)
+        div_val = normalize_division_name(raw_div) if clean_excel_cell(raw_div) else (clean_excel_cell(matched_existing.get("Division", "Civil Construction")) if matched_existing is not None else "Civil Construction")
         if is_div_restricted and div_val.lower() not in {x.lower() for x in allowed_div_list}:
             div_val = allowed_div_list[0]
 
@@ -659,32 +782,43 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
                 b_rate_val = float(rate_lookup.get(clean_skill, 565.0)) if w_type_val == "DAILY_WAGE" else 18000.0
 
         f_husb = clean_excel_cell(b_row.get("Father_Husband_Name", ""))
+        if not f_husb and matched_existing is not None:
+            f_husb = clean_excel_cell(matched_existing.get("Father_Husband_Name", ""))
+
         stat_val = clean_excel_cell(b_row.get("Status", "")).upper()
         if stat_val not in ["ACTIVE", "INACTIVE"]:
             stat_val = clean_excel_cell(matched_existing.get("Status", "ACTIVE")).upper() if matched_existing is not None else "ACTIVE"
             if stat_val not in ["ACTIVE", "INACTIVE"]:
                 stat_val = "ACTIVE"
 
-        wo_val = normalize_week_off(b_row.get("Week_Off_Day", "Sunday"))
+        wo_raw = clean_excel_cell(b_row.get("Week_Off_Day", ""))
+        wo_val = normalize_week_off(wo_raw) if wo_raw else (normalize_week_off(matched_existing.get("Week_Off_Day", "Sunday")) if matched_existing is not None else "Sunday")
         br_val = clean_excel_cell(b_row.get("Bank_Branch_Details", "")).upper()
+        if not br_val and matched_existing is not None:
+            br_val = clean_excel_cell(matched_existing.get("Bank_Branch_Details", "")).upper()
+
+        # Preserve existing Govt_ID / Mobile / Bank A/C / IFSC if cell was left blank in partial Excel upload
+        fin_gid = cleaned_f["Govt_ID_Ref"] or (clean_excel_cell(matched_existing.get("Govt_ID_Ref", "")) if matched_existing is not None else "")
+        fin_mob = cleaned_f["Contact_No"] or (clean_excel_cell(matched_existing.get("Contact_No", "")) if matched_existing is not None else "")
+        fin_acc = cleaned_f["Bank_Account_No"] or (clean_excel_cell(matched_existing.get("Bank_Account_No", "")) if matched_existing is not None else "")
+        fin_ifsc = cleaned_f["Bank_IFSC_Code"] or (clean_excel_cell(matched_existing.get("Bank_IFSC_Code", "")) if matched_existing is not None else "")
 
         if matched_existing is not None:
-            # Preserve exact existing Worker_ID, Created_Date, Photo_Base64
             keep_wid = clean_excel_cell(matched_existing.get("Worker_ID", ""))
             updated_dict = {
                 "Worker_ID": keep_wid,
                 "Full_Name": fname_chk,
                 "Father_Husband_Name": f_husb,
-                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"],
+                "Govt_ID_Ref": fin_gid,
                 "Division": div_val,
                 "Designation": clean_desig,
                 "Wage_Type": w_type_val,
                 "Skill_Category": clean_skill,
                 "Base_Rate": float(b_rate_val),
                 "Week_Off_Day": wo_val,
-                "Contact_No": cleaned_f["Contact_No"],
-                "Bank_Account_No": cleaned_f["Bank_Account_No"],
-                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
+                "Contact_No": fin_mob,
+                "Bank_Account_No": fin_acc,
+                "Bank_IFSC_Code": fin_ifsc,
                 "Bank_Branch_Details": br_val,
                 "Status": stat_val
             }
@@ -706,6 +840,7 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
 
             if diffs:
                 update_items.append({
+                    "Apply": True,
                     "Worker_ID": keep_wid,
                     "Full_Name": fname_chk,
                     "Changed_Fields": " | ".join(diffs),
@@ -714,23 +849,23 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
             else:
                 unchanged_count += 1
         else:
-            # Genuinely new employee -> assign next sequential IS-#### without touching old IDs
             cur_merged = pd.concat([existing_w_df, pd.DataFrame(new_rows)], ignore_index=True)
             new_gen_id = generate_next_worker_id("", cur_merged)
             new_rows.append({
+                "Add": True,
                 "Worker_ID": new_gen_id,
                 "Full_Name": fname_chk,
                 "Father_Husband_Name": f_husb,
-                "Govt_ID_Ref": cleaned_f["Govt_ID_Ref"],
+                "Govt_ID_Ref": fin_gid,
                 "Division": div_val,
                 "Designation": clean_desig,
                 "Wage_Type": w_type_val,
                 "Skill_Category": clean_skill,
                 "Base_Rate": float(b_rate_val),
                 "Week_Off_Day": wo_val,
-                "Contact_No": cleaned_f["Contact_No"],
-                "Bank_Account_No": cleaned_f["Bank_Account_No"],
-                "Bank_IFSC_Code": cleaned_f["Bank_IFSC_Code"],
+                "Contact_No": fin_mob,
+                "Bank_Account_No": fin_acc,
+                "Bank_IFSC_Code": fin_ifsc,
                 "Bank_Branch_Details": br_val,
                 "Status": stat_val,
                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
@@ -742,11 +877,6 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
 
 # ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
 def parse_tata_form_xvi_file(uploaded_file, target_ym):
-    """
-    Parses Tata Steel Form XVI (Biometric Muster Roll) from PDF, CSV, or XLSX.
-    Extracts Worker_Name, Father_Husband_Name, Punch_Days_Count, and Punch_Dates_List.
-    Automatically skips zero-attendance rows.
-    """
     y_i = int(target_ym.split("-")[0])
     m_i = int(target_ym.split("-")[1])
     max_days = calendar.monthrange(y_i, m_i)[1]
@@ -934,10 +1064,6 @@ def parse_tata_form_xvi_file(uploaded_file, target_ym):
 
 
 def parse_tata_form_xvii_pdf(uploaded_pdf_file):
-    """
-    Parses Tata Steel Form XVII (Register of Wages) PDF accurately:
-    Extracts Worker_Name, Register_Sl_No, Approved_Days, and Net_Amount_Paid.
-    """
     if not PYPDF_AVAILABLE:
         return pd.DataFrame()
     reader = pypdf.PdfReader(uploaded_pdf_file)
@@ -1003,10 +1129,6 @@ def parse_tata_form_xvii_pdf(uploaded_pdf_file):
 
 # ----------------- PAYROLL & ADVANCE CARRY-FORWARD ENGINE -----------------
 def calculate_statutory_pf_esic(punch_wages_only, stat_cfg=None):
-    """
-    Applies dynamic EPF & ESIC wage ceilings and rates ONLY on Punch (Form XVI/XVII) wages.
-    Non-Punch wages are completely exempt from PF & ESIC deductions.
-    """
     if punch_wages_only <= 0:
         return 0.0, 0.0
     cfg = stat_cfg or {}
@@ -1402,7 +1524,6 @@ def generate_atm_id_cards_pdf(workers_df, logo_fn, load_media_fn=None):
 
 
 def generate_compact_salary_slips_pdf(slip_records, wage_period_label, logo_fn, stat_cfg=None):
-    """Generates brief, uncluttered 3-up A4 salary slips with category-wise advance breakup."""
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
@@ -1550,7 +1671,7 @@ def render_attendance_module(
     allowed_div_list = [] if is_admin else parse_allowed_divisions_list(allowed_division)
     is_div_restricted = (len(allowed_div_list) > 0)
 
-    # 1. EMPLOYEE ENROLMENT (SINGLE + SMART UPSERT BULK UPLOAD)
+    # 1. EMPLOYEE ENROLMENT (SINGLE + SMART UPSERT BULK UPLOAD WITH ROW CONTROL)
     if current_view == "➕ Employee Enrolment":
         st.markdown("#### Employee Enrolment")
         st.caption("Permanent IS-1001 Employee Codes, Strict Uniqueness (Mobile / Bank A/C / 12-Digit ID), and Smart Excel Upsert")
@@ -1689,7 +1810,7 @@ def render_attendance_module(
         else:
             with st.container(border=True):
                 st.markdown("###### 1. Download Template or Export Master Roster")
-                st.caption("Tip: To edit existing employees in bulk, export your current roster from **Master Register & ID Cards**, edit in Excel, add new rows at the bottom (leave `Worker_ID` blank for new employees), and upload below.")
+                st.caption("Tip: Export your current roster from **Master Register & ID Cards**, edit in Excel, add new rows at the bottom (leave `Worker_ID` blank for new employees), and upload below.")
                 tpl_bytes, tpl_ext = build_bulk_employee_template_excel(allowed_division if is_div_restricted else "Fleet Operations")
                 tpl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if tpl_ext == "xlsx" else "text/csv"
                 st.download_button(
@@ -1702,7 +1823,9 @@ def render_attendance_module(
 
                 st.markdown("---")
                 st.markdown("###### 2. Upload Completed Employee Roster (Smart Update + Add New)")
-                up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"])
+                if "bulk_uploader_nonce" not in st.session_state:
+                    st.session_state["bulk_uploader_nonce"] = 0
+                up_file = st.file_uploader("Upload CSV / XLSX File", type=["csv", "xlsx"], key=f"bulk_roster_up_{st.session_state['bulk_uploader_nonce']}")
                 if up_file:
                     b_df = pd.read_csv(up_file, dtype=str) if up_file.name.lower().endswith(".csv") else pd.ExcelFile(up_file).parse(0, dtype=str)
                     b_df.columns = [str(c).strip() for c in b_df.columns]
@@ -1715,21 +1838,39 @@ def render_attendance_module(
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("🔄 To Update (Edited)", len(update_items))
                     m2.metric("➕ New Employees", len(new_rows))
-                    m3.metric("⏸️ Unchanged (Skipped)", unchanged_cnt)
+                    m3.metric("⏸️ Unchanged (Waise Hi)", unchanged_cnt)
                     m4.metric("⚠️ Duplicate / Errors", len(error_rows))
 
+                    chosen_updates = []
                     if update_items:
-                        st.markdown("###### 🔄 Preview: Existing Employees to Be Updated (Original `Worker_ID` Preserved)")
-                        upd_preview_df = pd.DataFrame([
-                            {"Worker_ID": u["Worker_ID"], "Full_Name": u["Full_Name"], "Changed_Fields": u["Changed_Fields"]}
+                        st.markdown("###### 🔄 Review Existing Employees to Update (Uncheck any row to leave it unchanged)")
+                        upd_table_df = pd.DataFrame([
+                            {"Apply": True, "Worker_ID": u["Worker_ID"], "Full_Name": u["Full_Name"], "Changed_Fields": u["Changed_Fields"]}
                             for u in update_items
                         ])
-                        st.dataframe(upd_preview_df, use_container_width=True, hide_index=True)
+                        edited_upd_tbl = st.data_editor(
+                            upd_table_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=["Worker_ID", "Full_Name", "Changed_Fields"],
+                            key=f"bulk_upd_chk_{st.session_state['bulk_uploader_nonce']}"
+                        )
+                        apply_wids = set(edited_upd_tbl[edited_upd_tbl["Apply"] == True]["Worker_ID"].astype(str).tolist())
+                        chosen_updates = [u for u in update_items if u["Worker_ID"] in apply_wids]
 
+                    chosen_new_rows = []
                     if new_rows:
-                        st.markdown("###### ➕ Preview: New Employees to Be Added")
-                        new_preview_df = pd.DataFrame(new_rows)[["Worker_ID", "Full_Name", "Father_Husband_Name", "Division", "Designation", "Skill_Category", "Base_Rate", "Contact_No", "Bank_Account_No"]]
-                        st.dataframe(new_preview_df, use_container_width=True, hide_index=True)
+                        st.markdown("###### ➕ Review New Employees to Add (Uncheck any row to skip adding)")
+                        new_table_df = pd.DataFrame(new_rows)[["Add", "Worker_ID", "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Division", "Designation", "Base_Rate", "Contact_No", "Bank_Account_No"]]
+                        edited_new_tbl = st.data_editor(
+                            new_table_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            disabled=["Worker_ID"],
+                            key=f"bulk_new_chk_{st.session_state['bulk_uploader_nonce']}"
+                        )
+                        add_wids = set(edited_new_tbl[edited_new_tbl["Add"] == True]["Worker_ID"].astype(str).tolist())
+                        chosen_new_rows = [{k: v for k, v in nr.items() if k != "Add"} for nr in new_rows if nr["Worker_ID"] in add_wids]
 
                     if error_rows:
                         st.warning(f"⚠️ **{len(error_rows)} rows** have duplicate Mobile / Bank A/C / 12-Digit ID or format errors and will be skipped:")
@@ -1744,28 +1885,38 @@ def render_attendance_module(
                         with st.expander(f"🔍 View {len(error_rows)} Skipped / Error Rows Details", expanded=True):
                             st.dataframe(err_df_export[["Excel_Row", "Full_Name", "Error_Reason"]], use_container_width=True, hide_index=True)
 
-                    total_valid_actions = len(update_items) + len(new_rows)
+                    total_valid_actions = len(chosen_updates) + len(chosen_new_rows)
                     if total_valid_actions > 0:
-                        btn_lbl = f"🚀 Commit {len(update_items)} Updates & {len(new_rows)} New Employees"
+                        btn_lbl = f"🚀 Commit {len(chosen_updates)} Updates & {len(chosen_new_rows)} New Employees"
                         if error_rows:
                             btn_lbl += f" (Skip {len(error_rows)} Errors)"
-                        if st.button(btn_lbl, type="primary", use_container_width=True):
-                            fin_w_df = w_df_live.copy()
-                            # 1. Apply updates to existing rows while preserving exact Worker_ID
-                            for u in update_items:
-                                mask_u = fin_w_df["Worker_ID"].astype(str).str.strip().str.upper() == u["Worker_ID"].upper()
+                        if st.button(btn_lbl, type="primary", use_container_width=True, key=f"btn_commit_bulk_{st.session_state['bulk_uploader_nonce']}"):
+                            latest_db_df = load_fn("worker_master").copy()
+                            for u in chosen_updates:
+                                mask_u = latest_db_df["Worker_ID"].astype(str).str.strip().str.upper() == u["Worker_ID"].upper()
                                 upd_fields_no_id = {k: v for k, v in u["updated_dict"].items() if k != "Worker_ID"}
-                                fin_w_df = safe_update_df_rows(fin_w_df, mask_u, upd_fields_no_id)
+                                latest_db_df = safe_update_df_rows(latest_db_df, mask_u, upd_fields_no_id)
 
-                            # 2. Append genuinely new rows with new IS-#### IDs
-                            if new_rows:
-                                fin_w_df = pd.concat([fin_w_df, pd.DataFrame(new_rows)], ignore_index=True)
+                            if chosen_new_rows:
+                                # Re-verify IDs & uniqueness against latest DB right before saving to prevent double-click duplicates
+                                final_clean_new = []
+                                cur_temp_df = latest_db_df.copy()
+                                for nr in chosen_new_rows:
+                                    u_chk = check_employee_uniqueness(nr, cur_temp_df)
+                                    if not u_chk:
+                                        nr_copy = dict(nr)
+                                        nr_copy["Worker_ID"] = generate_next_worker_id("", cur_temp_df)
+                                        final_clean_new.append(nr_copy)
+                                        cur_temp_df = pd.concat([cur_temp_df, pd.DataFrame([nr_copy])], ignore_index=True)
+                                if final_clean_new:
+                                    latest_db_df = pd.concat([latest_db_df, pd.DataFrame(final_clean_new)], ignore_index=True)
 
-                            if save_fn("worker_master", fin_w_df[WORKER_MASTER_COLS]):
-                                st.success(f"Done! Updated **{len(update_items)}** existing employees and added **{len(new_rows)}** new employees.")
+                            if save_fn("worker_master", latest_db_df[WORKER_MASTER_COLS]):
+                                st.session_state["bulk_uploader_nonce"] += 1
+                                st.success(f"Done! Updated **{len(chosen_updates)}** existing employees and added **{len(chosen_new_rows)}** new employees.")
                                 st.rerun()
                     elif not error_rows:
-                        st.info("No changes or new employees detected in the uploaded file.")
+                        st.info("No changes or new employees selected to commit.")
 
     # 2. STATUTORY WAGE RATES & EDITABLE EPF/ESIC CEILING MASTER
     elif current_view == "⚖️ Statutory Wage Rates":
@@ -1872,7 +2023,7 @@ def render_attendance_module(
                         st.success(f"Saved! EPF Cap: ₹{new_epf_cap:,.0f} ({new_epf_pct:g}%) | ESIC Cap: ₹{new_esic_cap:,.0f} ({new_esic_pct:g}%).")
                         st.rerun()
 
-    # 3. EMPLOYEE MASTER REGISTER & OPEN PROFILE
+    # 3. EMPLOYEE MASTER REGISTER, DUPLICATE CLEANUP WORKBENCH & OPEN PROFILE
     elif current_view == "📋 Employee Master Register":
         w_table_full = load_fn("worker_master")
         w_table = filter_workers_by_allowed_division(w_table_full, allowed_division if is_div_restricted else "All Divisions")
@@ -2118,6 +2269,78 @@ def render_attendance_module(
                 st.info("No employee records found for your assigned department(s).")
                 return
 
+            dup_review_df = find_duplicate_groups_in_master(w_table)
+            if not dup_review_df.empty:
+                st.error(f"🚨 **Duplicate Records Detected ({len(dup_review_df)} Rows):** Choose **Keep (Waise Hi Rehne Dein)** or **Delete (Hatayein)** and edit any fields directly below:")
+                with st.expander("🧹 Interactive Duplicate & Field Review Table (Keep / Delete / Inline Edit)", expanded=True):
+                    st.caption("First occurrence is pre-marked `Keep (Waise Hi Rehne Dein)` and extra copies are marked `Delete (Hatayein)`. You can change any row's Action or edit its fields before clicking Apply.")
+                    edited_dup_df = st.data_editor(
+                        dup_review_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=["Worker_ID", "Conflict_Reason"],
+                        column_config={
+                            "Action": st.column_config.SelectboxColumn(
+                                "Action",
+                                options=["Keep (Waise Hi Rehne Dein)", "Delete (Hatayein)"],
+                                required=True
+                            ),
+                            "Base_Rate": st.column_config.NumberColumn("Base_Rate", min_value=0.0, step=10.0)
+                        },
+                        key="interactive_dup_cleanup_editor"
+                    )
+                    del_count = int((edited_dup_df["Action"] == "Delete (Hatayein)").sum())
+                    keep_count = int((edited_dup_df["Action"] == "Keep (Waise Hi Rehne Dein)").sum())
+
+                    if st.button(f"💾 Apply Selected Actions (Delete {del_count} Rows & Save {keep_count} Kept Edits)", type="primary", key="btn_apply_dup_cleanup"):
+                        latest_w_clean = load_fn("worker_master").copy()
+                        wids_to_delete = set(
+                            edited_dup_df[edited_dup_df["Action"] == "Delete (Hatayein)"]["Worker_ID"].astype(str).str.strip().str.upper().tolist()
+                        )
+                        if wids_to_delete:
+                            latest_w_clean = latest_w_clean[
+                                ~latest_w_clean["Worker_ID"].astype(str).str.strip().str.upper().isin(wids_to_delete)
+                            ].copy()
+
+                        cleanup_errs = []
+                        for _, kr in edited_dup_df[edited_dup_df["Action"] == "Keep (Waise Hi Rehne Dein)"].iterrows():
+                            kwid = clean_excel_cell(kr["Worker_ID"])
+                            c_f, v_errs = validate_and_clean_employee_fields(
+                                kr.get("Contact_No", ""),
+                                kr.get("Govt_ID_Ref", ""),
+                                kr.get("Bank_Account_No", ""),
+                                kr.get("Bank_IFSC_Code", "")
+                            )
+                            u_errs = check_employee_uniqueness(c_f, latest_w_clean, exclude_wid=kwid)
+                            if v_errs or u_errs:
+                                cleanup_errs.append(f"{kr['Full_Name']} ({kwid}): " + "; ".join(v_errs + u_errs))
+                            else:
+                                mask_k = latest_w_clean["Worker_ID"].astype(str).str.strip().str.upper() == kwid.upper()
+                                latest_w_clean = safe_update_df_rows(
+                                    latest_w_clean,
+                                    mask_k,
+                                    {
+                                        "Full_Name": clean_excel_cell(kr["Full_Name"]),
+                                        "Father_Husband_Name": clean_excel_cell(kr["Father_Husband_Name"]),
+                                        "Govt_ID_Ref": c_f["Govt_ID_Ref"],
+                                        "Division": normalize_division_name(kr["Division"]),
+                                        "Designation": clean_excel_cell(kr["Designation"]),
+                                        "Base_Rate": float(pd.to_numeric(kr["Base_Rate"], errors="coerce") or 0.0),
+                                        "Contact_No": c_f["Contact_No"],
+                                        "Bank_Account_No": c_f["Bank_Account_No"],
+                                        "Bank_IFSC_Code": c_f["Bank_IFSC_Code"],
+                                        "Status": clean_excel_cell(kr["Status"]).upper() or "ACTIVE"
+                                    }
+                                )
+
+                        if cleanup_errs:
+                            for ce in cleanup_errs:
+                                st.warning(f"❌ {ce}")
+                        else:
+                            if save_fn("worker_master", latest_w_clean[WORKER_MASTER_COLS]):
+                                st.success(f"Cleanup complete! Deleted {len(wids_to_delete)} duplicate rows and saved kept edits.")
+                                st.rerun()
+
             avail_reg_divs = allowed_div_list if is_div_restricted else get_available_divisions(w_table)
             flt_c1, flt_c2, flt_c3, flt_c4 = st.columns([1.1, 1.0, 1.0, 1.6])
             with flt_c1:
@@ -2186,10 +2409,9 @@ def render_attendance_module(
             disp_table_view = disp_table.copy()
             disp_table_view["Photo"] = disp_table_view["Photo_Base64"].apply(lambda x: "✅" if str(x).strip() else "—")
             disp_table_view["Week_Off_Day"] = disp_table_view["Week_Off_Day"].apply(normalize_week_off)
-            req_cols = ["Worker_ID", "Full_Name", "Father_Husband_Name", "Photo", "Division", "Designation", "Skill_Category", "Base_Rate", "Bank_Account_No", "Status"]
+            req_cols = ["Worker_ID", "Full_Name", "Father_Husband_Name", "Govt_ID_Ref", "Photo", "Division", "Designation", "Base_Rate", "Contact_No", "Bank_Account_No", "Status"]
             st.dataframe(disp_table_view[[c for c in req_cols if c in disp_table_view.columns]], use_container_width=True, hide_index=True)
 
-            # EXPORT FULL MASTER ROSTER TO EXCEL (FOR BULK EDITING & RE-UPLOAD)
             if not disp_table.empty:
                 export_cols_present = [c for c in EXPORT_ROSTER_COLS if c in disp_table.columns]
                 export_clean_df = disp_table[export_cols_present].copy()
@@ -2497,7 +2719,7 @@ def render_attendance_module(
             file_name=f"M_s_INDU_SAO_Attendance_Matrix_{ym_str}.csv", mime="text/csv", type="primary"
         )
 
-    # 6. PPE, SAFETY GEAR & SITE TOOLS ISSUE REGISTER (WITH DYNAMIC NEW ITEM ADDITION)
+    # 6. PPE, SAFETY GEAR & SITE TOOLS ISSUE REGISTER
     elif current_view == "🦺 PPE & Safety Gear Issue":
         st.markdown("#### PPE, Safety Gear & Site Tools Issue Register")
         st.caption("Track safety gear & site tools (Measuring Tapes, Helmets, Shoes, etc.) with validity timelines, custom item creation, and wage recovery")
