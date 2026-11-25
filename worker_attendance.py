@@ -3612,5 +3612,3 @@ def render_attendance_module(
                         data=generate_bank_authority_letter_pdf("NEFT", np_neft_batch, chq_no_np, chq_date_np, letterhead_fn, f"SUB: NEFT Transfer of Balance / Non-Punch Wages ({wage_period_str}) to below A/C"),
                         file_name=f"NonPunch_TopUp_NEFT_Letter_{wage_period_str}.pdf", mime="application/pdf", type="secondary", use_container_width=True
                     )
-
-    return update_items, new_rows, unchanged_count, error_rows
