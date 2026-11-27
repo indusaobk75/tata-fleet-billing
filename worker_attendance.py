@@ -159,6 +159,8 @@ def safe_update_df_rows(df, mask, updates_dict):
 
 
 def clean_excel_cell(val):
+    if isinstance(val, pd.Series):
+        val = val.iloc[0] if not val.empty else ""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     s = str(val).strip()
@@ -176,40 +178,51 @@ def clean_excel_cell(val):
 
 def auto_map_excel_columns(df):
     df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
     rename_map = {}
+    used_targets = set(df.columns.tolist())
+
     for col in df.columns:
         c_norm = re.sub(r"[\s\-_\/\.]+", "", str(col).strip().lower())
+        target = None
         if c_norm in ["workerid", "empid", "employeecode", "empcode", "id"]:
-            rename_map[col] = "Worker_ID"
+            target = "Worker_ID"
         elif c_norm in ["fullname", "name", "employeename", "workername", "nameofworker"]:
-            rename_map[col] = "Full_Name"
+            target = "Full_Name"
         elif c_norm in ["fatherhusbandname", "fathername", "husbandname", "fathersname", "fathershusbandname", "so", "wo"]:
-            rename_map[col] = "Father_Husband_Name"
+            target = "Father_Husband_Name"
         elif c_norm in ["govtidref", "govtid", "govtidentity", "govtidentitynumber", "idnumber", "idno", "uid", "aadhar", "aadhaar", "aadharno", "aadhaarno"]:
-            rename_map[col] = "Govt_ID_Ref"
+            target = "Govt_ID_Ref"
         elif c_norm in ["division", "department", "dept", "site"]:
-            rename_map[col] = "Division"
+            target = "Division"
         elif c_norm in ["designation", "role", "post", "trade"]:
-            rename_map[col] = "Designation"
+            target = "Designation"
         elif c_norm in ["wagetype", "wagemodel", "paytype"]:
-            rename_map[col] = "Wage_Type"
+            target = "Wage_Type"
         elif c_norm in ["skillcategory", "skill", "category"]:
-            rename_map[col] = "Skill_Category"
+            target = "Skill_Category"
         elif c_norm in ["baserate", "rate", "dailyrate", "salary", "wage"]:
-            rename_map[col] = "Base_Rate"
+            target = "Base_Rate"
         elif c_norm in ["weekoffday", "weekoff", "weeklyoff", "offday"]:
-            rename_map[col] = "Week_Off_Day"
+            target = "Week_Off_Day"
         elif c_norm in ["contactno", "mobile", "mobileno", "mobilenumber", "phone", "phoneno", "contact"]:
-            rename_map[col] = "Contact_No"
+            target = "Contact_No"
         elif c_norm in ["bankaccountno", "accountno", "accountnumber", "bankaccount", "acno", "bankac"]:
-            rename_map[col] = "Bank_Account_No"
+            target = "Bank_Account_No"
         elif c_norm in ["bankifsccode", "ifsc", "ifsccode", "bankifsc"]:
-            rename_map[col] = "Bank_IFSC_Code"
+            target = "Bank_IFSC_Code"
         elif c_norm in ["bankbranchdetails", "branch", "bankbranch", "bankname"]:
-            rename_map[col] = "Bank_Branch_Details"
+            target = "Bank_Branch_Details"
         elif c_norm in ["status", "activestatus"]:
-            rename_map[col] = "Status"
-    return df.rename(columns=rename_map)
+            target = "Status"
+
+        if target and target != col and target not in used_targets:
+            rename_map[col] = target
+            used_targets.add(target)
+
+    df = df.rename(columns=rename_map)
+    return df.loc[:, ~df.columns.duplicated()]
 
 
 def normalize_skill_category(raw_skill, role_str="", rate_val=0.0, wage_type="DAILY_WAGE"):
@@ -305,10 +318,6 @@ def check_employee_uniqueness(cleaned_fields, existing_df, exclude_wid=None, bat
 
 
 def find_duplicate_groups_in_master(w_df):
-    """
-    Detects duplicate employee records by Mobile, Bank A/C, Govt ID, or Full_Name + Father/Husband Name.
-    Tracks all unique tokens per kept record so subsequent copies are ALWAYS marked 'Delete'.
-    """
     if w_df is None or w_df.empty or "Worker_ID" not in w_df.columns:
         return pd.DataFrame()
 
@@ -864,7 +873,9 @@ def parse_and_validate_bulk_roster_df(b_df, existing_w_df, rate_lookup, is_div_r
                 "Created_Date": datetime.date.today().strftime("%Y-%m-%d"),
                 "Photo_Base64": ""
             })
-            # ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
+
+    return update_items, new_rows, unchanged_count, error_rows
+    # ----------------- EXACT TATA STEEL FORM XVI & FORM XVII PARSERS -----------------
 def parse_tata_form_xvi_file(uploaded_file, target_ym):
     y_i = int(target_ym.split("-")[0])
     m_i = int(target_ym.split("-")[1])
